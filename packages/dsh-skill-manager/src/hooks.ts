@@ -84,6 +84,18 @@ async function buildShadows(
   const byName = new Map(rows.map((row) => [row.name, row]))
   const disposers: Array<() => void> = []
 
+  /**
+   * **先取全部定义，再统一注册。**
+   *
+   * `skills.register()` 会无条件让注册表的 revision +1 并清掉收集缓存，而
+   * `skills.get()` 的缓存正按 revision 做键。所以「取一个 → 注册一个」会让
+   * 每次 `get()` 都必然缓存未命中、触发一次完整枚举：一百来个隐藏项实测要
+   * 三秒以上，而这段代码跑在 `agent/created` 里、被宿主串行 await——用户看到的
+   * 就是「点新会话要等很久」。
+   *
+   * 分段之后只有第一次 `get()` 可能全量，其余命中缓存；注册本身是微秒级。
+   */
+  const prepared: Array<{ row: SkillSummaryLike; content: string }> = []
   for (const name of hidden) {
     const row = byName.get(name)
     if (row === undefined) continue
@@ -94,6 +106,10 @@ async function buildShadows(
     } catch {
       // 读不到正文只影响手动调用的内容，不影响遮蔽本身。
     }
+    prepared.push({ row, content })
+  }
+
+  for (const { row, content } of prepared) {
     try {
       disposers.push(
         skills.register({
@@ -106,7 +122,7 @@ async function buildShadows(
         }),
       )
     } catch (error) {
-      ctx.logger.warn(`dsh-skill-manager: 注册遮蔽副本失败（${name}）：${String(error)}`)
+      ctx.logger.warn(`dsh-skill-manager: 注册遮蔽副本失败（${row.name}）：${String(error)}`)
     }
   }
 
