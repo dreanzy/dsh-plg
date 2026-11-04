@@ -1,0 +1,22 @@
+# Dependencies
+node_modules/
+
+# Build output
+lib/
+
+# Temp / sandbox pnpm store
+.tmp/
+
+# Logs
+*.log
+
+# Packed tarballs
+*.tgz
+
+# Agent-local state
+/.agents/
+/.dsh/
+/.pi/
+/.dsh-scope.json
+/.codegraph/
+/graphify-out/
