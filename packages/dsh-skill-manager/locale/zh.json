@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Skill 管理",
+    "description": "按工作区控制模型可以自动调用哪些 skill，分组开关由所有工作区共享。"
+  }
+}

@@ -1,6 +1,6 @@
 # dsh-plg
 
-DeepSeek Harness 插件仓库。术语分两层：DSH 装配语义（本仓库必须遵守的外部契约）与仓库自己的组织约定。
+DeepSeek Harness 插件仓库。术语分两层：DSH 装配语义（本仓库必须遵守的外部契约）与仓库自己的组织约定。各插件包自己的领域词汇跟着包走，见 [GLOSSARY-MAP.md](./GLOSSARY-MAP.md)。
 
 ## DSH 装配语义
 

@@ -6,18 +6,18 @@ DeepSeek Harness 插件的单仓库。每个 `packages/*` 是一个**插件包**
 
 ```
 packages/
-  dsh-plugin-<name>/
+  <包名>/               # 约定 @dreanzy/ 作用域；包名不强制带 plugin- 前缀
     package.json        # name, dsh.bundle.patch, exports, scripts
     cordis.patch.yml    # 一条 insert，id 与包名后缀一致
     tsconfig.json       # 自包含，不 extends 根文件
     src/index.ts        # 服务端入口
-    test/*.test.ts      # node --test
+    test/*.test.js      # node --test，测编译产物
 ```
 
 ## 安装
 
 ```sh
-dsh plugin --profile <profile> add @dreanzy/dsh-plugin-<name>
+dsh plugin --profile <profile> add @dreanzy/<包名>
 ```
 
 从源码安装（可选，需要 pnpm 允许该包执行构建）：

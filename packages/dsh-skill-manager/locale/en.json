@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Skill Manager",
+    "description": "Control which skills the model may auto-invoke, per workspace, with shared groups."
+  }
+}
