@@ -388,12 +388,23 @@ window.__ModuleLoader__.load({
       const isGlobal = layer === 'global'
       const { state, run } = usePanelData(layer, props.sessionId)
       const [query, setQuery] = useState('')
+      /**
+       * 去抖后的搜索词。
+       *
+       * 派生列表要重排全表并重建整棵行树，逐字触发会让输入明显发涩；
+       * 输入框仍用 `query`，所以光标与内容永远是即时的。
+       */
+      const [settledQuery, setSettledQuery] = useState('')
+      useEffect(() => {
+        const timer = setTimeout(() => setSettledQuery(query), 120)
+        return () => clearTimeout(timer)
+      }, [query])
       const [view, setView] = useState('all')
 
       const data = state.data
       const rows = useMemo(() => {
         if (!data) return []
-        const needle = query.trim().toLowerCase()
+        const needle = settledQuery.trim().toLowerCase()
         return data.skills
           .filter((row) => {
             if (needle) {
@@ -410,7 +421,7 @@ window.__ModuleLoader__.load({
           // 名字排序在服务端做过一次，但合并 global 与 scoped 两份清单后顺序会乱，
           // 所以这里按最终清单再排一遍；组内的项因此也天然有序。
           .sort((a, b) => a.name.localeCompare(b.name, 'zh'))
-      }, [data, query, view, isGlobal])
+      }, [data, settledQuery, view, isGlobal])
 
       const buckets = useMemo(() => {
         if (!data) return []
@@ -460,6 +471,17 @@ window.__ModuleLoader__.load({
         }
         return out
       }, [data, rows, isGlobal])
+
+      /**
+       * 分组选项表。
+       *
+       * 每一个行的分组下拉都用同一份：以前是在每行的 JSX 里现排一次整张表，
+       * 60 行 × 16 组就是每次渲染 60 次拷贝与中文排序。
+       */
+      const groupOptions = useMemo(() => {
+        if (!data) return []
+        return [...data.groups.groups].sort((a, b) => a.name.localeCompare(b.name, 'zh'))
+      }, [data])
 
       const [collapsed, setCollapsed] = useState({})
       /** 正在重命名的分组 id；`null` 表示没有。 */
@@ -633,9 +655,14 @@ window.__ModuleLoader__.load({
           const key = bucket.id === null ? '__loose' : bucket.id
           // 默认折叠除「未分组」以外的所有分组：组一多，全展开会把列表拉得很长，
           // 而用户打开面板通常是想找某一组或搜索。`undefined` 表示用户还没动过它。
-          // 搜索时强制全部展开，否则命中的项藏在折叠的组里，看起来像没搜到。
-          const isCollapsed =
-            query.trim() !== '' ? false : collapsed[key] === undefined ? bucket.id !== null : collapsed[key] === true
+          // 搜索时按「这一组有没有命中」决定展开：全展开会把空组也摊成一片「（空）」，
+          // 全折叠又会把命中藏起来。
+          const searching = settledQuery.trim() !== ''
+          const isCollapsed = searching
+            ? bucket.rows.length === 0
+            : collapsed[key] === undefined
+              ? bucket.id !== null
+              : collapsed[key] === true
           const covered = bucket.rows.filter((row) => itemOverridden(row)).length
           const groupState = bucket.id === null ? null : groupEffective(bucket.id)
           return h(
@@ -743,11 +770,9 @@ window.__ModuleLoader__.load({
                           title: '移动到分组（对所有工作区生效）',
                         },
                         h('option', { value: '', style: S.option }, '未分组'),
-                        [...data.groups.groups]
-                          .sort((a, b) => a.name.localeCompare(b.name, 'zh'))
-                          .map((group) =>
-                            h('option', { key: group.id, value: group.id, style: S.option }, group.name),
-                          ),
+                        groupOptions.map((group) =>
+                          h('option', { key: group.id, value: group.id, style: S.option }, group.name),
+                        ),
                       ),
                       itemOverridden(row)
                         ? h(Reset, { onClick: () => stageItem(row.name, null) })
