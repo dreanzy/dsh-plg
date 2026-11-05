@@ -38,6 +38,23 @@
 `parameters` 是属性映射，属性级用 `required: true`；`output.schema` 是值 schema，**不能**带
 `required`。任何 `type: 'object'` 都必须显式写 `additionalProperties`，否则编译期就报错。
 
+## `systemPrompt.section()` 在同一层内禁止同名重复注册
+
+注册失败会抛 `prompt section "…" is already registered in this scope`，而且**不保留旧句柄**。
+所以重算时必须先释放旧段、再注册新段；顺序反了，一次重算就把段弄没。
+
+同理，不要在 root ctx 上注册一份「兜底段」再让每个 agent 注册同名段——root 段与 agent 段
+若落在同一层，后者永远注册不上。
+
+## `ctx.get('agents')` 在 apply 时可能未就绪
+
+插件 `apply` 那一刻 `agents` 服务常常还没注册，直接 `get` 拿到 `undefined`，容易静默
+放弃。要补历史会话，必须写成 `context.inject(['agents'], () => …)`。
+
+## `exec.agent` 与 `agent/created` 的 agent 未必是同一个对象
+
+用 `WeakMap` 按对象身份索引会话状态时会落空。工具执行路径要准备按 `agent.id` 兜底。
+
 ## 事件负载形状
 
 `loader/entry-init` 在 `options` 赋值**之前**发出，必须等下一个 microtask 再读 `name` 与 `config`。
