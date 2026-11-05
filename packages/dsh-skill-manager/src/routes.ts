@@ -216,7 +216,20 @@ function rootSkills(ctx: RouteContext): SkillsFace | null {
  * 没有任何活跃会话时退回 global 层：此时只能看到根 provider，面板会偏少，
  * 但那是暂时状态，新建会话即恢复。
  */
-async function readAnyView(ctx: RouteContext, deps: RouteDeps): Promise<SnapshotValue> {
+async function readAnyView(ctx: RouteContext, deps: RouteDeps, sessionId?: string): Promise<SnapshotValue> {
+  // 优先用调用方给的会话：以前只取 `agents.list()` 的第一个，用户在会话 B 打开面板时
+  // 看到的行集合可能来自会话 A 的 preset——状态是全局层的，行却是别人的。
+  if (sessionId !== undefined) {
+    try {
+      const session = await resolveSession(ctx, sessionId)
+      // 非 live 的观察没有 scope，只能用它的 cwd；那种情况交给下面的启发式。
+      if (session !== null && session.agent !== undefined) {
+        return await deps.snapshot.refresh(session.cwd, session.agent)
+      }
+    } catch {
+      // 解析失败不让面板整体失败，退回下面的路径。
+    }
+  }
   try {
     const agentsService = ctx.get('agents') as { list?: () => unknown } | undefined
     const list = typeof agentsService?.list === 'function' ? (agentsService.list.call(agentsService) as unknown[]) : []
@@ -233,11 +246,15 @@ async function readAnyView(ctx: RouteContext, deps: RouteDeps): Promise<Snapshot
 }
 
 /** `POST api/skill-manager/global`：全局层策略 + 全量清单。 */
-export async function handleGlobal(ctx: RouteContext, deps: RouteDeps): Promise<Envelope<GlobalView>> {
+export async function handleGlobal(
+  ctx: RouteContext,
+  deps: RouteDeps,
+  sessionId?: string,
+): Promise<Envelope<GlobalView>> {
   try {
     const skills = rootSkills(ctx)
     if (skills === null) return { ok: false, error: { code: 'internal', message: 'skills 服务不可用' } }
-    const view = await readAnyView(ctx, deps)
+    const view = await readAnyView(ctx, deps, sessionId)
     return {
       ok: true,
       value: {

@@ -155,3 +155,35 @@ test('reapply 失败不会把已成功的写入报成失败', async () => {
   const result = await handleApply(ctx, { commands: [{ op: 'item', layer: 'global', name: 'alpha', value: false }] }, deps)
   assert.equal(result.ok, true)
 })
+
+test('全局面板优先用请求带来的会话', async () => {
+  await freshHome()
+  const skills = fakeSkills()
+  const seen = []
+  const snapshot = createScopeSnapshot({
+    loadPolicy: (cwd) => loadState(cwd),
+    readInventory: async (cwd, scope) => {
+      seen.push({ cwd, scope })
+      const result = await skills.snapshot({})
+      return { rows: result.skills, complete: result.complete }
+    },
+  })
+  const agent = {
+    id: 's2',
+    session: { id: 's2', header: { cwd: 'D:/proj-b' } },
+    ctx: { get: () => undefined },
+  }
+  const ctx = {
+    get: (name) => {
+      if (name === 'skills') return skills
+      if (name === 'agents') return { list: () => [agent], get: (id) => (id === 's2' ? agent : undefined) }
+      return undefined
+    },
+    logger: { warn() {} },
+  }
+  const view = await handleGlobal(ctx, { snapshot, reapply: async () => {}, stuck: () => [] }, 's2')
+  assert.equal(view.ok, true)
+  assert.equal(seen.length, 1)
+  assert.equal(seen[0].cwd, 'D:/proj-b')
+  assert.equal(seen[0].scope, agent)
+})

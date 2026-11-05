@@ -102,7 +102,14 @@ export function apply(ctx: unknown): void {
       }
     }
 
-    register(ROUTES.global, () => handleGlobal(routeCtx, deps))
+    register(ROUTES.global, (body) => {
+      // 面板会带当前会话：全局面板的行集合因此与会话一致，而不是「恰好排第一的那个」。
+      const sessionId =
+        body !== null && typeof body['sessionId'] === 'string' && body['sessionId'] !== ''
+          ? body['sessionId']
+          : undefined
+      return handleGlobal(routeCtx, deps, sessionId)
+    })
     register(ROUTES.workspace, (body) => handleWorkspace(routeCtx, body, deps))
     register(ROUTES.apply, (body) => handleApply(routeCtx, body, deps))
 

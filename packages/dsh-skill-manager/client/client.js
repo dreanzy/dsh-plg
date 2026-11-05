@@ -46,7 +46,8 @@ window.__ModuleLoader__.load({
     }
 
     const api = {
-      global: () => post(PATHS.global, {}),
+      // 带上当前会话：服务端优先用它的 scope 读清单，否则会退回到「恰好排第一的那个会话」。
+      global: (sessionId) => post(PATHS.global, sessionId ? { sessionId: sessionId } : {}),
       workspace: (sessionId) => post(PATHS.workspace, { sessionId: sessionId }),
       apply: (commands, sessionId) =>
         post(PATHS.apply, sessionId ? { sessionId: sessionId, commands: commands } : { commands: commands }),
@@ -337,7 +338,7 @@ window.__ModuleLoader__.load({
 
       const load = useCallback(async () => {
         try {
-          const data = layer === 'global' ? await api.global() : await api.workspace(sessionId)
+          const data = layer === 'global' ? await api.global(sessionId) : await api.workspace(sessionId)
           setState({ loading: false, error: null, data: data })
         } catch (error) {
           setState({ loading: false, error: String(error.message || error), data: null })
@@ -350,7 +351,7 @@ window.__ModuleLoader__.load({
         // 面板可能被渲染在任意路由下，但这是一次显式的全量读取，不需要防抖。
         ;(async () => {
           try {
-            const data = layer === 'global' ? await api.global() : await api.workspace(sessionId)
+            const data = layer === 'global' ? await api.global(sessionId) : await api.workspace(sessionId)
             if (alive) setState({ loading: false, error: null, data: data })
           } catch (error) {
             if (alive) setState({ loading: false, error: String(error.message || error), data: null })
