@@ -469,34 +469,17 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * 组内排序：**开着的在上、关着的在下**，同组内再按体积降序。
+     * 排序规则：**开着的在上、关着的在下**，同组内再按体积降序。
      *
      * 状态优先于体积，是因为两件事在同一行列表里的用途不同：
      * 「关掉的」是已经做过的决定，是结果，扫一眼确认即可；「开着的」是待评估的候选，
      * 用户来面板就是为了在其中挑最贵的砍。把它们混排会让「已关」沉在体积序里看不见。
      *
      * 再往下按体积降序：要砍就先看最贵的。同体积按包名字节序，保证刷新前后稳定。
+     *
+     * 求值在 Panel 里一次摊平，不放进比较器：一次排序是 N·log N 次比较，每次现算
+     * `previewOpen` 还要新建一份层对象。
      */
-    function sortRows(rows, isOpen) {
-      return [...rows].sort((a, b) => {
-        const openDelta = Number(isOpen(b)) - Number(isOpen(a))
-        if (openDelta !== 0) return openDelta
-        const delta = weightOf(b) - weightOf(a)
-        if (delta !== 0) return delta
-        return a.pkg < b.pkg ? -1 : a.pkg > b.pkg ? 1 : 0
-      })
-    }
-
-    function hiddenStats(data, layer, draft) {
-      let count = 0
-      let volume = 0
-      for (const row of data.plugins || []) {
-        if (previewOpen(data, layer, draft, row.pkg)) continue
-        count += 1
-        volume += weightOf(row)
-      }
-      return { count: count, volume: Math.round(volume) }
-    }
 
     function sectionOf(row) {
       return row.origin === 'official' ? 'official' : 'profile'
@@ -659,6 +642,15 @@ window.__ModuleLoader__.load({
       const view = useLayerView(layer, sessionId)
 
       const [query, setQuery] = useState('')
+      /**
+       * 去抖后的搜索词。派生列表与分区都要重建整棵树，逐字触发会让输入发涩；
+       * 输入框仍绑 `query`，光标与内容永远即时。
+       */
+      const [settledQuery, setSettledQuery] = useState('')
+      useEffect(() => {
+        const timer = setTimeout(() => setSettledQuery(query), 120)
+        return () => clearTimeout(timer)
+      }, [query])
       const [collapsed, setCollapsed] = useState({})
       // 草稿只有一层：pkg -> boolean | null，与所挂载的那层对应。
       const [draft, setDraft] = useState({})
@@ -693,7 +685,25 @@ window.__ModuleLoader__.load({
       const stuck = data.stuck || []
       const support = data.support || {}
       const isGlobal = layer === 'global'
-      const stats = hiddenStats(data, layer, draft)
+      /**
+       * 一次摊平：每行的生效值与体积各算一次。
+       *
+       * 统计、排序、分区、行渲染都吃这一份。以前统计全表扫一遍、排序比较器里再算
+       * N·log N 次、每个分区又全表 filter 一遍、渲染时每行再算一次。
+       */
+      const decorated = plugins.map((row) => ({
+        row,
+        open: previewOpen(data, layer, draft, row.pkg),
+        weight: weightOf(row),
+      }))
+      let hiddenCount = 0
+      let hiddenVolume = 0
+      for (const item of decorated) {
+        if (item.open) continue
+        hiddenCount += 1
+        hiddenVolume += item.weight
+      }
+      const stats = { count: hiddenCount, volume: Math.round(hiddenVolume) }
       const dirty = Object.keys(draft).length
 
       // ---------- 改动 ----------
@@ -743,18 +753,33 @@ window.__ModuleLoader__.load({
       // ---------- 派生 ----------
 
       // 子串匹配，不做模糊：包名里 dsh 这种片段到处都是，模糊匹配只会让结果更难认。
-      const needle = query.trim().toLowerCase()
+      const needle = settledQuery.trim().toLowerCase()
       // 排序看的是「含草稿的当前生效值」：拨动开关后该行立刻升到顶部或沉下去，
       // 与面板上那个开关显示的状态保持一致。若按落盘值排，会出现「刚关掉但它还在上面」。
-      const rows = sortRows(
-        plugins.filter((row) => needle === '' || row.pkg.toLowerCase().indexOf(needle) >= 0),
-        (row) => previewOpen(data, layer, draft, row.pkg),
-      )
+      // 先排一次全量，再按分区过滤：分区保持这个顺序，行内也不用再排。
+      const ordered = [...decorated].sort((a, b) => {
+        if (a.open !== b.open) return a.open ? -1 : 1
+        if (b.weight !== a.weight) return b.weight - a.weight
+        return a.row.pkg < b.row.pkg ? -1 : a.row.pkg > b.row.pkg ? 1 : 0
+      })
 
-      const buckets = SECTION_ORDER.map((section) => ({
-        section: section,
-        rows: rows.filter((row) => sectionOf(row) === section),
-      })).filter((bucket) => bucket.rows.length > 0)
+      /**
+       * 分区：行是过滤后的，总数与体积是全量的。
+       *
+       * 以前渲染时对每个分区再 `plugins.filter` 一遍算总数与体积，一次渲染多出五次
+       * 全表遍历，而且 `sectionOf` 被反复调用。
+       */
+      const buckets = SECTION_ORDER.map((section) => {
+        const all = ordered.filter((item) => sectionOf(item.row) === section)
+        const visible = all.filter((item) => needle === '' || item.row.pkg.toLowerCase().indexOf(needle) >= 0)
+        return {
+          section: section,
+          rows: visible.map((item) => item.row),
+          items: visible,
+          total: all.length,
+          volume: all.reduce((sum, item) => sum + item.weight, 0),
+        }
+      }).filter((bucket) => bucket.rows.length > 0)
 
       /**
        * 官方插件一个都没识别到时，几乎总是归属扫描没定位到 app.asar（官方包不在
@@ -765,9 +790,6 @@ window.__ModuleLoader__.load({
        */
       const officialCount = plugins.filter((row) => row.origin === 'official').length
       const noOfficial = data.pending !== true && officialCount === 0
-
-      const sectionVolume = (section) =>
-        plugins.filter((row) => sectionOf(row) === section).reduce((sum, row) => sum + weightOf(row), 0)
 
       // 设置页里内嵌的那份没有标题，但「停用了多少」始终要看得见。
       const header = h(
@@ -844,13 +866,13 @@ window.__ModuleLoader__.load({
                 // 搜索时强制展开：命中的项藏在折叠的分区里，看起来像没搜到。
                 // 「官方」默认折叠：那一片是宿主自带的几十个包，用户通常不改；展开在首屏
                 // 也会把第三方插件挤到下面，还容易在滚动时误点到官方行的开关。
+                // 搜索时按「这一分区有没有命中」决定展开：全展开会把空section摊成一片。
                 const isCollapsed =
                   needle !== ''
-                    ? false
+                    ? bucket.rows.length === 0
                     : collapsed[key] === undefined
                       ? bucket.section === 'official'
                       : collapsed[key] === true
-                const sectionRows = plugins.filter((row) => sectionOf(row) === bucket.section)
                 return h(
                   'div',
                   { key: key, style: S.section },
@@ -859,20 +881,19 @@ window.__ModuleLoader__.load({
                     { style: S.groupHead, onClick: () => setCollapsed({ ...collapsed, [key]: !isCollapsed }) },
                     h('span', { style: { opacity: 0.5, width: '12px' } }, isCollapsed ? '▸' : '▾'),
                     h('span', { style: S.groupName }, SECTION_TITLE[bucket.section]),
-                    h(Tag, null, sectionRows.length + ' 个'),
-                    needle !== '' && bucket.rows.length !== sectionRows.length
+                    h(Tag, null, bucket.total + ' 个'),
+                    needle !== '' && bucket.rows.length !== bucket.total
                       ? h(Tag, null, '命中 ' + bucket.rows.length)
                       : null,
                     h(
                       Tag,
                       { title: '工具 schema 估读 + 段字符数 / 4' },
-                      '≈' + formatTokens(sectionVolume(bucket.section)) + ' token',
+                      '≈' + formatTokens(bucket.volume) + ' token',
                     ),
                   ),
                   isCollapsed
                     ? null
-                    : bucket.rows.map((row) => {
-                        const open = previewOpen(data, layer, draft, row.pkg)
+                    : bucket.items.map(({ row, open }) => {
                         const explicit = rowExplicit(layer, draft, row)
                         return h(
                           'div',
