@@ -78,8 +78,12 @@ export interface AgentScope {
 export interface HookDeps {
   readonly context: EventContext
   readonly pool: Pool
-  /** 一个 agent 落地完成后调用，用来刷新自检快照。失败被忽略。 */
-  readonly onSettled?: () => void
+  /**
+   * 一个 agent 落地完成后调用，用来刷新自检快照。失败被忽略。
+   *
+   * 附带名册行数：诊断不必为了一个数字再去扫一遍 Loader。
+   */
+  readonly onSettled?: (info: { readonly agentId: string; readonly rows: number }) => void
   /** Loader 扫描，同步。 */
   readonly scan: () => RowScan
   /**
@@ -227,7 +231,7 @@ export function installHooks(deps: HookDeps): Hooks {
     scopes.set(agent as object, scope)
     byId.set(agent.id, scope)
     try {
-      deps.onSettled?.()
+      deps.onSettled?.({ agentId: agent.id, rows: inventory.snapshot().length })
     } catch {
       // 自检刷新失败不影响落地。
     }

@@ -183,37 +183,63 @@ export function apply(ctx: unknown): void {
     mounted: [],
   }
 
+  /** 上一次真正写盘的内容指纹，用来跳过没有变化的重复写。 */
+  let lastDiagBody: string | null = null
+  /** 串行化写盘：多个 agent 同时落地时，并发写同一路径会互相覆盖。 */
+  let diagQueue: Promise<void> = Promise.resolve()
+
   /**
-   * 把自检快照落到 `$DSH_HOME/dsh-mcp-manager/diag.json`。
+   * 诊断内容的指纹。
+   *
+   * `at` 不参与比较：它每次都变，带上它就等于「永不重复」，内容比对就没有意义了。
+   */
+  const diagFingerprint = (): string =>
+    JSON.stringify({
+      ...diag,
+      poolSize: pool.size(),
+      lastApplied: lastAppliedCommands(),
+      agents: hooks.stats().agents,
+      // 名册原文：确认「server 有没有出现在系统提示里」最直接的证据。
+      inventory: sectionText(state),
+    })
+
+  const serializeDiag = (): string =>
+    JSON.stringify(
+      {
+        at: new Date().toISOString(),
+        ...diag,
+        poolSize: pool.size(),
+        lastApplied: lastAppliedCommands(),
+        agents: hooks.stats().agents,
+        inventory: sectionText(state),
+      },
+      null,
+      2,
+    ) + '\n'
+
+  /**
+   * 把自检快照落到 `$DSH_HOME/mcp-manager/diag.json`。
    *
    * 为什么需要它：桌面版的 HTTP 走 `dsh-app://` 协议，命令行拿不到那些接口；
    * 排查只能靠浏览器控制台。落盘之后，出问题时有据可查，不必每次都要求用户
    * 复制一段 JSON 出来。
+   *
+   * 三条纪律：
+   * 1. **内容没变就不写**：以前每个 agent 落地都写一次，N 个会话就是 N 次磁盘写。
+   * 2. **写盘串行**：并发 rename 到同一路径会互相覆盖，落盘内容反而不可信。
+   * 3. **绝不让调用方等**：诊断是旁路，热路径上只排队，不 await。
    */
-  const flushDiag = () => {
-    void (async () => {
+  const flushDiag = (options: { readonly force?: boolean } = {}): void => {
+    const body = diagFingerprint()
+    if (options.force !== true && body === lastDiagBody) return
+    lastDiagBody = body
+    diagQueue = diagQueue.then(async () => {
       try {
-        await writeFileAtomic(
-        diagPath(),
-        JSON.stringify(
-          {
-            at: new Date().toISOString(),
-            ...diag,
-            poolSize: pool.size(),
-            lastApplied: lastAppliedCommands(),
-          agents: hooks.stats().agents,
-            // 名册原文：确认「server 有没有出现在系统提示里」最直接的证据。
-            inventory: sectionText(state),
-          },
-          null,
-          2,
-        ) + '\n',
-        { mode: 0o600, dirMode: 0o700 },
-      )
+        await writeFileAtomic(diagPath(), serializeDiag(), { mode: 0o600, dirMode: 0o700 })
       } catch {
         // 写不了就算了，不影响主路径。
       }
-    })()
+    })
   }
 
   /**
@@ -266,10 +292,16 @@ export function apply(ctx: unknown): void {
     diag.mounted = [...mounts.keys()].sort((left, right) => left.localeCompare(right))
   }
 
-  const noteRows = () => {
+  /**
+   * 刷新自检快照。
+   *
+   * `knownRows` 由 hooks 从共享快照里带过来：以前每个 agent 落地都要再扫一遍
+   * Loader，只为数一个行数。
+   */
+  const noteRows = (knownRows?: number) => {
     try {
       // 含托管行：托管定义不在 Loader 的 entry 树里，只扫 Loader 会漏掉它们。
-      diag.rowsSeen = scanOf(context).rows.length + diag.owned.length
+      diag.rowsSeen = (knownRows ?? scanOf(context).rows.length) + diag.owned.length
     } catch {
       // 诊断失败不影响主路径。
     }
@@ -303,7 +335,7 @@ export function apply(ctx: unknown): void {
     scan: () => scanOf(context),
     snapshot,
     // 每个 agent 落地后刷新自检快照，省得排查时还要用户手动点开面板。
-    onSettled: () => noteRows(),
+    onSettled: ({ rows }) => noteRows(rows),
     // 按该 agent 的 cwd 求值，返回需要罩住的 server 名（dynamic/lazy 行）。
     shieldedServers: async (agent, cwd) => {
       // 用同一份快照：这里以前自己扫一遍 Loader，既重复又漏掉托管行。
@@ -402,7 +434,8 @@ register(ROUTES.diag, async () => {
       } catch {
         // 诊断失败不影响响应。
       }
-      flushDiag()
+      // 显式请求：无论内容是否变化都落一次盘（时间戳会刷新）。
+      flushDiag({ force: true })
       return {
         ok: true,
         value: {
