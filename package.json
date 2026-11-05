@@ -9,6 +9,6 @@
   "scripts": {
     "build": "pnpm -r build",
     "typecheck": "pnpm -r typecheck",
-    "test": "node scripts/check-ui-vars.mjs && pnpm -r test"
+    "test": "node scripts/check-ui-vars.mjs && node scripts/check-panels.mjs && pnpm -r test"
   }
 }
