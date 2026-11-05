@@ -58,7 +58,9 @@ window.__ModuleLoader__.load({
      * 颜色一律取宿主主题 token。
      *
      * 宿主的真实前缀是 `--dsw-`（不是 `--dsh-`），且全部 token 都要求浅色与深色两套取值，
-     * 所以这里只引用变量、不写死颜色。dream-skin 另外注册了 `--dsh-dream-skin-popup-fill`，
+     * 底色用 `--dsw-alias-bg-layer-1`，不用 `--dsw-alias-bg-overlay`：后者在暗色主题下
+ * 绑定的是 neutral-bluish-700（中灰），弹窗会比页面亮一大截；后者是给「半透明浮层」
+ * 用的，语义也不是卡片底。layer-1 与页面同色，界线交给边框与阴影。
      * 弹窗优先用它，弹层才与它自绘的浮层同色。
      */
     const T = {
@@ -66,14 +68,18 @@ window.__ModuleLoader__.load({
       dim: 'var(--dsw-alias-label-secondary, GrayText)',
       faint: 'var(--dsw-alias-label-tertiary, GrayText)',
       surface:
-        'var(--dsh-dream-skin-popup-fill, var(--dsw-alias-bg-overlay, var(--dsw-alias-bg-layer-1, Canvas)))',
+        'var(--dsw-alias-bg-layer-1, Canvas)',
       page: 'var(--dsw-alias-bg-base, Canvas)',
       border: 'var(--dsw-alias-border-l1, rgba(127,127,127,0.35))',
       borderStrong: 'var(--dsw-alias-border-l2, rgba(127,127,127,0.55))',
-      accent: 'var(--dsw-alias-brand-primary, #2f6fed)',
-      idle: 'var(--dsw-alias-state-idle-primary, rgba(127,127,127,0.45))',
+      // 同理不依赖品牌变量：变量在主题里存在但取值不明时，开态可能和关态撞色。
+      accent: '#2f6fed',
+      // 不用 --dsw-alias-state-idle-primary：暗色主题下它解析成接近白色，
+      // 与白色圆点叠成一条纯白胶囊，开/关完全看不出来。这里用固定的半透明灰，
+      // 再给轨道加一圈内描边，暗色与亮色下都有轮廓。
+      idle: 'rgba(127, 127, 127, 0.38)',
       error: 'var(--dsw-alias-state-error-primary, #c0392b)',
-      onAccent: 'var(--dsw-alias-brand-text, #fff)',
+      onAccent: '#ffffff',
     }
 
     const S = {
@@ -177,6 +183,7 @@ window.__ModuleLoader__.load({
         height: '18px',
         borderRadius: '999px',
         border: 0,
+        boxShadow: 'inset 0 0 0 1px rgba(127, 127, 127, 0.28)',
         cursor: disabled ? 'not-allowed' : 'pointer',
         opacity: disabled ? 0.4 : 1,
         background: on ? T.accent : T.idle,
