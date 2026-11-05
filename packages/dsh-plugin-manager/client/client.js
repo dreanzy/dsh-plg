@@ -111,6 +111,15 @@ window.__ModuleLoader__.load({
       error: 'var(--dsw-alias-state-error-primary, #c0392b)',
       warn: 'var(--dsw-alias-state-warning-primary, #b7791f)',
       onAccent: '#ffffff',
+      /*
+       * 开关配色照官方「反色」风格：开态轨道取前景色（暗色主题下是亮白），圆点取底色
+       * （近黑）；关态轨道是中灰、圆点是浅圆点。反色在亮暗两套主题里都成立，
+       * 也不依赖品牌色——品牌色在主题里存在与否不确定，撞色时开关就废了。
+       */
+      track: 'var(--dsw-alias-label-primary, #e6e6e6)',
+      trackOff: 'rgba(127, 127, 127, 0.30)',
+      knob: 'var(--dsw-alias-bg-layer-1, #111111)',
+      knobOff: 'rgba(255, 255, 255, 0.92)',
     }
 
     const S = {
@@ -195,27 +204,28 @@ window.__ModuleLoader__.load({
       },
       rowMeta: { color: T.dim, fontSize: '11px', marginTop: '2px' },
       sw: (on, disabled) => ({
-        width: '34px',
-        height: '18px',
+        width: '36px',
+        height: '20px',
         borderRadius: '999px',
         border: 0,
-        boxShadow: 'inset 0 0 0 1px rgba(127, 127, 127, 0.28)',
+        padding: 0,
         cursor: disabled ? 'not-allowed' : 'pointer',
-        opacity: disabled ? 0.4 : 1,
-        background: on ? T.accent : T.idle,
+        opacity: disabled ? 0.45 : 1,
+        background: on ? T.track : T.trackOff,
         position: 'relative',
         flex: '0 0 auto',
-        transition: 'background 120ms',
+        transition: 'background 140ms ease',
       }),
       knob: (on) => ({
         position: 'absolute',
         top: '2px',
         left: on ? '18px' : '2px',
-        width: '14px',
-        height: '14px',
+        width: '16px',
+        height: '16px',
         borderRadius: '999px',
-        background: T.onAccent,
-        transition: 'left 120ms',
+        background: on ? T.knob : T.knobOff,
+        boxShadow: '0 1px 2px rgba(0, 0, 0, 0.28)',
+        transition: 'left 140ms ease, background 140ms ease',
       }),
       reset: { border: 0, background: 'transparent', cursor: 'pointer', color: T.dim, fontSize: '12px', padding: '2px 4px' },
       button: (primary) => ({
