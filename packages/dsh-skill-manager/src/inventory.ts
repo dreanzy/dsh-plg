@@ -45,44 +45,15 @@ export interface Inventory {
 }
 
 /**
- * 一次 `snapshot()` 要枚举全部 provider 并解析每个 `SKILL.md` 的 frontmatter，
- * 一百多项就是几百毫秒。打开面板、保存、再打开会连着触发好几次，所以加一层
- * 很短的缓存：命中时不改变正确性，只省掉重复扫描。
+ * 清单读取只剩「调宿主 `snapshot()` 一次」这一件事。
  *
- * 只缓存 `complete` 的结果——残缺清单本来就不该被复用。
- * 清单变化（装上/卸载 skill）最多延迟 `INVENTORY_TTL_MS` 才可见，这个代价
- * 换来的是一次保存从「两次全量扫描」降到「零次」。
+ * 缓存与失效搬到了 `snapshot.ts`：那里的键含 scope 身份，而且与 hooks、路由共用，
+ * 所以面板与模型看到的是同一次求值的结果。这里刻意不再留第二份缓存——两份缓存
+ * 必然分叉，早先按「cwd + 有没有 scope」建键时，不同 preset 的会话会读到彼此的清单。
+ *
+ * 读清单的调用点只剩 hooks 的 `readFresh`；`cwd` 缺省时读全局清单（`snapshot({})`），
+ * 不要用空字符串表示「全局」：`''` 会被当作一个目录去解析工程根。
  */
-const INVENTORY_TTL_MS = 2500
-const inventoryCache = new Map<string, { rows: readonly SkillSummaryLike[]; complete: boolean; at: number }>()
-
-/**
- * 读清单。
- *
- * `cwd` **缺省时读全局清单**（`snapshot({})`），带上时读该工作区的工程清单。
- * 不要用空字符串表示「全局」：`''` 会被当作一个目录去解析工程根，
- * 取不到任何工程级 provider，结果是面板只剩运行时与官方那几条。
- *
- * 带 `scope` 的读取已经包含 global 层（`dsh-skill` 的 `collectFresh` 是
- * `[global, ...chainLayers(scope)]`），调用方**不要**再去读一次全局清单做并集。
- */
-export async function readInventory(skills: SkillsFace, cwd?: string, scope?: unknown): Promise<Inventory> {
-  const key = `${cwd ?? ''}|${scope === undefined ? '-' : 'scoped'}`
-  const now = Date.now()
-  const hit = inventoryCache.get(key)
-  if (hit !== undefined && now - hit.at < INVENTORY_TTL_MS) {
-    return { rows: hit.rows, complete: hit.complete }
-  }
-
-  const options: { cwd?: string; scope?: unknown } = {}
-  if (cwd !== undefined && cwd !== '') options.cwd = cwd
-  if (scope !== undefined) options.scope = scope
-  const snapshot = await skills.snapshot(options)
-  if (snapshot.complete) {
-    inventoryCache.set(key, { rows: snapshot.skills, complete: true, at: now })
-  }
-  return { rows: snapshot.skills, complete: snapshot.complete }
-}
 
 /**
  * 官方 `@deepseek-ai` 基础设施 skill。

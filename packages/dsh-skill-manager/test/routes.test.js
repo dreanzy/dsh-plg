@@ -4,6 +4,8 @@ import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { handleApply, handleGlobal, parseCommands } from '../lib/routes.js'
+import { createScopeSnapshot } from '../lib/snapshot.js'
+import { loadState } from '../lib/store.js'
 
 const rows = [
   { name: 'alpha', description: 'a', provider: 'filesystem', source: 'custom', path: '/x/alpha/SKILL.md', invocation: { modelInvocable: true, userInvocable: true } },
@@ -30,6 +32,25 @@ function fakeCtx(skills) {
     get: (name) => (name === 'skills' ? skills : undefined),
     logger: { warn() {} },
   }
+}
+
+/**
+ * 路由依赖：一份真实的快照（读真实策略文件）+ 可覆盖的落地回调。
+ *
+ * 每个用例建一份新的，避免上一条用例的缓存影响下一条。
+ */
+function depsWith(skills, overrides = {}) {
+  const snapshot = createScopeSnapshot({
+    loadPolicy: (cwd) => loadState(cwd),
+    readInventory: async (cwd, scope) => {
+      const request = {}
+      if (cwd !== null && cwd !== '') request.cwd = cwd
+      if (scope !== undefined) request.scope = scope
+      const result = await skills.snapshot(request)
+      return { rows: result.skills, complete: result.complete }
+    },
+  })
+  return { snapshot, reapply: async () => {}, stuck: () => [], ...overrides }
 }
 
 async function freshHome() {
@@ -70,12 +91,13 @@ test('全局面板默认不列官方技能，打开开关后列出', async () =>
   const home = await freshHome()
   const ctx = fakeCtx(fakeSkills())
 
-  const off = await handleGlobal(ctx)
+  const deps = depsWith(fakeSkills())
+  const off = await handleGlobal(ctx, deps)
   assert.equal(off.ok, true)
   assert.deepEqual(off.value.skills.map((row) => row.name), ['alpha', 'beta'])
 
   await writeFile(join(home, 'skill-manager', 'global.json'), JSON.stringify({ ui: { showOfficialSkills: true } }))
-  const on = await handleGlobal(ctx)
+  const on = await handleGlobal(ctx, deps)
   assert.deepEqual(on.value.skills.map((row) => row.name), ['alpha', 'beta', 'cordis-x'])
   assert.equal(on.value.skills[2].official, true)
 })
@@ -83,7 +105,7 @@ test('全局面板默认不列官方技能，打开开关后列出', async () =>
 test('全局关掉的项在行里体现为 openGlobal=false', async () => {
   const home = await freshHome()
   await writeFile(join(home, 'skill-manager', 'global.json'), JSON.stringify({ items: { alpha: false } }))
-  const view = await handleGlobal(fakeCtx(fakeSkills()))
+  const view = await handleGlobal(fakeCtx(fakeSkills()), depsWith(fakeSkills()))
   const alpha = view.value.skills.find((row) => row.name === 'alpha')
   assert.equal(alpha.openGlobal, false)
   assert.equal(alpha.itemGlobal, false)
@@ -92,7 +114,7 @@ test('全局关掉的项在行里体现为 openGlobal=false', async () => {
 test('apply 写盘后返回新状态，且意图不互相覆盖', async () => {
   const home = await freshHome()
   const ctx = fakeCtx(fakeSkills())
-  const deps = { reapply: async () => {}, stuck: () => [] }
+  const deps = depsWith(fakeSkills())
 
   const first = await handleApply(ctx, { commands: [{ op: 'item', layer: 'global', name: 'alpha', value: false }] }, deps)
   assert.equal(first.ok, true)
@@ -107,7 +129,7 @@ test('apply 写盘后返回新状态，且意图不互相覆盖', async () => {
 test('工作区命令缺少 sessionId 时拒绝，且不落盘', async () => {
   const home = await freshHome()
   const ctx = fakeCtx(fakeSkills())
-  const deps = { reapply: async () => {}, stuck: () => [] }
+  const deps = depsWith(fakeSkills())
   const result = await handleApply(
     ctx,
     { commands: [{ op: 'item', layer: 'workspace', name: 'alpha', value: false }] },
@@ -125,12 +147,11 @@ test('工作区命令缺少 sessionId 时拒绝，且不落盘', async () => {
 test('reapply 失败不会把已成功的写入报成失败', async () => {
   await freshHome()
   const ctx = fakeCtx(fakeSkills())
-  const deps = {
+  const deps = depsWith(fakeSkills(), {
     reapply: async () => {
       throw new Error('boom')
     },
-    stuck: () => [],
-  }
+  })
   const result = await handleApply(ctx, { commands: [{ op: 'item', layer: 'global', name: 'alpha', value: false }] }, deps)
   assert.equal(result.ok, true)
 })

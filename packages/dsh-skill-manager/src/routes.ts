@@ -1,6 +1,7 @@
-import { createResolver, hiddenNames } from './policy.js'
-import { readInventory, isOfficialSkill, type Inventory, type SkillSummaryLike, type SkillsFace } from './inventory.js'
-import { applyCommands, loadState, workspacePath } from './store.js'
+import { createResolver } from './policy.js'
+import { isOfficialSkill, type SkillSummaryLike, type SkillsFace } from './inventory.js'
+import { applyCommands, workspacePath } from './store.js'
+import type { ScopeSnapshot, SnapshotValue } from './snapshot.js'
 import type { Command, GlobalPolicy, GroupRegistry, LayerPolicy } from './types.js'
 
 /** 路由层需要的最小 ctx 面。 */
@@ -10,6 +11,18 @@ export interface RouteContext {
 }
 
 export type ErrorCode = 'bad-request' | 'unknown-session' | 'internal'
+
+/**
+ * 路由层依赖。
+ *
+ * `snapshot` 与 hooks 共用同一份：面板看到的清单与模型看到的遮蔽必须由同一次求值
+ * 产生，否则会出现「面板显示关了、会话里还开着」这种无法复现的偏差。
+ */
+export interface RouteDeps {
+  readonly snapshot: ScopeSnapshot
+  readonly reapply: () => Promise<void>
+  readonly stuck: () => readonly string[]
+}
 
 export type Envelope<T> =
   | { readonly ok: true; readonly value: T }
@@ -203,37 +216,42 @@ function rootSkills(ctx: RouteContext): SkillsFace | null {
  * 没有任何活跃会话时退回 global 层：此时只能看到根 provider，面板会偏少，
  * 但那是暂时状态，新建会话即恢复。
  */
-async function readAnyInventory(ctx: RouteContext, skills: SkillsFace): Promise<Inventory> {
+async function readAnyView(ctx: RouteContext, deps: RouteDeps): Promise<SnapshotValue> {
   try {
     const agentsService = ctx.get('agents') as { list?: () => unknown } | undefined
     const list = typeof agentsService?.list === 'function' ? (agentsService.list.call(agentsService) as unknown[]) : []
     const agent = Array.isArray(list) ? list[0] : undefined
     const session = (agent as { session?: { header?: { cwd?: unknown } } } | undefined)?.session
     const cwd = session?.header?.cwd
-    if (typeof cwd === 'string' && cwd !== '') {
-      return await readInventory(skills, cwd, agent)
+    if (agent !== undefined && typeof cwd === 'string' && cwd !== '') {
+      return await deps.snapshot.refresh(cwd, agent)
     }
   } catch {
     // 取不到 Agent 就退回全局清单，不让面板整体失败。
   }
-  return await readInventory(skills)
+  return await deps.snapshot.refresh(null)
 }
 
 /** `POST api/skill-manager/global`：全局层策略 + 全量清单。 */
-export async function handleGlobal(ctx: RouteContext): Promise<Envelope<GlobalView>> {
+export async function handleGlobal(ctx: RouteContext, deps: RouteDeps): Promise<Envelope<GlobalView>> {
   try {
     const skills = rootSkills(ctx)
     if (skills === null) return { ok: false, error: { code: 'internal', message: 'skills 服务不可用' } }
-    const loaded = await loadState(null)
-    const inventory = await readAnyInventory(ctx, skills)
+    const view = await readAnyView(ctx, deps)
     return {
       ok: true,
       value: {
-        policy: loaded.global,
-        skills: buildRows(inventory.rows, loaded.global, null, loaded.groups, loaded.global.showOfficialSkills),
-        groups: loaded.groups,
-        complete: inventory.complete,
-        warnings: loaded.warnings,
+        policy: view.policy.global,
+        skills: buildRows(
+          view.rows,
+          view.policy.global,
+          null,
+          view.policy.groups,
+          view.policy.global.showOfficialSkills,
+        ),
+        groups: view.policy.groups,
+        complete: view.complete,
+        warnings: view.warnings,
       },
     }
   } catch (error) {
@@ -247,39 +265,32 @@ async function buildWorkspaceView(
   agent: unknown,
   live: boolean,
   stuck: readonly string[],
+  deps: RouteDeps,
 ): Promise<Envelope<WorkspaceView>> {
   const skills = rootSkills(ctx)
   if (skills === null) return { ok: false, error: { code: 'internal', message: 'skills 服务不可用' } }
-  const loaded = await loadState(cwd)
   // 带 scope 的一次读取已经包含 global 层（`[global, ...chainLayers(scope)]`），
-  // 所以这里只读一次。早先为了「兜底」再读一遍 global 层，等于每次请求都做两次
-  // 全量扫描，是面板打开慢的主要来源。
-  const inventory = agent === undefined ? await readInventory(skills) : await readInventory(skills, cwd, agent)
-  const resolver = createResolver({
-    workspace: loaded.workspace,
-    global: loaded.global,
-    assignments: loaded.groups.assignments,
-  })
-  const hidden = inventory.complete ? hiddenNames(inventory.rows.map((row) => row.name), resolver) : []
+  // 而且与 hooks 共用同一份快照：面板看到的隐藏集就是会话里生效的那一份。
+  const view = await deps.snapshot.refresh(agent === undefined ? null : cwd, agent)
   return {
     ok: true,
     value: {
-      policy: loaded.global,
-      workspace: loaded.workspace,
+      policy: view.policy.global,
+      workspace: view.policy.workspace,
       skills: buildRows(
-        inventory.rows,
-        loaded.global,
-        loaded.workspace,
-        loaded.groups,
-        loaded.global.showOfficialSkills,
+        view.rows,
+        view.policy.global,
+        view.policy.workspace,
+        view.policy.groups,
+        view.policy.global.showOfficialSkills,
       ),
-      groups: loaded.groups,
-      complete: inventory.complete,
-      warnings: loaded.warnings,
+      groups: view.policy.groups,
+      complete: view.complete,
+      warnings: view.warnings,
       cwd,
       policyPath: workspacePath(cwd),
       live,
-      hidden,
+      hidden: view.hidden,
       stuck,
     },
   }
@@ -289,7 +300,7 @@ async function buildWorkspaceView(
 export async function handleWorkspace(
   ctx: RouteContext,
   body: Record<string, unknown> | null,
-  stuck: () => readonly string[],
+  deps: RouteDeps,
 ): Promise<Envelope<WorkspaceView>> {
   try {
     const sessionId = readString(body, 'sessionId')
@@ -300,7 +311,7 @@ export async function handleWorkspace(
     if (resolved === null) {
       return { ok: false, error: { code: 'unknown-session', message: `未找到会话：${sessionId}` } }
     }
-    return await buildWorkspaceView(ctx, resolved.cwd, resolved.agent, resolved.live, stuck())
+    return await buildWorkspaceView(ctx, resolved.cwd, resolved.agent, resolved.live, deps.stuck(), deps)
   } catch (error) {
     return { ok: false, error: { code: 'internal', message: `读取工作区策略失败：${String(error)}` } }
   }
@@ -392,16 +403,11 @@ export function parseCommands(raw: unknown): { ok: true; commands: Command[] } |
   return { ok: true, commands }
 }
 
-export interface ApplyDeps {
-  readonly reapply: () => Promise<void>
-  readonly stuck: () => readonly string[]
-}
-
 /** `POST api/skill-manager/apply`：`{ sessionId?, commands }`。 */
 export async function handleApply(
   ctx: RouteContext,
   body: Record<string, unknown> | null,
-  deps: ApplyDeps,
+  deps: RouteDeps,
 ): Promise<Envelope<WorkspaceView | GlobalView>> {
   let cwd: string | null = null
   let live = false
@@ -437,10 +443,10 @@ export async function handleApply(
     }
 
     if (cwd === null) {
-      const view = await handleGlobal(ctx)
+      const view = await handleGlobal(ctx, deps)
       return view
     }
-    return await buildWorkspaceView(ctx, cwd, agent, live, deps.stuck())
+    return await buildWorkspaceView(ctx, cwd, agent, live, deps.stuck(), deps)
   } catch (error) {
     return { ok: false, error: { code: 'internal', message: `写入策略失败：${String(error)}` } }
   }

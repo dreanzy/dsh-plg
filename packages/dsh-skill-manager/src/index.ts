@@ -1,5 +1,12 @@
 import { installHooks, type PluginContext } from './hooks.js'
-import { handleApply, handleGlobal, handleWorkspace, type Envelope, type RouteContext } from './routes.js'
+import {
+  handleApply,
+  handleGlobal,
+  handleWorkspace,
+  type Envelope,
+  type RouteContext,
+  type RouteDeps,
+} from './routes.js'
 
 /** 插件名，同时是 bundle patch 的 entry id。 */
 export const name = 'dsh-skill-manager'
@@ -83,6 +90,8 @@ export function apply(ctx: unknown): void {
       return
     }
     const routeCtx: RouteContext = { get: (key) => context.get(key), logger: context.logger }
+    // 与 hooks 共用同一份快照：面板上的隐藏集必须就是会话里生效的那一份。
+    const deps: RouteDeps = { snapshot: hooks.snapshot, reapply: hooks.reapply, stuck: hooks.stuck }
     const disposers: Array<() => unknown> = []
 
     const register = (path: string, handler: (body: Record<string, unknown> | null) => Promise<Envelope<unknown>>): void => {
@@ -93,11 +102,9 @@ export function apply(ctx: unknown): void {
       }
     }
 
-    register(ROUTES.global, () => handleGlobal(routeCtx))
-    register(ROUTES.workspace, (body) => handleWorkspace(routeCtx, body, hooks.stuck))
-    register(ROUTES.apply, (body) =>
-      handleApply(routeCtx, body, { reapply: hooks.reapply, stuck: hooks.stuck }),
-    )
+    register(ROUTES.global, () => handleGlobal(routeCtx, deps))
+    register(ROUTES.workspace, (body) => handleWorkspace(routeCtx, body, deps))
+    register(ROUTES.apply, (body) => handleApply(routeCtx, body, deps))
 
     context.effect(() => () => {
       for (const dispose of disposers) {
