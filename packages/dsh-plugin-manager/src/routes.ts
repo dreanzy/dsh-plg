@@ -121,7 +121,8 @@ const RETRY_AFTER_MS = 60_000
  */
 interface ScanState {
   scanning: Promise<void> | null
-  lastFailureAt: number
+  /** 上一次**发起**扫描的时间。成功但结果残缺时也要靠它限流。 */
+  lastScanAt: number
 }
 
 const scanStates = new WeakMap<CatalogFeed, ScanState>()
@@ -129,7 +130,7 @@ const scanStates = new WeakMap<CatalogFeed, ScanState>()
 function scanStateOf(feed: CatalogFeed): ScanState {
   let state = scanStates.get(feed)
   if (state === undefined) {
-    state = { scanning: null, lastFailureAt: 0 }
+    state = { scanning: null, lastScanAt: 0 }
     scanStates.set(feed, state)
   }
   return state
@@ -165,12 +166,16 @@ async function currentCatalog(
     ctx.logger.warn('dsh-plugin-manager: 读取插件目录缓存失败：' + String(error))
   }
 
-  if (catalog === null && state.scanning === null && Date.now() - state.lastFailureAt >= RETRY_AFTER_MS) {
+  // 残缺缓存也要重扫：有东西可用，但结果不可信。限流用「上次发起扫描的时间」，
+  // 否则「扫描成功但结果残缺」会让每个面板请求都再扫一轮。
+  // 只有明确的 `complete: false` 才算残缺；字段缺席（旧缓存、测试替身）按完整处理，
+  // 与 `parseCatalog` 的缺省一致。
+  if ((catalog === null || catalog.complete === false) && state.scanning === null && Date.now() - state.lastScanAt >= RETRY_AFTER_MS) {
+    state.lastScanAt = Date.now()
     const scanning = feed
       .load()
       .then(() => undefined)
       .catch((error: unknown) => {
-        state.lastFailureAt = Date.now()
         ctx.logger.warn('dsh-plugin-manager: 扫描插件目录失败：' + String(error))
       })
       .finally(() => {
@@ -179,7 +184,7 @@ async function currentCatalog(
     state.scanning = scanning
   }
 
-  return { catalog, pending: catalog === null && state.scanning !== null }
+  return { catalog, pending: (catalog === null || catalog.complete === false) && state.scanning !== null }
 }
 
 /** 工具 schema 的体积口径：投影的 JSON 字符数除以 4 向上取整。 */

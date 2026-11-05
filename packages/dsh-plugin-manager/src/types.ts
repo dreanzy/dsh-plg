@@ -97,4 +97,11 @@ export interface Catalog {
   readonly orphanTools: readonly string[]
   /** 认不出归属的段名。面板只提示，不处理。 */
   readonly orphanSections: readonly string[]
+  /**
+   * 这次扫描是否完整。
+   *
+   * 不完整（撞预算或读不到文件）时结果**仍然落盘**：读侧至少有东西可用，
+   * 但下一次 `loadCatalog` 不会拿它短路扫描——残缺不能被固化成「已完成」。
+   */
+  readonly complete: boolean
 }

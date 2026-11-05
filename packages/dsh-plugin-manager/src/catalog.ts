@@ -184,16 +184,45 @@ function parseCatalog(value: unknown): CachedCatalog | null {
     plugins,
     orphanTools: toStringArray(record['orphanTools']),
     orphanSections: toStringArray(record['orphanSections']),
+    // 缺字段按「完整」处理：手写缓存不必逐项写全，缺省的语义是「没发现问题」。
+    complete: record['complete'] !== false,
     manual: record['manual'] === true,
+  }
+}
+
+/**
+ * 上一次读到的东西与它的文件戳。
+ *
+ * 命中时连 `JSON.parse` 都不做：`agent/created` 每条会话都会读一次，而目录文件
+ * 有几十 KB、几百条插件。`stat` 比「读全文再解析」便宜两个数量级。
+ */
+let memo: { readonly path: string; readonly stamp: string; readonly value: CachedCatalog | null } | null = null
+
+function stampOf(path: string): string {
+  try {
+    const info = statSync(path)
+    return `${String(info.size)}:${String(Math.round(info.mtimeMs))}`
+  } catch {
+    return 'absent'
   }
 }
 
 /** 只读缓存，不触发扫描。装配路径上只允许用它。 */
 export function readCachedCatalog(): Catalog | null {
+  const path = catalogPath()
+  const stamp = stampOf(path)
+  // 取成局部量再判空：`memo` 是可变的，直接访问属性时 TypeScript 收窄不了。
+  const hit = memo
+  // 路径也参与比较：测试与多 profile 场景下 `$DSH_HOME` 会换，只比大小与时间戳会串味。
+  if (hit !== null && hit.path === path && hit.stamp === stamp) {
+    return hit.value === null ? null : toCatalog(hit.value)
+  }
+
   let text: string
   try {
-    text = readFileSync(catalogPath(), 'utf8')
+    text = readFileSync(path, 'utf8')
   } catch {
+    memo = { path, stamp, value: null }
     return null
   }
   let raw: unknown
@@ -201,9 +230,12 @@ export function readCachedCatalog(): Catalog | null {
     raw = JSON.parse(text)
   } catch {
     // 坏 JSON 按空目录处理：目录能重建，抛错只会让面板整页失败。
+    memo = { path, stamp, value: null }
     return null
   }
-  return parseCatalog(raw)
+  const parsed = parseCatalog(raw)
+  memo = { path, stamp, value: parsed }
+  return parsed === null ? null : toCatalog(parsed)
 }
 
 async function readCachedEntry(): Promise<CachedCatalog | null> {
@@ -224,6 +256,7 @@ function toCatalog(entry: CachedCatalog): Catalog {
     plugins: entry.plugins,
     orphanTools: entry.orphanTools,
     orphanSections: entry.orphanSections,
+    complete: entry.complete,
   }
 }
 
@@ -779,11 +812,14 @@ async function writeCatalog(catalog: Catalog): Promise<void> {
           plugins: catalog.plugins,
           orphanTools: catalog.orphanTools,
           orphanSections: catalog.orphanSections,
+          complete: catalog.complete,
         },
         null,
         2,
       ) + '\n'
     await writeFileAtomic(path, body, { mode: 0o600, dirMode: 0o700 })
+    // 写盘后旧的内存副本一定过期。
+    memo = null
   })
 }
 
@@ -833,14 +869,15 @@ export async function loadCatalog(options?: { force?: boolean }): Promise<Catalo
   plugins.sort((left, right) => (left.pkg < right.pkg ? -1 : left.pkg > right.pkg ? 1 : 0))
 
   // 孤儿要跟运行期清单求差才知道，静态扫描给不出来。留空数组，面板自己算。
-  const catalog: Catalog = { key, plugins, orphanTools: [], orphanSections: [] }
+  const catalog: Catalog = { key, plugins, orphanTools: [], orphanSections: [], complete: !truncated }
 
-  if (truncated) {
-    // 撞了预算或读不到文件：这份结果只够这一轮用。写盘会把残缺结果固化成缓存，
-    // 之后每次都要靠人工 force 才修得回来。
-    return catalog
-  }
-
+  /**
+   * **残缺也落盘**，只是带 `complete: false`。
+   *
+   * 以前撞预算或读不到文件就干脆不写，于是 `readCachedCatalog()` 永远返回 null：
+   * 面板停在「识别中」、hooks 侧的策略全程不生效，而每次请求又会重跑一轮 5 秒预算的
+   * 扫描。现在读侧至少有东西可用，`loadCatalog` 也不会拿 `complete: false` 短路扫描。
+   */
   try {
     await writeCatalog(catalog)
   } catch {
