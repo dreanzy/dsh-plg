@@ -430,7 +430,7 @@ window.__ModuleLoader__.load({
         h('div', { style: S.header }, h('h3', { style: S.title }, TITLE)),
         h('p', { style: S.hint },
           scoped
-            ? '这里是当前工作区层。三档模式是三个明确取值；点「跟随」才会删掉本层覆盖、回到上一层。'
+            ? '工作区层：' + ((view && view.cwd) || sessionId || '未知目录') + '。三档模式是明确取值；点「跟随」才会删掉本层覆盖、回到上一层。'
             : '这里是全局层，所有工作区的默认值。某一行的模式决定它的工具怎么进入上下文。'),
         h('ul', { style: { margin: '0 0 14px', padding: '0', listStyle: 'none', display: 'grid', gap: '4px' } },
           MODE_HELP.map((item) =>
