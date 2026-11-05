@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "MCP Manager",
+    "description": "Control which MCP servers a workspace sees and when their tools load, saving tokens on every request."
+  }
+}
