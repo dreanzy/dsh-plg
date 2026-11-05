@@ -7,9 +7,9 @@ import { INVENTORY_SECTION } from './inventory-section.js'
 import { writeFileAtomic } from '@deepseek-ai/dsh-atomic-write'
 import { createPool } from './pool.js'
 import { readOwned, type OwnedServers } from './servers.js'
-import { handleApply, handleGlobal, handleServers, handleWorkspace, lastAppliedCommands, type Envelope, type RouteContext } from './routes.js'
-import { resolveRow } from './policy.js'
+import { handleApply, handleGlobal, handleServers, handleWorkspace, lastAppliedCommands, type Envelope, type RouteContext, type RouteDeps } from './routes.js'
 import { createInventoryState, sectionText, type InventoryState } from './state.js'
+import { createScopeSnapshot, fingerprintOf, type ScopeSnapshot } from './snapshot.js'
 import { diagPath, loadLayers } from './store.js'
 import { createOnDemandTools } from './tools.js'
 import type { LoaderFace } from './types.js'
@@ -114,15 +114,26 @@ function scanOf(context: PluginContext) {
   return scanRows(loader)
 }
 
-/** 建名册缓存：扫描走 Loader，读盘只读全局层（工作区差异留给按 agent 注册）。 */
-function createState(context: PluginContext): InventoryState {
-  return createInventoryState({
+/**
+ * 建共享快照：行发现走 Loader，读盘按 cwd 读两层策略与托管定义。
+ *
+ * 一份实例服务三处：根 state（名册段）、每个 agent 的视图、`mcp_load` 的目标查表。
+ * 这样才能保证「面板上看到的」与「模型能加载的」是同一次求值的结果。
+ */
+function createStore(context: PluginContext): ScopeSnapshot {
+  return createScopeSnapshot({
     scan: () => scanOf(context),
-    load: async () => {
-      const layers = await loadLayers({ cwd: null })
+    load: async (cwd) => {
+      const layers = await loadLayers({ cwd })
       const owned = await readOwned()
-      return { global: layers.global, workspace: layers.workspace, owned: owned.value }
+      return {
+        global: layers.global,
+        workspace: layers.workspace,
+        owned: owned.value,
+        warnings: [...layers.warnings, ...owned.warnings],
+      }
     },
+    fingerprint: fingerprintOf,
   })
 }
 
@@ -156,7 +167,8 @@ function registerInventorySection(context: PluginContext, state: InventoryState)
 
 export function apply(ctx: unknown): void {
   const context = ctx as PluginContext
-  const state = createState(context)
+  const snapshot = createStore(context)
+  const state = createInventoryState(snapshot, null)
   const pool = createPool()
   const baseUrl = typeof context.baseUrl === 'string' ? context.baseUrl : undefined
   const diag: Diagnostics = {
@@ -289,16 +301,17 @@ export function apply(ctx: unknown): void {
     context: { get: (key) => context.get(key), on: (event, listener) => context.on(event, listener), logger: context.logger },
     pool,
     scan: () => scanOf(context),
+    snapshot,
     // 每个 agent 落地后刷新自检快照，省得排查时还要用户手动点开面板。
     onSettled: () => noteRows(),
     // 按该 agent 的 cwd 求值，返回需要罩住的 server 名（dynamic/lazy 行）。
-    shieldedServers: async (_agent, cwd) => {
-      const layers = await loadLayers({ cwd })
-      const scan = scanOf(context)
+    shieldedServers: async (agent, cwd) => {
+      // 用同一份快照：这里以前自己扫一遍 Loader，既重复又漏掉托管行。
+      const view = await snapshot.refresh(cwd, agent)
       const servers: string[] = []
-      for (const row of scan.rows) {
-        const resolved = resolveRow(row.rowKey, layers.workspace, layers.global)
-        if (!resolved.enabled || resolved.mode === 'eager') continue
+      for (const row of view.rows) {
+        const resolved = view.resolved.get(row.rowKey)
+        if (resolved === undefined || !resolved.enabled || resolved.mode === 'eager') continue
         servers.push(row.serverName)
       }
       return servers
@@ -370,6 +383,7 @@ export function apply(ctx: unknown): void {
       return
     }
     const routeCtx: RouteContext = { get: (key) => context.get(key), logger: context.logger }
+    const deps: RouteDeps = { snapshot }
     const disposers: Array<() => unknown> = []
 
     const register = (path: string, handler: Handler): void => {
@@ -401,11 +415,13 @@ register(ROUTES.diag, async () => {
         },
       }
     })
-    register(ROUTES.rows, () => handleGlobal(routeCtx))
-    register(ROUTES.global, () => handleGlobal(routeCtx))
+    register(ROUTES.rows, () => handleGlobal(routeCtx, deps))
+    register(ROUTES.global, () => handleGlobal(routeCtx, deps))
     register(ROUTES.servers, (body) =>
       handleServers(routeCtx, body, {
         afterWrite: async () => {
+          // 托管定义变了：策略与视图都要重读。
+          snapshot.invalidate()
           await state.refresh()
           // 定义变了，已落地会话的视图与闸门都要重算：新增的 server 得能立刻
           // 出现在名册里、并按其模式决定挂不挂。
@@ -416,9 +432,10 @@ register(ROUTES.diag, async () => {
         },
       }),
     )
-    register(ROUTES.workspace, (body) => handleWorkspace(routeCtx, body))
+    register(ROUTES.workspace, (body) => handleWorkspace(routeCtx, body, deps))
     register(ROUTES.apply, (body) =>
       handleApply(routeCtx, body, {
+        snapshot,
         afterWrite: async () => {
           await state.refresh()
           // per-agent 视图不会自己更新：保存后必须重算，否则会话里还是旧名册。

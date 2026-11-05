@@ -1,8 +1,8 @@
 import { scanRows } from './inventory.js'
 import { parseServerDef, readOwned, removeServer, updateOwned, upsertServer, type OwnedServers } from './servers.js'
-import { mergeOwnedRows } from './state.js'
+import { type ScopeSnapshot } from './snapshot.js'
 import { hasLayerEntry, resolveRow } from './policy.js'
-import { applyCommands, globalPath, loadLayers, workspacePath, type Layers, type LoadOptions } from './store.js'
+import { applyCommands, globalPath, workspacePath, type LoadOptions } from './store.js'
 import type { Command, LayerPolicy, LayerSettings, McpRow, ResolvedRow, RowPolicy } from './types.js'
 
 /** 路由层需要的最小 ctx 面。 */
@@ -12,6 +12,16 @@ export interface RouteContext {
 }
 
 export type ErrorCode = 'bad-request' | 'unknown-session' | 'internal'
+
+/**
+ * 路由层依赖。
+ *
+ * `snapshot` 与 hooks 共用同一份：面板看到的行、求值结果与名册必须与模型那边
+ * 是同一次求值的产物，否则会出现「面板显示启用、`mcp_load` 却说 unknown」。
+ */
+export interface RouteDeps {
+  readonly snapshot: ScopeSnapshot
+}
 
 export type Envelope<T> =
   | { readonly ok: true; readonly value: T }
@@ -113,52 +123,59 @@ function entryOf(layer: LayerPolicy | null, rowKey: string): RowPolicy | null {
   return layer.rows[rowKey] ?? null
 }
 
-async function buildView(ctx: RouteContext, layers: Layers, cwd: string | null, live: boolean): Promise<Envelope<RowsView>> {
-  const loader = ctx.get('loader')
-  if (loader === undefined) {
+/**
+ * 由共享快照渲染面板视图。
+ *
+ * 以前这里自己 `scanRows` + `readOwned` + 逐行求值，等于把 hooks 刚算过的东西再算
+ * 一遍；现在两条路径读同一份结果，面板与模型不可能再各说一套。
+ */
+async function buildView(
+  ctx: RouteContext,
+  deps: RouteDeps,
+  cwd: string | null,
+  live: boolean,
+): Promise<Envelope<RowsView>> {
+  if (ctx.get('loader') === undefined) {
     return { ok: false, error: { code: 'internal', message: '宿主没有 loader 服务' } }
   }
-  const scan = scanRows(loader)
-  // 托管定义要一起进视图，否则「新增的 server 在面板里看不见」。
-  const owned = await readOwned()
-  const merged = mergeOwnedRows(scan.rows, owned.value, [...scan.warnings, ...owned.warnings])
-  const rows: RowView[] = merged.rows.map((row) => ({
+  const view = await deps.snapshot.refresh(cwd)
+  const rows: RowView[] = view.rows.map((row) => ({
     ...row,
-    resolved: resolveRow(row.rowKey, layers.workspace, layers.global),
-    globalEntry: entryOf(layers.global, row.rowKey),
-    workspaceEntry: entryOf(layers.workspace, row.rowKey),
+    // 求值结果一定在表里；兜底只为防御快照被换掉的极端情况。
+    resolved: view.resolved.get(row.rowKey) ?? resolveRow(row.rowKey, view.layers.workspace, view.layers.global),
+    globalEntry: entryOf(view.layers.global, row.rowKey),
+    workspaceEntry: entryOf(view.layers.workspace, row.rowKey),
   }))
   return {
     ok: true,
     value: {
       rows,
-      complete: scan.complete,
-      warnings: [...merged.warnings, ...layers.warnings],
+      complete: view.complete,
+      warnings: view.warnings,
       cwd,
       live,
       paths: { global: globalPath(), workspace: cwd === null ? null : workspacePath(cwd) },
       ownedFile: null,
-      settings: layers.global.settings,
+      settings: view.layers.global.settings,
     },
   }
 }
 
-function emptyWorkspace(layers: Layers): Layers {
-  return { global: layers.global, workspace: null, warnings: layers.warnings }
-}
-
 /** 全局视图：只按全局层求值，不需要会话。 */
-export async function handleGlobal(ctx: RouteContext): Promise<Envelope<RowsView>> {
+export async function handleGlobal(ctx: RouteContext, deps: RouteDeps): Promise<Envelope<RowsView>> {
   try {
-    const layers = await loadLayers({ cwd: null })
-    return await buildView(ctx, emptyWorkspace(layers), null, false)
+    return await buildView(ctx, deps, null, false)
   } catch (error) {
     return { ok: false, error: { code: 'internal', message: `读取全局策略失败：${String(error)}` } }
   }
 }
 
 /** 工作区视图：按 `{ sessionId }` 解析 cwd 后两层求值。 */
-export async function handleWorkspace(ctx: RouteContext, body: Record<string, unknown> | null): Promise<Envelope<RowsView>> {
+export async function handleWorkspace(
+  ctx: RouteContext,
+  body: Record<string, unknown> | null,
+  deps: RouteDeps,
+): Promise<Envelope<RowsView>> {
   const sessionId = body === null ? null : readString(body, 'sessionId')
   if (sessionId === null) {
     return { ok: false, error: { code: 'bad-request', message: '缺少 sessionId' } }
@@ -168,8 +185,7 @@ export async function handleWorkspace(ctx: RouteContext, body: Record<string, un
     return { ok: false, error: { code: 'unknown-session', message: `无法解析会话：${sessionId}` } }
   }
   try {
-    const layers = await loadLayers({ cwd: session.cwd })
-    return await buildView(ctx, layers, session.cwd, session.live)
+    return await buildView(ctx, deps, session.cwd, session.live)
   } catch (error) {
     return { ok: false, error: { code: 'internal', message: `读取策略失败：${String(error)}` } }
   }
@@ -259,6 +275,8 @@ export function lastAppliedCommands(): readonly unknown[] {
 
 /** 写入后要做的补偿动作（刷新名册缓存）。失败不影响写入结果。 */
 export interface ApplyHooks {
+  /** 与 hooks、面板共用的那份快照：写入后必须由它来失效。 */
+  readonly snapshot: ScopeSnapshot
   readonly afterWrite?: () => Promise<void>
 }
 
@@ -266,7 +284,7 @@ export interface ApplyHooks {
 export async function handleApply(
   ctx: RouteContext,
   body: Record<string, unknown> | null,
-  hooks: ApplyHooks = {},
+  hooks: ApplyHooks,
 ): Promise<Envelope<RowsView>> {
   const warnings: string[] = []
   const sessionId = body === null ? null : readString(body, 'sessionId')
@@ -287,7 +305,10 @@ export async function handleApply(
   }
   try {
     const options: LoadOptions = { cwd }
-    const layers = await applyCommands(options, commands)
+    await applyCommands(options, commands)
+    // 写入后立刻失效：不依赖 mtime 精度（同毫秒的两次写在 Windows 上会撞车），
+    // 也不等任何 TTL。afterWrite 里的重算因此一定读到新值。
+    hooks.snapshot.invalidate()
     if (hooks.afterWrite !== undefined) {
       try {
         await hooks.afterWrite()
@@ -295,7 +316,7 @@ export async function handleApply(
         ctx.logger.warn(`dsh-mcp-manager: 写入后刷新名册失败：${String(error)}`)
       }
     }
-    const view = await buildView(ctx, layers, cwd, live)
+    const view = await buildView(ctx, { snapshot: hooks.snapshot }, cwd, live)
     if (!view.ok) return view
     return { ok: true, value: { ...view.value, warnings: [...warnings, ...view.value.warnings] } }
   } catch (error) {

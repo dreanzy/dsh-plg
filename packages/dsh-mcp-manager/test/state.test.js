@@ -1,6 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createInventoryState, sectionText } from '../lib/state.js'
+import { createScopeSnapshot } from '../lib/snapshot.js'
 
 const row = (serverName, rowKey) => ({
   rowKey,
@@ -8,15 +9,21 @@ const row = (serverName, rowKey) => ({
   config: { transport: 'stdio', serverName, command: 'node' },
 })
 
+function layerOf(policy) {
+  return { version: 1, rows: policy, settings: { showSidebarEntry: true } }
+}
+
 function stateWith(rows, rowsPolicy = {}, workspacePolicy = null, owned = { version: 1, servers: {} }) {
-  return createInventoryState({
-    scan: () => ({ rows, warnings: [] }),
+  const snapshot = createScopeSnapshot({
+    scan: () => ({ rows, complete: true, warnings: [] }),
     load: async () => ({
-      global: { version: 1, rows: rowsPolicy },
-      workspace: workspacePolicy === null ? null : { version: 1, rows: workspacePolicy },
+      global: layerOf(rowsPolicy),
+      workspace: workspacePolicy === null ? null : layerOf(workspacePolicy),
       owned,
+      warnings: [],
     }),
   })
+  return createInventoryState(snapshot, null)
 }
 
 test('默认模式是 dynamic，行进入名册', async () => {

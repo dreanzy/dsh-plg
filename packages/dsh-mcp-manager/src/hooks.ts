@@ -2,6 +2,7 @@ import { INVENTORY_SECTION } from './inventory-section.js'
 import { denyNamesFor } from './shield.js'
 import type { Pool } from './pool.js'
 import { createInventoryState, sectionText, type InventoryState } from './state.js'
+import { createScopeSnapshot, type ScopeSnapshot } from './snapshot.js'
 import { readOwned } from './servers.js'
 import { loadLayers } from './store.js'
 import { releaseAgent } from './tools.js'
@@ -82,6 +83,11 @@ export interface HookDeps {
   /** Loader 扫描，同步。 */
   readonly scan: () => RowScan
   /**
+   * 共享快照。缺省按 `scan` 与本包的真实读取自建；`index.ts` 会传自己的那份，
+   * 让名册段、`mcp_load` 与闸门读的是同一次求值。
+   */
+  readonly snapshot?: ScopeSnapshot
+  /**
    * 该 agent 在当前工作区里要罩住的 server 名（`dynamic`/`lazy` 行）。
    *
    * 返回空数组表示不罩任何东西（例如全是 `eager`）。抛错时按空处理并只 warn。
@@ -128,6 +134,21 @@ export interface Hooks {
  * 3. 不在 `agent/pre-step` 或 `system-prompt/assemble` 上做异步工作。
  */
 export function installHooks(deps: HookDeps): Hooks {
+  const snapshot =
+    deps.snapshot ??
+    createScopeSnapshot({
+      scan: () => deps.scan(),
+      load: async (cwd) => {
+        const layers = await loadLayers({ cwd })
+        const owned = await readOwned()
+        return {
+          global: layers.global,
+          workspace: layers.workspace,
+          owned: owned.value,
+          warnings: [...layers.warnings, ...owned.warnings],
+        }
+      },
+    })
   const scopes = new WeakMap<object, AgentScope>()
   // WeakMap 不可枚举，但自检需要「现在有哪些 agent 落了地」，所以并行维护一份按 id 的索引。
   const byId = new Map<string, AgentScope>()
@@ -135,16 +156,8 @@ export function installHooks(deps: HookDeps): Hooks {
   let applying = 0
 
   async function reconcile(agent: AgentLike, cwd: string): Promise<AgentScope | null> {
-    const inventory = createInventoryState({
-      scan: () => deps.scan(),
-      load: async () => {
-        const layers = await loadLayers({ cwd })
-        // 托管定义必须一起带上：它们不在 Loader 的 entry 树里，漏了这一步
-        // 名册就是空的、mcp_load 也查不到——而用户的 server 往往正托管在这。
-        const owned = await readOwned()
-        return { global: layers.global, workspace: layers.workspace, owned: owned.value }
-      },
-    })
+    // 求值按 cwd + scope 共享：托管定义、两层策略、行发现结果只读一次。
+    const inventory = createInventoryState(snapshot, cwd, agent)
     await inventory.refresh()
 
     // 先释放上一轮的段：宿主在同一层内禁止同名段重复注册，顺序反了必然抛
