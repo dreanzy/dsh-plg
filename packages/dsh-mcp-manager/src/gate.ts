@@ -49,6 +49,8 @@ function entriesOf(loader: unknown): readonly EntryLike[] {
 export function createGate(deps: GateDeps): Gate {
   let pending = false
   let queued = false
+  /** 是否已经排过一轮由事件触发的重算。 */
+  let scheduled = false
   let off: (() => void) | null = null
   let entryInitEvents = 0
   let reconciles = 0
@@ -98,8 +100,13 @@ export function createGate(deps: GateDeps): Gate {
       try {
         off = deps.context.on('loader/entry-init', () => {
           entryInitEvents += 1
+          // 合并：一次装配风暴里可能有上百条 entry-init，每条各排一轮就是上百次
+          // 全树遍历。只在没有待处理的那一轮时才排。
+          if (scheduled) return
+          scheduled = true
           // entry-init 时 options 还没填，下一个 microtask 才读得到 name 与 serverName。
           queueMicrotask(() => {
+            scheduled = false
             void this.reconcile().catch(() => undefined)
           })
         })
