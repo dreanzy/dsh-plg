@@ -607,7 +607,11 @@ window.__ModuleLoader__.load({
 
         buckets.map((bucket) => {
           const key = bucket.id === null ? '__loose' : bucket.id
-          const isCollapsed = collapsed[key] === true
+          // 默认折叠除「未分组」以外的所有分组：组一多，全展开会把列表拉得很长，
+          // 而用户打开面板通常是想找某一组或搜索。`undefined` 表示用户还没动过它。
+          // 搜索时强制全部展开，否则命中的项藏在折叠的组里，看起来像没搜到。
+          const isCollapsed =
+            query.trim() !== '' ? false : collapsed[key] === undefined ? bucket.id !== null : collapsed[key] === true
           const covered = bucket.rows.filter((row) => itemOverridden(row)).length
           const groupState = bucket.id === null ? null : groupEffective(bucket.id)
           return h(
