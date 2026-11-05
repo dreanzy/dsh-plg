@@ -358,6 +358,8 @@ window.__ModuleLoader__.load({
       }, [])
 
       const dirty = useMemo(() => Object.keys(draft).length, [draft])
+      // 自检快照含工具清单，序列化不便宜；它只随 diag 变化，不该每次渲染重做一遍。
+      const diagText = useMemo(() => (diag === null ? '' : JSON.stringify(diag, null, 2)), [diag])
 
       const save = useCallback(async () => {
         const layer = scoped ? 'workspace' : 'global'
@@ -516,7 +518,7 @@ window.__ModuleLoader__.load({
                   wordBreak: 'break-all',
                   marginTop: '6px',
                 },
-              }, JSON.stringify(diag, null, 2)),
+              }, diagText),
             )
           : null,
         dirty > 0
