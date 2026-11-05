@@ -88,11 +88,11 @@ async function makeWorkspace({ global: globalPolicy, workspace, groups } = {}) {
   return { home, cwd }
 }
 
-function agentFor(cwd, skills) {
+function agentFor(cwd, skills, id = 'agent-1') {
   return {
-    id: 'agent-1',
+    id,
     ctx: { get: (name) => (name === 'skills' ? skills : undefined) },
-    session: { id: 'session-1', header: { cwd } },
+    session: { id: 'session-' + id, header: { cwd } },
   }
 }
 
@@ -185,6 +185,47 @@ test('dev 会话建立后保存策略，reapply 让新决定生效', async () =>
     `${JSON.stringify({ items: {} }, null, 2)}\n`,
   )
   await hooks.reapply()
+  assert.equal(skills.registered.length, 0)
+})
+
+test('多个会话的重新落地并发执行', async () => {
+  const { cwd } = await makeWorkspace({ global: {} })
+  const skills = fakeSkills(rows)
+  const ctx = fakeCtx()
+  const value = {
+    rows,
+    complete: true,
+    hidden: [],
+    policy: {
+      global: { items: {}, groups: {}, showOfficialSkills: false, showSidebarEntry: true },
+      workspace: null,
+      groups: { groups: [], assignments: {} },
+      warnings: [],
+    },
+    warnings: [],
+  }
+  let active = 0
+  let peak = 0
+  const snapshot = {
+    read: () => value,
+    async refresh() {
+      active += 1
+      peak = Math.max(peak, active)
+      // 让出事件循环：串行实现下峰值只能是 1。
+      await new Promise((resolve) => setTimeout(resolve, 10))
+      active -= 1
+      return value
+    },
+    invalidate() {},
+    stats: () => ({ hits: 0, misses: 0, reads: 0, refreshes: 0, size: 0 }),
+  }
+  const hooks = installHooks(ctx, { snapshot })
+  await ctx.emit('agent/created', { agent: agentFor(cwd, skills, 'agent-1') })
+  await ctx.emit('agent/created', { agent: agentFor(cwd, skills, 'agent-2') })
+
+  peak = 0
+  await hooks.reapply()
+  assert.equal(peak, 2)
   assert.equal(skills.registered.length, 0)
 })
 

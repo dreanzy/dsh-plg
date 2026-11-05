@@ -1,5 +1,5 @@
-import { createResolver, hiddenNames } from './policy.js'
-import { readInventory, type SkillSummaryLike, type SkillsFace } from './inventory.js'
+import { type Inventory, type SkillSummaryLike, type SkillsFace } from './inventory.js'
+import { createScopeSnapshot, fingerprintOf, type ScopeSnapshot } from './snapshot.js'
 import { loadState } from './store.js'
 
 /** 宿主 ctx 的最小面：订阅、纳管、取服务、记日志。 */
@@ -169,15 +169,66 @@ async function buildShadows(
  *
  * 策略不冻结：每次重新落地都重读两层文件，所以保存的效果落在下一个回合边界。
  */
+export interface HooksOptions {
+  /** 注入一份共享快照；缺省按本包的真实读取自建。测试用它绕开文件系统。 */
+  readonly snapshot?: ScopeSnapshot
+}
+
 export function installHooks(
   ctx: PluginContext,
+  options?: HooksOptions,
 ): {
   reapply: () => Promise<void>
   bootstrap: () => Promise<void>
   stopAll: () => void
   stuck: () => readonly string[]
+  /** 与落地共用的那份求值缓存。路由要用同一份，否则面板与模型看到的会分叉。 */
+  snapshot: ScopeSnapshot
 } {
   const states = new Map<string, AgentState>()
+  /**
+   * scope 对象 → agent 的索引。
+   *
+   * 快照的键是「cwd + scope 身份」，而读清单必须用该 agent 自己的 skills 实例
+   * （`register()` 用 `scopeOf(ctx)` 决定落到哪一层）。刷新时只拿得到 scope 对象，
+   * 所以在这里反查回 agent。
+   */
+  const agentByScope = new WeakMap<object, AgentLike>()
+
+  const rootSkills = (): SkillsFace | null => {
+    try {
+      const service = ctx.get('skills')
+      return typeof service === 'object' && service !== null ? (service as SkillsFace) : null
+    } catch {
+      return null
+    }
+  }
+
+  /**
+   * 读一份**未缓存**的清单。
+   *
+   * 刻意不复用 `inventory.ts` 的 `readInventory`：它的缓存键不含 scope 身份，会让
+   * 不同 preset 的会话读到彼此的清单。缓存统一由 `ScopeSnapshot` 负责。
+   */
+  const readFresh = async (cwd: string | null, scope: unknown): Promise<Inventory> => {
+    const agent = typeof scope === 'object' && scope !== null ? agentByScope.get(scope) : undefined
+    const skills = agent === undefined ? rootSkills() : scopedSkills(agent)
+    if (skills === null) throw new Error('取不到 skills 服务，无法读取清单')
+    const request: { cwd?: string; scope?: unknown } = {}
+    if (cwd !== null && cwd !== '') request.cwd = cwd
+    if (scope !== undefined) request.scope = scope
+    const result = await skills.snapshot(request)
+    return { rows: result.skills, complete: result.complete }
+  }
+
+  const snapshot =
+    options?.snapshot ??
+    createScopeSnapshot({
+      loadPolicy: (cwd) => loadState(cwd),
+      readInventory: readFresh,
+      fingerprint: fingerprintOf,
+    })
+
   /**
    * 本插件正在落地时的计数。
    *
@@ -207,26 +258,18 @@ export function installHooks(
       return
     }
 
-    const loaded = await loadState(cwd)
-    for (const warning of loaded.warnings) ctx.logger.warn(`dsh-skill-manager: ${warning}`)
-
-    // 求值始终用全量清单（含官方技能）：官方技能只是面板默认不展示，
-    // 一旦用户把它们放出来并关掉，「显示官方技能」开关再关回去，那条决定仍然有效。
-    const inventory = await readInventory(skills, cwd, state.agent.raw)
-    if (!inventory.complete) {
+    // 求值按 cwd + scope 共享：同一会话的多次落地（created、清单变更、保存、
+    // 插件重载）只在策略或清单真的变了之后才重新读盘。
+    // 清单始终是全量的（含官方技能）：官方技能只是面板默认不展示，一旦用户把它们
+    // 放出来并关掉，「显示官方技能」开关再关回去，那条决定仍然有效。
+    const view = await snapshot.refresh(cwd, state.agent.raw)
+    for (const warning of view.warnings) ctx.logger.warn(`dsh-skill-manager: ${warning}`)
+    if (!view.complete) {
       ctx.logger.warn(`dsh-skill-manager: skill 清单不完整，本轮不改变遮蔽（agent=${state.agent.id}）`)
       return
     }
 
-    const resolver = createResolver({
-      workspace: loaded.workspace,
-      global: loaded.global,
-      assignments: loaded.groups.assignments,
-    })
-    const hidden = hiddenNames(
-      inventory.rows.map((row) => row.name),
-      resolver,
-    )
+    const hidden = view.hidden
     const key = hidden.join(',')
     if (key === state.key) return
 
@@ -241,7 +284,7 @@ export function installHooks(
       return
     }
 
-    const built = await buildShadows(ctx, skills, inventory.rows, hidden, cwd, state.agent.raw)
+    const built = await buildShadows(ctx, skills, view.rows, hidden, cwd, state.agent.raw)
     state.dispose = built.dispose
     state.stuck = built.stuck
     state.key = key
@@ -259,6 +302,7 @@ export function installHooks(
     }
     const state: AgentState = { agent, dispose: null, key: '', stuck: [] }
     states.set(agent.id, state)
+    if (typeof agent.raw === 'object' && agent.raw !== null) agentByScope.set(agent.raw, agent)
     try {
       // 这个事件的监听器抛错会让会话创建失败，所以一律吞掉降级。
       await guarded(async () => {
@@ -287,13 +331,19 @@ export function installHooks(
   const onChange = async (): Promise<void> => {
     if (applying > 0) return
     await guarded(async () => {
-      for (const state of states.values()) {
-        try {
-          await applyOne(state)
-        } catch (error) {
-          ctx.logger.warn(`dsh-skill-manager: 清单变化后重新落地失败（agent=${state.agent.id}）：${String(error)}`)
-        }
-      }
+      // 并发而不是串行：不同 agent 落在各自的 scope 上，互不依赖；同键的刷新由
+      // `ScopeSnapshot` 单飞合并，所以并发不会把一次变更放大成 N 次读盘。
+      await Promise.all(
+        [...states.values()].map(async (state) => {
+          try {
+            await applyOne(state)
+          } catch (error) {
+            ctx.logger.warn(
+              `dsh-skill-manager: 清单变化后重新落地失败（agent=${state.agent.id}）：${String(error)}`,
+            )
+          }
+        }),
+      )
     })
   }
 
@@ -307,6 +357,9 @@ export function installHooks(
    * 保存成功后由路由显式调用这里，否则同一会话里改策略要等新会话才生效。
    */
   const reapply = async (): Promise<void> => {
+    // 策略刚被写盘：显式失效，不靠 mtime 精度。同毫秒内的两次写在 Windows 上
+    // 可能得到同一个时间戳，靠指纹会漏掉第二次。
+    snapshot.invalidate()
     await onChange()
   }
 
@@ -354,6 +407,7 @@ export function installHooks(
       if (agent === null || states.has(agent.id) || cwdOf(agent) === null) continue
       const state: AgentState = { agent, dispose: null, key: '', stuck: [] }
       states.set(agent.id, state)
+      if (typeof agent.raw === 'object' && agent.raw !== null) agentByScope.set(agent.raw, agent)
       try {
         await guarded(async () => {
           await applyOne(state)
@@ -368,6 +422,7 @@ export function installHooks(
     reapply,
     bootstrap,
     stopAll,
+    snapshot,
     stuck: () => {
       const out = new Set<string>()
       for (const state of states.values()) for (const name of state.stuck) out.add(name)
