@@ -249,6 +249,10 @@ window.__ModuleLoader__.load({
         enabled: 'enabled' in patch ? patch.enabled : row.resolved.enabled,
         mode: 'mode' in patch ? patch.mode : (layer === 'workspace' ? ownMode : (ownMode ?? row.resolved.mode)),
         description: 'description' in patch ? patch.description : row.resolved.description,
+        // 工具规则以数组存盘，界面上用逗号分隔的字符串编辑。
+        tools: 'tools' in patch
+          ? patch.tools
+          : ((ownEntry && Array.isArray(ownEntry.tools) ? ownEntry.tools : row.resolved.tools) || []).join(', '),
       }
     }
 
@@ -314,6 +318,12 @@ window.__ModuleLoader__.load({
           placeholder: '名册里显示的描述（留空则只显示名字）',
           onChange: (event) => onPatch(row.rowKey, { description: event.target.value }),
         }),
+        h('input', {
+          style: S.input,
+          value: value.tools,
+          placeholder: '工具规则，逗号分隔：read_* 表示只留这些，!delete_* 表示排除这些（留空则不筛）',
+          onChange: (event) => onPatch(row.rowKey, { tools: event.target.value }),
+        }),
       )
     }
 
@@ -365,6 +375,10 @@ window.__ModuleLoader__.load({
           }
           if ('description' in patch && typeof patch.description === 'string') {
             commands.push({ op: 'description', layer, rowKey, value: patch.description === '' ? null : patch.description })
+          }
+          if ('tools' in patch && typeof patch.tools === 'string') {
+            const rules = patch.tools.split(',').map((item) => item.trim()).filter((item) => item !== '')
+            commands.push({ op: 'tools', layer, rowKey, value: rules.length === 0 ? null : rules })
           }
         }
         if (commands.length === 0) return
@@ -552,6 +566,22 @@ window.__ModuleLoader__.load({
             onClick: (event) => event.stopPropagation(),
           },
           h(SettingsPanel, { sessionId }),
+          // 与另两个面板一致：底部固定一个关闭入口，不必去点遮罩。
+          h(
+            'div',
+            {
+              style: {
+                position: 'sticky',
+                bottom: 0,
+                display: 'flex',
+                justifyContent: 'flex-end',
+                padding: '10px 14px',
+                borderTop: '1px solid ' + T.border,
+                background: T.surface,
+              },
+            },
+            h('button', { type: 'button', style: S.button, onClick: () => setOverlay(false) }, '关闭'),
+          ),
         ),
       )
     }
