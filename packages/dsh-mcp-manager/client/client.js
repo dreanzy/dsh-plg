@@ -258,12 +258,13 @@ window.__ModuleLoader__.load({
       return h(
         'div',
         { style: S.card },
+        // 第一行只放元信息：名字长短不同也不会把控件挤到下一行。
         h(
           'div',
-          { style: S.row },
+          { style: { ...S.row, gap: '8px' } },
           h('span', { style: S.name }, row.serverName),
           h('span', { style: S.meta }, row.transport === 'stdio' ? 'stdio' : 'HTTP'),
-          h('span', { style: S.meta }, (row.source === 'managed' ? '托管 · ' : '来源 ' + row.source + ' · ') + from),
+          h('span', { style: S.meta }, (row.source === 'managed' ? '托管' : row.source) + ' · ' + from),
           h(
             'span',
             { style: S.meta },
@@ -272,7 +273,11 @@ window.__ModuleLoader__.load({
               : (row.globalEntry ? '全局已覆盖' : '全局默认'),
           ),
           row.owned ? h('span', { style: S.meta }, '可写') : h('span', { style: S.meta }, '只读定义'),
-          h('span', { style: S.spacer }),
+        ),
+        // 第二行固定是控件，所有卡片在同一位置对齐。
+        h(
+          'div',
+          { style: { ...S.row, marginTop: '8px', gap: '6px' } },
           h(Segmented, { value: value.mode, onChange: (mode) => onPatch(row.rowKey, { mode }) }),
           layer === 'workspace'
             ? h(
@@ -300,6 +305,7 @@ window.__ModuleLoader__.load({
                 '删除',
               )
             : null,
+          h('span', { style: S.spacer }),
           h(Switch, { on: value.enabled, onChange: () => onPatch(row.rowKey, { enabled: !value.enabled }), label: row.serverName }),
         ),
         h('input', {
