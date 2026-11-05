@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
-import { closeSync, openSync, readFileSync, readSync, statSync } from 'node:fs'
-import { mkdir, readdir, readFile, stat } from 'node:fs/promises'
+import { readFileSync, statSync } from 'node:fs'
+import { mkdir, open, readdir, readFile, stat } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { withFileLock, writeFileAtomic } from '@deepseek-ai/dsh-atomic-write'
@@ -36,7 +36,8 @@ import type { Catalog, PluginContribution } from './types.js'
  *
  * ## 缓存
  *
- * 指纹 = 各候选包 `name@version@入口 mtime@lib 最大 mtime` 拼串的 sha256 前 16 位。
+ * 指纹 = 各候选包 `name@version@入口 mtime@lib 最大 mtime@文件数@总字节数` 拼串的
+ * sha256 前 16 位。后两项挡「删掉非最新文件」与「同毫秒改写」。
  * 命中就只读 package.json 与 stat，不读任何 js 内容。
  */
 
@@ -413,21 +414,22 @@ function classifyRoot(path: string): { kind: 'archive' | 'dir'; path: string } |
   return null
 }
 
-/** 读 asar 头。解不开就当没有官方包，不抛错。 */
-function readAsarIndex(archive: string): AsarIndex | null {
-  let fd: number
-  try {
-    fd = openSync(archive, 'r')
-  } catch {
-    return null
-  }
+/**
+ * 读 asar 头。解不开就当没有官方包，不抛错。
+ *
+ * 这里用异步 IO：头最大允许 64 MB，同步读会把主线程（以及 libuv 线程池）占住，
+ * 而这发生在插件启动的预热路径上。异步之后诊断与请求都能插进来。
+ */
+async function readAsarIndex(archive: string): Promise<AsarIndex | null> {
+  const handle = await open(archive, 'r').catch(() => null)
+  if (handle === null) return null
   try {
     const head = Buffer.alloc(16)
-    if (readSync(fd, head, 0, 16, 0) !== 16) return null
+    if ((await handle.read(head, 0, 16, 0)).bytesRead !== 16) return null
     const jsonLength = head.readUInt32LE(12)
     if (jsonLength <= 0 || jsonLength > 64 * 1024 * 1024) return null
     const raw = Buffer.alloc(jsonLength)
-    if (readSync(fd, raw, 0, jsonLength, 16) !== jsonLength) return null
+    if ((await handle.read(raw, 0, jsonLength, 16)).bytesRead !== jsonLength) return null
     const header = asRecord(JSON.parse(raw.toString('utf8')))
     if (header === null) return null
 
@@ -457,28 +459,28 @@ function readAsarIndex(archive: string): AsarIndex | null {
   } catch {
     return null
   } finally {
-    closeSync(fd)
+    await handle.close().catch(() => undefined)
   }
 }
 
-function readAsarEntry(archive: string, dataOffset: number, entry: AsarEntry): string {
-  const fd = openSync(archive, 'r')
+async function readAsarEntry(archive: string, dataOffset: number, entry: AsarEntry): Promise<string> {
+  const handle = await open(archive, 'r')
   try {
     const buffer = Buffer.alloc(entry.size)
-    readSync(fd, buffer, 0, entry.size, dataOffset + entry.offset)
+    await handle.read(buffer, 0, entry.size, dataOffset + entry.offset)
     return buffer.toString('utf8')
   } finally {
-    closeSync(fd)
+    await handle.close().catch(() => undefined)
   }
 }
 
 /** 官方包：asar 里的 `dsh/node_modules/@deepseek-ai/<包>`。 */
-function collectArchivePackages(archive: string): PackageCandidate[] {
-  const index = readAsarIndex(archive)
+async function collectArchivePackages(archive: string): Promise<PackageCandidate[]> {
+  const index = await readAsarIndex(archive)
   if (index === null) return []
   let archiveMtime = 0
   try {
-    archiveMtime = Math.round(statSync(archive).mtimeMs)
+    archiveMtime = Math.round((await stat(archive)).mtimeMs)
   } catch {
     archiveMtime = 0
   }
@@ -517,7 +519,7 @@ function collectArchivePackages(archive: string): PackageCandidate[] {
     let main = 'lib/index.js'
     if (manifestEntry !== undefined) {
       try {
-        const manifest = asRecord(JSON.parse(readAsarEntry(archive, index.dataOffset, manifestEntry)))
+        const manifest = asRecord(JSON.parse(await readAsarEntry(archive, index.dataOffset, manifestEntry)))
         if (manifest !== null) {
           if (typeof manifest['version'] === 'string') version = manifest['version']
           if (typeof manifest['main'] === 'string' && manifest['main'] !== '') main = manifest['main']
@@ -591,18 +593,41 @@ async function collectCandidates(deadline: number): Promise<PackageCandidate[]> 
     if (root.kind === 'dir') {
       for (const candidate of await collectOfficialDirPackages(root.path, deadline)) push(candidate)
     } else {
-      for (const candidate of collectArchivePackages(root.path)) push(candidate)
+      for (const candidate of await collectArchivePackages(root.path)) push(candidate)
     }
   }
   return out
 }
 
-/** 指纹：每个候选包 `name@version@入口 mtime@lib 最大 mtime`，排序后取 sha256 前 16 位。 */
-function fingerprint(candidates: readonly PackageCandidate[]): string {
+/**
+ * 指纹：每个候选包 `name@version@入口 mtime@lib 最大 mtime@文件数@总字节数`，
+ * 排序后取 sha256 前 16 位。
+ *
+ * 后两项不是冗余：只比「最大 mtime」时，删掉一个非最新的 js（最大值不变）、或
+ * 同毫秒内改写（时间戳不变）都会得到同一个指纹，于是缓存永远陈旧且没有提示。
+ * 文件数挡第一种，字节数挡第二种的大部分。
+ */
+export function fingerprint(candidates: readonly PackageCandidate[]): string {
   const lines = candidates.map((candidate) => {
     let newest = 0
-    for (const file of candidate.lib) if (file.mtime > newest) newest = file.mtime
-    return candidate.name + '@' + candidate.version + '@' + (candidate.entry?.mtime ?? 0) + '@' + newest
+    let bytes = 0
+    for (const file of candidate.lib) {
+      if (file.mtime > newest) newest = file.mtime
+      bytes += file.size
+    }
+    return (
+      candidate.name +
+      '@' +
+      candidate.version +
+      '@' +
+      (candidate.entry?.mtime ?? 0) +
+      '@' +
+      newest +
+      '@' +
+      String(candidate.lib.length) +
+      '@' +
+      String(bytes)
+    )
   })
   lines.sort()
   return createHash('sha256').update(lines.join('\n')).digest('hex').slice(0, 16)

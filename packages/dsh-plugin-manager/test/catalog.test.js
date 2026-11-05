@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { mkdir, mkdtemp, readFile, utimes, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { tmpdir } from 'node:os'
-import { catalogPath, loadCatalog, readCachedCatalog, scanStats } from '../lib/catalog.js'
+import { catalogPath, fingerprint, loadCatalog, readCachedCatalog, scanStats } from '../lib/catalog.js'
 
 /**
  * 假 profile：`package.json` 带 `dsh.profile.bundles`（识别 profile 的唯一判据），
@@ -286,4 +286,35 @@ test('模板段名不算残缺：仍然写盘，第二次命中缓存', async ()
   assert.notEqual(cached, null)
   await loadCatalog()
   assert.equal(scanStats.scans, scanned)
+})
+
+function candidateOf(overrides = {}) {
+  const file = (path, size, mtime) => ({ path, size, mtime, read: async () => '' })
+  return {
+    name: 'plug-a',
+    version: '1.0.0',
+    entry: file('/p/a.js', 10, 100),
+    lib: [file('/p/lib/b.js', 20, 50), file('/p/lib/c.js', 30, 40)],
+    ...overrides,
+  }
+}
+
+test('指纹对「删掉非最新文件」敏感', () => {
+  const base = fingerprint([candidateOf()])
+  // c.js 的 mtime 40 不是最大（50），只比 max mtime 的话删掉它指纹不变。
+  const dropped = fingerprint([candidateOf({ lib: [candidateOf().lib[0]] })])
+  assert.notEqual(base, dropped)
+})
+
+test('指纹对「同 mtime 但字节数变化」敏感', () => {
+  const base = fingerprint([candidateOf()])
+  const file = (path, size, mtime) => ({ path, size, mtime, read: async () => '' })
+  const grown = fingerprint([
+    candidateOf({ lib: [file('/p/lib/b.js', 21, 50), file('/p/lib/c.js', 30, 40)] }),
+  ])
+  assert.notEqual(base, grown)
+})
+
+test('指纹对同一批候选稳定', () => {
+  assert.equal(fingerprint([candidateOf()]), fingerprint([candidateOf()]))
 })
