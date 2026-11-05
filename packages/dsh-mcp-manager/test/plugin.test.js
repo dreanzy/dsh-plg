@@ -49,16 +49,14 @@ test('插件声明', () => {
   assert.deepEqual([...inject], ['loader'])
 })
 
-test('apply 注册名册段与四条路由', () => {
+test('apply 注册四条路由，且不在 root 上注册名册段', () => {
   systemPrompt.__sections.length = 0
   connection.__routes.length = 0
   const ctx = fakeCtx({ loader: fakeLoader([mcpEntry({ id: 'a', serverName: 'playwright' })]), systemPrompt, connection: connection() })
   apply(ctx)
+  // root 段故意不注册：宿主禁止同层同名段重复注册，root 段会让每个 agent 的段都冲突。
   const section = systemPrompt.__sections.find((spec) => spec.name === INVENTORY_SECTION)
-  assert.ok(section, '名册段未注册')
-  assert.equal(section.order, 3100)
-  assert.equal(section.interpolate, false)
-  assert.equal(typeof section.text, 'function')
+  assert.equal(section, undefined, 'root 段不该被注册')
   const paths = connection.__routes.map((spec) => spec.path).sort()
   assert.deepEqual(paths, [
     '/api/mcp-manager/apply',
@@ -80,19 +78,6 @@ async function waitFor(check, timeoutMs = 3000) {
   }
   return check()
 }
-
-test('名册段文本来自首次重算', async () => {
-  systemPrompt.__sections.length = 0
-  const ctx = fakeCtx({ loader: fakeLoader([mcpEntry({ id: 'a', serverName: 'playwright' })]), systemPrompt, connection: connection() })
-  apply(ctx)
-  const section = systemPrompt.__sections.find((spec) => spec.name === INVENTORY_SECTION)
-  const text = await waitFor(() => {
-    const current = section.text()
-    return current.includes('playwright') ? current : null
-  })
-  assert.match(String(text), /playwright/u)
-  assert.match(String(text), /mcp_load/u)
-})
 
 test('没有 systemPrompt 时不抛错，只 warn', () => {
   const ctx = fakeCtx({ loader: fakeLoader([]), connection: connection() })

@@ -2,6 +2,7 @@ import { INVENTORY_SECTION } from './inventory-section.js'
 import { denyNamesFor } from './shield.js'
 import type { Pool } from './pool.js'
 import { createInventoryState, sectionText, type InventoryState } from './state.js'
+import { readOwned } from './servers.js'
 import { loadLayers } from './store.js'
 import { releaseAgent } from './tools.js'
 import type { RowScan } from './types.js'
@@ -67,6 +68,8 @@ export interface AgentScope {
   readonly cwd: string
   readonly inventory: InventoryState
   disposeSection: (() => void) | null
+  /** 段注册失败的原因；null 表示没失败。 */
+  sectionError: string | null
   /** 罩住全局工具的 disposer；null 表示这次没有需要罩住的。 */
   disposeRestrict: (() => void) | null
 }
@@ -74,6 +77,8 @@ export interface AgentScope {
 export interface HookDeps {
   readonly context: EventContext
   readonly pool: Pool
+  /** 一个 agent 落地完成后调用，用来刷新自检快照。失败被忽略。 */
+  readonly onSettled?: () => void
   /** Loader 扫描，同步。 */
   readonly scan: () => RowScan
   /**
@@ -88,8 +93,25 @@ export interface Hooks {
   dispose(): void
   /** 重载后补一次：已有会话不会再收到 agent/created。 */
   bootstrap(): Promise<void>
-  /** 面板按会话查询用。 */
+  /** 策略或托管定义变化后重算所有已落地会话。 */
+  reconcileAll(): Promise<void>
+  /** 按 agent 对象或 id 查已落地的 scope。 */
   scopeOf(agent: object): AgentScope | null
+  /**
+   * 自检：已落地的 agent 与各自的名册行数。
+   *
+   * `hasSection` 是最要紧的一项：它回答「这个会话的名册段到底注册上了没有」，
+   * 而 `rows` 是「注册的内容有几行」。
+   */
+  stats(): {
+    readonly agents: readonly {
+      readonly id: string
+      readonly cwd: string
+      readonly rows: number
+      readonly hasSection: boolean
+      readonly sectionError: string | null
+    }[]
+  }
 }
 
 /**
@@ -107,6 +129,8 @@ export interface Hooks {
  */
 export function installHooks(deps: HookDeps): Hooks {
   const scopes = new WeakMap<object, AgentScope>()
+  // WeakMap 不可枚举，但自检需要「现在有哪些 agent 落了地」，所以并行维护一份按 id 的索引。
+  const byId = new Map<string, AgentScope>()
   const offs: Array<() => void> = []
   let applying = 0
 
@@ -115,14 +139,32 @@ export function installHooks(deps: HookDeps): Hooks {
       scan: () => deps.scan(),
       load: async () => {
         const layers = await loadLayers({ cwd })
-        return { global: layers.global, workspace: layers.workspace }
+        // 托管定义必须一起带上：它们不在 Loader 的 entry 树里，漏了这一步
+        // 名册就是空的、mcp_load 也查不到——而用户的 server 往往正托管在这。
+        const owned = await readOwned()
+        return { global: layers.global, workspace: layers.workspace, owned: owned.value }
       },
     })
     await inventory.refresh()
 
+    // 先释放上一轮的段：宿主在同一层内禁止同名段重复注册，顺序反了必然抛
+    // 「already registered in this scope」，而且会把旧 disposer 丢掉。
+    const previous = scopes.get(agent as object)
+    if (previous !== undefined && previous.disposeSection !== null) {
+      try {
+        previous.disposeSection()
+      } catch {
+        // 旧段释放失败不影响新段。
+      }
+    }
+
     let disposeSection: (() => void) | null = null
+    let sectionError: string | null = null
     const prompt = promptOf(agent)
     const section = prompt?.['section']
+    if (prompt === null) {
+      sectionError = 'agent.ctx.get("systemPrompt") 拿不到服务'
+    }
     if (typeof section === 'function') {
       try {
         const disposer = (section as (spec: unknown) => unknown).call(prompt, {
@@ -135,6 +177,7 @@ export function installHooks(deps: HookDeps): Hooks {
         })
         if (typeof disposer === 'function') disposeSection = disposer as () => void
       } catch (error) {
+        sectionError = String(error)
         deps.context.logger.warn(`dsh-mcp-manager: 为 ${agent.id} 注册名册段失败：${String(error)}`)
       }
     }
@@ -160,21 +203,21 @@ export function installHooks(deps: HookDeps): Hooks {
       deps.context.logger.warn(`dsh-mcp-manager: 为 ${agent.id} 罩住 MCP 工具失败：${String(error)}`)
     }
 
-    const previous = scopes.get(agent as object)
     if (previous !== undefined) {
-      try {
-        previous.disposeSection?.()
-      } catch {
-        // 旧段释放失败不影响新段。
-      }
       try {
         previous.disposeRestrict?.()
       } catch {
         // 同上。
       }
     }
-    const scope: AgentScope = { agent, cwd, inventory, disposeSection, disposeRestrict }
+    const scope: AgentScope = { agent, cwd, inventory, disposeSection, sectionError, disposeRestrict }
     scopes.set(agent as object, scope)
+    byId.set(agent.id, scope)
+    try {
+      deps.onSettled?.()
+    } catch {
+      // 自检刷新失败不影响落地。
+    }
     return scope
   }
 
@@ -225,6 +268,7 @@ export function installHooks(deps: HookDeps): Hooks {
       }
     }
     scopes.delete(agent as object)
+    byId.delete(agent.id)
     releaseAgent(agent as object, deps.pool)
   }
 
@@ -285,8 +329,33 @@ export function installHooks(deps: HookDeps): Hooks {
         }
       }
     },
+    async reconcileAll() {
+      for (const scope of [...byId.values()]) {
+        try {
+          await reconcile(scope.agent, scope.cwd)
+        } catch (error) {
+          deps.context.logger.warn(`dsh-mcp-manager: 重算失败（agent=${scope.agent.id}）：${String(error)}`)
+        }
+      }
+    },
     scopeOf(agent) {
-      return scopes.get(agent) ?? null
+      const direct = scopes.get(agent)
+      if (direct !== undefined) return direct
+      // 对象身份优先；取不到时按 id 兜底——工具执行时拿到的 agent 包装
+      // 与 agent/created 里那个未必是同一个对象。
+      const id = (agent as { id?: unknown }).id
+      return typeof id === 'string' ? byId.get(id) ?? null : null
+    },
+    stats() {
+      return {
+        agents: [...byId.values()].map((scope) => ({
+          id: scope.agent.id,
+          cwd: scope.cwd,
+          rows: scope.inventory.snapshot().length,
+          hasSection: scope.disposeSection !== null,
+          sectionError: scope.sectionError,
+        })),
+      }
     },
   }
 }

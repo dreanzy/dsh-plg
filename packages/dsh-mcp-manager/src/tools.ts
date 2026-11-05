@@ -17,8 +17,13 @@ export interface OnDemandDeps {
   /** 宿主 `defineTool`，由 loader 注入。 */
   readonly defineTool: (options: unknown) => unknown
   readonly pool: Pool
-  /** 按名字找行。找不到返回 null，调用方负责报错文案。 */
-  readonly resolveTarget: (name: string) => ToolTarget | null
+  /**
+   * 按名字找行，**按调用方 agent 的工作区求值**。
+   *
+   * 只查全局层会让「工作区里启用、全局里禁用」的行永远加载不了——
+   * 那正是按工作区区分的意义所在。
+   */
+  readonly resolveTarget: (name: string, agent: unknown) => ToolTarget | null
   /** 取宿主适配器；失败时抛出可读错误。 */
   readonly resolveFactory: () => Promise<DefinitionFactory>
   readonly logger: { warn(message: string): void }
@@ -157,7 +162,7 @@ export function createOnDemandTools(deps: OnDemandDeps): { load: unknown; unload
       if (agent === null) throw new Error('mcp_load must run inside an agent session')
       const name = typeof args['server'] === 'string' ? args['server'].trim() : ''
       if (name === '') throw new Error('mcp_load requires a server name')
-      const target = deps.resolveTarget(name)
+      const target = deps.resolveTarget(name, agent)
       if (target === null) {
         throw new Error(
           `unknown or disabled MCP server "${name}" — load one of the MCP servers listed in your system prompt`,
@@ -267,7 +272,7 @@ export function createOnDemandTools(deps: OnDemandDeps): { load: unknown; unload
       const agent = agentOf(exec)
       if (agent === null) throw new Error('mcp_unload must run inside an agent session')
       const name = typeof args['server'] === 'string' ? args['server'].trim() : ''
-      const target = deps.resolveTarget(name)
+      const target = deps.resolveTarget(name, agent)
       const serverName = target?.serverName ?? name
       const perAgent = loadedOf(agent)
       const key = target?.rowKey ?? [...perAgent.keys()].find((candidate) => candidate.endsWith(':' + name))
@@ -301,7 +306,7 @@ export function createOnDemandTools(deps: OnDemandDeps): { load: unknown; unload
       const name = typeof args['server'] === 'string' ? args['server'].trim() : ''
       const tool = typeof args['tool'] === 'string' ? args['tool'].trim() : ''
       if (name === '' || tool === '') throw new Error('mcp_call requires both server and tool')
-      const target = deps.resolveTarget(name)
+      const target = deps.resolveTarget(name, agent)
       if (target === null) {
         throw new Error(`unknown or disabled MCP server "${name}" — load it first with mcp_load`)
       }

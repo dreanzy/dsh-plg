@@ -8,12 +8,13 @@ const row = (serverName, rowKey) => ({
   config: { transport: 'stdio', serverName, command: 'node' },
 })
 
-function stateWith(rows, rowsPolicy = {}, workspacePolicy = null) {
+function stateWith(rows, rowsPolicy = {}, workspacePolicy = null, owned = { version: 1, servers: {} }) {
   return createInventoryState({
     scan: () => ({ rows, warnings: [] }),
     load: async () => ({
       global: { version: 1, rows: rowsPolicy },
       workspace: workspacePolicy === null ? null : { version: 1, rows: workspacePolicy },
+      owned,
     }),
   })
 }
@@ -65,4 +66,31 @@ test('serverName 匹配不区分大小写', async () => {
   assert.ok(state.target('unitymcp8082'))
   assert.ok(state.target('UNITYMCP8082'))
   assert.equal(state.target('other'), null)
+})
+test('托管定义会并进行视图，并按工作区开关求值', async () => {
+  const owned = {
+    version: 1,
+    servers: {
+      unity: { transport: 'streamable-http', url: 'http://127.0.0.1:8080/mcp', headers: {} },
+    },
+  }
+  // 全局禁用、工作区启用：这是最容易被漏掉的一条路径。
+  const state = stateWith(
+    [],
+    { 'own:unity': { enabled: false, mode: 'lazy' } },
+    { 'own:unity': { enabled: true } },
+    owned,
+  )
+  await state.refresh()
+  assert.deepEqual(state.snapshot().map((item) => item.serverName), ['unity'])
+  assert.ok(state.target('unity'))
+  assert.equal(state.target('unity').mode, 'lazy')
+})
+
+test('托管定义与 Loader 行同名时保留 Loader 行', async () => {
+  const owned = { version: 1, servers: { srv: { transport: 'stdio', command: 'node', args: [], env: {}, cwd: '' } } }
+  const state = stateWith([row('srv', 'global:srv')], {}, null, owned)
+  await state.refresh()
+  assert.equal(state.snapshot().length, 1)
+  assert.ok(state.snapshot()[0].serverName === 'srv')
 })

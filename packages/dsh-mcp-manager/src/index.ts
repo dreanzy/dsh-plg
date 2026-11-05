@@ -189,6 +189,7 @@ export function apply(ctx: unknown): void {
             ...diag,
             poolSize: pool.size(),
             lastApplied: lastAppliedCommands(),
+          agents: hooks.stats().agents,
             // 名册原文：确认「server 有没有出现在系统提示里」最直接的证据。
             inventory: sectionText(state),
           },
@@ -277,16 +278,19 @@ export function apply(ctx: unknown): void {
     })
   gate.attach()
 
-  // root 段是兜底：per-agent 段同名注册在 agent.ctx 上，会遮蔽它。
-  context.inject(['systemPrompt'], () => {
-    diag.sectionRegistered = registerInventorySection(context, state)
-  })
+  // 刻意不在 root ctx 上注册名册段。
+  //
+  // 两个原因：宿主在同一层内禁止同名段重复注册，root 段会让每个 agent 的段都撞上它；
+  // 而 root 段只能读全局层，对「工作区里启用、全局里禁用」的行永远是空名册。
+  diag.sectionRegistered = false
 
   // 按 agent 落地工作区策略。
   const hooks = installHooks({
     context: { get: (key) => context.get(key), on: (event, listener) => context.on(event, listener), logger: context.logger },
     pool,
     scan: () => scanOf(context),
+    // 每个 agent 落地后刷新自检快照，省得排查时还要用户手动点开面板。
+    onSettled: () => noteRows(),
     // 按该 agent 的 cwd 求值，返回需要罩住的 server 名（dynamic/lazy 行）。
     shieldedServers: async (_agent, cwd) => {
       const layers = await loadLayers({ cwd })
@@ -301,8 +305,12 @@ export function apply(ctx: unknown): void {
     },
   })
   diag.hooksInstalled = true
-  void hooks.bootstrap().catch((error) => {
-    context.logger.warn(`${name}: 补落地失败：${String(error)}`)
+  // 必须等 agents 就绪再补：恢复的会话不会再收到 agent/created，
+  // 而 apply 那一刻 agents 常常还没注册，直接 get 会拿到 undefined 然后静默放弃。
+  context.inject(['agents'], () => {
+    void hooks.bootstrap().catch((error) => {
+      context.logger.warn(`${name}: 补落地失败：${String(error)}`)
+    })
   })
 
   // 按需工具：取宿主导出后注册到全局工具表。
@@ -317,7 +325,14 @@ export function apply(ctx: unknown): void {
       const { load, unload, call } = createOnDemandTools({
         defineTool: adapters.defineTool,
         pool,
-        resolveTarget: (targetName) => state.target(targetName),
+        resolveTarget: (targetName, callingAgent) => {
+          // 有 agent 就按它的工作区求值；没有（理论上不会）退回全局层。
+          if (callingAgent !== null && typeof callingAgent === 'object') {
+            const scope = hooks.scopeOf(callingAgent)
+            if (scope !== null) return scope.inventory.target(targetName)
+          }
+          return state.target(targetName)
+        },
         resolveFactory: async () => adapters.createMcpToolDefinition,
         logger: context.logger,
       })
@@ -392,6 +407,10 @@ register(ROUTES.diag, async () => {
       handleServers(routeCtx, body, {
         afterWrite: async () => {
           await state.refresh()
+          // 定义变了，已落地会话的视图与闸门都要重算：新增的 server 得能立刻
+          // 出现在名册里、并按其模式决定挂不挂。
+          await hooks.reconcileAll()
+          await gate.reconcile()
           await syncMounts()
           noteRows()
         },
@@ -402,6 +421,8 @@ register(ROUTES.diag, async () => {
       handleApply(routeCtx, body, {
         afterWrite: async () => {
           await state.refresh()
+          // per-agent 视图不会自己更新：保存后必须重算，否则会话里还是旧名册。
+          await hooks.reconcileAll()
           await gate.reconcile()
           await syncMounts()
           noteRows()
