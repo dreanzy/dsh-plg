@@ -1027,7 +1027,7 @@ window.__ModuleLoader__.load({
           onClick: () => overlay.set(!open),
         },
         h(GridIcon, { size: 12 }),
-        'Plugins',
+        'Plugin',
       )
     }
 

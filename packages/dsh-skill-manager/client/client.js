@@ -1071,7 +1071,7 @@ window.__ModuleLoader__.load({
                 },
               },
               h(ChipIcon),
-              'Skills',
+              'Skill',
             )
           }),
         )
