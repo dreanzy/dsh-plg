@@ -37,3 +37,7 @@ _Avoid_: 共享内核、公共库
 **源码安装**:
 用户以 `github:<owner>/<repo>#<sha>&path:/packages/<pkg>` 安装，触发该包的 `prepare` 构建。
 _Avoid_: git 安装、裸装
+
+**界面基调（UI baseline）**:
+多个插件面板共用的一套视觉约定：变量来源、开关语义、高亮方式。规格以代码为准，理由与红线见 [docs/ui-baseline.md](./docs/ui-baseline.md)。
+_Avoid_: 设计系统、主题、样式规范
