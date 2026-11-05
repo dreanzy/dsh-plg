@@ -719,15 +719,21 @@ export function installHooks(ctx: PluginContext, options?: HooksOptions): HooksH
     const agent = asAgentLike(asRecord(payload)?.['agent'])
     if (agent === null) return
     const state = states.get(agent.id)
-    if (state === undefined) return
-    if (state.dispose !== null) {
-      try {
-        state.dispose()
-      } catch {
-        // 释放失败无副作用：Agent 已经消失。
+    if (state !== undefined) {
+      if (state.dispose !== null) {
+        try {
+          state.dispose()
+        } catch {
+          // 释放失败无副作用：Agent 已经消失。
+        }
       }
+      states.delete(agent.id)
     }
-    states.delete(agent.id)
+    // `byId` 是强引用表：只加不减的话，每开过一个会话就永久留下两条记录
+    // （agent id 与 session id），进程活多久就涨多久。删掉即「查不到就不动」，
+    // 与装配侧「宁可放开，也不要误删」的兜底是同一套语义。
+    byId.delete(agent.id)
+    byId.delete(agent.session.id)
   }
 
   /**
