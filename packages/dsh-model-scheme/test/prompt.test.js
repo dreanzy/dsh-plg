@@ -1,6 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { BUILTIN_SCHEME, TIER_DEFAULT_NAMES, TIER_IDS } from '../lib/scheme.js'
+import { TIER_DESCRIPTION_MAX_TOKENS, describeTiers } from '../lib/tools.js'
 import {
   BUILTIN_PROMPT,
   DELEGATION_MAX_TOKENS,
@@ -72,6 +73,16 @@ test('内置段不超 350 token（四档全配的最坏情况）', () => {
   assert.ok(
     tokens <= DELEGATION_MAX_TOKENS,
     `段文本估计 ${tokens} token，超过上限 ${DELEGATION_MAX_TOKENS}`,
+  )
+})
+
+test('工具描述不超 400 token（四档全配的最坏情况）', () => {
+  const description = describeTiers(FULL)
+  assert.ok(description !== null)
+  const tokens = estimateTokens(description)
+  assert.ok(
+    tokens <= TIER_DESCRIPTION_MAX_TOKENS,
+    `工具描述估计 ${tokens} token，超过上限 ${TIER_DESCRIPTION_MAX_TOKENS}`,
   )
 })
 
