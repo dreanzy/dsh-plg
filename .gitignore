@@ -6,6 +6,7 @@ lib/
 
 # Temp / sandbox pnpm store
 .tmp/
+.pnpm-store/
 
 # Logs
 *.log
