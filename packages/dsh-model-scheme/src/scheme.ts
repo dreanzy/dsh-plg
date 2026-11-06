@@ -49,6 +49,18 @@ export interface Route {
   readonly reasoningEffort?: string
 }
 
+/**
+ * 一条路由写成宿主 `select()` / `agentOptions` 的入参。
+ *
+ * 省略 `reasoningEffort` 与写成空串不是一回事：前者让键不存在 = 跟随模型默认（spec §3），
+ * 后者是坏输入，这里按前者处理。编排层与会话路由共用这一份，避免两处各写一遍。
+ */
+export function selectionOf(route: Route): Route {
+  return route.reasoningEffort === undefined || route.reasoningEffort === ''
+    ? { provider: route.provider, model: route.model }
+    : { provider: route.provider, model: route.model, reasoningEffort: route.reasoningEffort }
+}
+
 /** 档：显示名 + 首选 + 有序备选。 */
 export interface TierConfig {
   readonly name: string

@@ -9,7 +9,7 @@
 import { applyCommands, loadState, resolve, type SchemeCommand, type SchemeState } from './policy.js'
 import { installHooks, type PluginContext } from './hooks.js'
 import { BUILTIN_PROMPT, resolvePrompt } from './prompt.js'
-import type { PromptOverrides } from './scheme.js'
+import type { PromptOverrides, Route } from './scheme.js'
 import {
   ROUTES,
   handleApply,
@@ -75,12 +75,8 @@ function readFetchFace(ctx: PluginContext): FetchFace | null {
 
 /** 进程级默认模型服务，只声明本插件用到的两个方法。 */
 interface DefaultModelFace {
-  currentSelection?: () => { provider?: string; model?: string; reasoningEffort?: string } | undefined
-  saveSelection?: (selection: {
-    provider: string
-    model: string
-    reasoningEffort?: string
-  }) => Promise<unknown>
+  currentSelection?: () => Partial<Route> | undefined
+  saveSelection?: (selection: Route) => Promise<unknown>
 }
 
 /**
@@ -150,7 +146,7 @@ function findAgent(context: ApplyContext, sessionId: string): LiveAgent | undefi
 async function sessionModelRoute(
   context: ApplyContext,
   sessionId: string,
-): Promise<{ provider: string; model: string; reasoningEffort?: string } | null> {
+): Promise<Route | null> {
   const found = findAgent(context, sessionId)
   const current = found?.model?.current
   if (typeof current !== 'function') return null
@@ -168,7 +164,7 @@ async function sessionModelRoute(
 async function resetSessionRoute(
   context: ApplyContext,
   sessionId: string,
-): Promise<{ provider: string; model: string }> {
+): Promise<Pick<Route, 'provider' | 'model'>> {
   const found = findAgent(context, sessionId)
   if (found === undefined) throw new Error('会话不在线：先打开它再试')
 

@@ -14,7 +14,7 @@
  * 宿主 `tools.register()` 只读 `name` / `output` / `parameters`，形状一致即可。
  */
 
-import { TIER_DEFAULT_NAMES, TIER_IDS, isTierId, type Route, type TierId } from './scheme.js'
+import { TIER_DEFAULT_NAMES, TIER_IDS, isTierId, selectionOf, type Route, type TierId } from './scheme.js'
 import type { ResolvedScheme } from './policy.js'
 
 /** 工具名。编排层与提示词段都按这个名字引用。 */
@@ -236,11 +236,6 @@ function callerCwd(agent: unknown): string | null {
  * 执行
  * ------------------------------------------------------------------ */
 
-function selectionOf(route: Route): Record<string, unknown> {
-  return route.reasoningEffort === undefined || route.reasoningEffort === ''
-    ? { provider: route.provider, model: route.model }
-    : { provider: route.provider, model: route.model, reasoningEffort: route.reasoningEffort }
-}
 
 function routeLabel(route: Route): string {
   return `${route.provider}/${route.model}`

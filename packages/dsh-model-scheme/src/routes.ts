@@ -13,6 +13,12 @@
 /** 错误码。都短、都稳定，前端按它分支，不解析 message。 */
 export type ErrorCode = 'bad-request' | 'missing-cwd' | 'internal'
 
+/** 会话路由的引用：面板只比对这两项。 */
+export interface RouteRef {
+  readonly provider: string
+  readonly model: string
+}
+
 /** 统一信封：成功带 `data`，失败带 `error: { code, message }`。 */
 export type Envelope<T = unknown> =
   | { readonly ok: true; readonly data: T }
@@ -57,14 +63,14 @@ export interface RouteDeps {
    * 只作用于那一条会话（写一条 `model/selection`），不动方案配置，也不影响其他会话。
    * 会话必须在线：空白会话同样有 agent，冷会话需要先打开。
    */
-  resetSession(sessionId: string): Promise<{ provider: string; model: string }>
+  resetSession(sessionId: string): Promise<RouteRef>
   /**
    * 某条在线会话当前实际用的路由。
    *
    * 面板拿它和方案里配的会话路由比对：只有不一致时才需要「恢复」这个动作，
    * 常驻一个按钮会让人以为每次都要点一下。
    */
-  sessionModel(sessionId: string): Promise<{ provider: string; model: string; reasoningEffort?: string } | null>
+  sessionModel(sessionId: string): Promise<(RouteRef & { readonly reasoningEffort?: string }) | null>
   logger: { warn(message: string): void }
 }
 

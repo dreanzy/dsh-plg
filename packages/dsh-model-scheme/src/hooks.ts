@@ -12,6 +12,7 @@
  */
 
 import { loadState, resolve, type ResolvedScheme, type SchemePathOptions } from './policy.js'
+import { selectionOf } from './scheme.js'
 import { delegationSection, resolvePrompt, type PromptText } from './prompt.js'
 import type { SupportView } from './routes.js'
 import { describeTiers, probeSupport, registerTierTool, type TierToolDeps } from './tools.js'
@@ -53,9 +54,9 @@ interface SessionLike {
   eventAt?(seq: number): unknown
 }
 
-/** `agent/model` 上本模块用到的面。 */
+/** `agent/model` 上本模块用到的面。入参交给 `selectionOf` 组装，这里只要求能调用。 */
 interface ModelLike {
-  select?(selection: Record<string, unknown>): void
+  select?(selection: unknown): void
 }
 
 /** `agent/created` 负载里的 Agent，只取本模块用到的字段。 */
@@ -112,18 +113,6 @@ function cwdOf(agent: AgentLike): string | null {
   return typeof cwd === 'string' && cwd.trim() !== '' ? cwd : null
 }
 
-/**
- * 一条路由写成 `select()` 的入参。
- *
- * 省略 `reasoningEffort` 与写成空串不是一回事：前者让键不存在 = 跟随模型默认（spec §3），
- * 后者是坏输入，这里按前者处理。
- */
-function selectionOf(route: ResolvedScheme['scheme']['session']): Record<string, unknown> {
-  if (route === undefined) return {}
-  return route.reasoningEffort === undefined || route.reasoningEffort === ''
-    ? { provider: route.provider, model: route.model }
-    : { provider: route.provider, model: route.model, reasoningEffort: route.reasoningEffort }
-}
 
 /* ------------------------------------------------------------------ *
  * 句柄
@@ -260,14 +249,15 @@ export function installHooks(ctx: PluginContext, options: HooksOptions = {}): Ho
   }
 
   const applySessionRoute = (agent: AgentLike, resolved: ResolvedScheme): void => {
-    if (resolved.scheme.session === undefined) return
+    const route = resolved.scheme.session
+    if (route === undefined) return
     if (hasRecordedRequest(agent)) return
     const select = agent.model?.select
     if (typeof select !== 'function') {
       warnOnce('no-select', '宿主的 agent.model.select 不可用，会话路由未注入')
       return
     }
-    select.call(agent.model, selectionOf(resolved.scheme.session))
+    select.call(agent.model, selectionOf(route))
   }
 
   /* ---------------------------------------------------------------- *
