@@ -1036,10 +1036,18 @@ window.__ModuleLoader__.load({
         ),
       )
     }
-    function ChipIcon() {
+    /** chip 与设置页共用的图标；`size` 缺省 12，设置页会传 16。 */
+    function ChipIcon(props) {
+      const size = props && props.size ? props.size : 12
       return h(
         'svg',
-        { width: 12, height: 12, viewBox: '0 0 16 16', 'aria-hidden': true, style: { display: 'block' } },
+        {
+          width: size,
+          height: size,
+          viewBox: '0 0 16 16',
+          'aria-hidden': true,
+          style: { display: 'block' },
+        },
         h('path', {
           d: 'M3 4h10M3 8h6M3 12h8',
           stroke: 'currentColor',
@@ -1132,6 +1140,16 @@ window.__ModuleLoader__.load({
           h(Segmented, { value: current, onChange: setTab, options: TABS }),
         ),
         state.error ? h('div', { style: { ...S.error, marginTop: '8px' } }, state.error) : null,
+        // 「显示官方技能」只影响列表：分组页要它才看得见官方技能，分包页要靠它
+        // 才能给官方技能设开关。工作区页是绑定表，与列不列官方项无关，因此不显示。
+        current === 'workspace'
+          ? null
+          : h(SettingRow, {
+              label: '显示官方技能',
+              hint: '官方 @deepseek-ai 技能默认不上面板，但模型仍可调用；打开后可逐项关闭。',
+              on: ui.showOfficialSkills === true,
+              onChange: (value) => run([{ op: 'showOfficialSkills', value: value }]),
+            }),
         current === 'groups'
           ? h(
               'div',
@@ -1149,12 +1167,6 @@ window.__ModuleLoader__.load({
                       env.showChip = value
                       if (env.onChipChange) env.onChipChange(value)
                     }),
-                }),
-                h(SettingRow, {
-                  label: '显示官方技能',
-                  hint: '官方 @deepseek-ai 技能默认不上面板，但模型仍可调用；打开后可逐项关闭。',
-                  on: ui.showOfficialSkills === true,
-                  onChange: (value) => run([{ op: 'showOfficialSkills', value: value }]),
                 }),
               ),
               h(GroupsPage, { data: data, run: run }),
@@ -1181,6 +1193,8 @@ window.__ModuleLoader__.load({
       const [query, setQuery] = useState('')
       const [collapsed, setCollapsed] = useState({})
       const [editing, setEditing] = useState(null)
+      /** 批量归组的目标分组；`''` 表示未分组。 */
+      const [bulkGroup, setBulkGroup] = useState('')
 
       const groups = data.groups.groups
       const needle = query.trim().toLowerCase()
@@ -1216,8 +1230,22 @@ window.__ModuleLoader__.load({
 
       const searching = needle !== ''
       const total = buckets.reduce((sum, bucket) => sum + bucket.rows.length, 0)
+      /** 当前筛选命中的项（跨分组拍平），批量归组的对象。 */
+      const matched = buckets.reduce((list, bucket) => list.concat(bucket.rows), [])
       const assignTo = (row, groupId) =>
         run([{ op: 'assign', name: row.name, groupId: groupId === '' ? null : groupId }])
+      // 一次 apply 带上 N 条 assign，只发一条请求：逐个发在几十项时会被乱序返回的
+      // 响应来回覆盖。
+      const assignAll = () => {
+        if (matched.length === 0) return
+        run(
+          matched.map((row) => ({
+            op: 'assign',
+            name: row.name,
+            groupId: bulkGroup === '' ? null : bulkGroup,
+          })),
+        )
+      }
 
       return h(
         'div',
@@ -1238,6 +1266,39 @@ window.__ModuleLoader__.load({
             onChange: (event) => setQuery(event.target.value),
           }),
           h('span', { style: S.hint }, total + ' 项'),
+        ),
+        h(
+          'div',
+          { style: { ...S.bar, marginTop: '0' } },
+          h('span', { style: S.hint }, '把当前 ' + matched.length + ' 项归到'),
+          h(
+            'div',
+            { style: { flex: '0 0 auto', minWidth: '130px' } },
+            h(Picker, {
+              value: bulkGroup,
+              options: [
+                { value: '', label: '未分组' },
+                ...groups.map((group) => ({ value: group.id, label: group.name })),
+              ],
+              onChange: (next) => setBulkGroup(next),
+            }),
+          ),
+          h(
+            'button',
+            {
+              type: 'button',
+              disabled: matched.length === 0,
+              style: {
+                ...S.segItem(false),
+                border: '1px solid ' + T.border,
+                borderRadius: '6px',
+                opacity: matched.length === 0 ? 0.45 : 1,
+                cursor: matched.length === 0 ? 'not-allowed' : 'pointer',
+              },
+              onClick: assignAll,
+            },
+            '应用',
+          ),
         ),
         buckets.map((bucket) => {
           const key = bucket.id === null ? '__loose' : bucket.id
@@ -1799,11 +1860,17 @@ window.__ModuleLoader__.load({
           // 组件必须是稳定标识符：内联箭头每次渲染都是新类型，React 会整棵卸载重挂
           // （AGENTS.md 客户端红线 4）。apply 只跑一次，闭包里拿 host 是安全的。
           const SettingsSection = () => h(SettingsPanel, { host: host })
+          // 设置页侧栏的图标：宿主给 `settings.section.icon` 留了槽位，按 section 的 id
+          // 匹配。不注册就落到 `navIcon(id)` 的通用齿轮上，那一排分不清谁是谁。
+          const SettingsIcon = (props) => h(ChipIcon, { size: props && props.size ? props.size : 16 })
           ctx.slots.inject('settings.section', () =>
             ctx.slots.register(
               { name: 'settings.section', id: PANEL_ID, order: 60, label: () => TITLE },
               SettingsSection,
             ),
+          )
+          ctx.slots.inject('settings.section.icon', () =>
+            ctx.slots.register({ name: 'settings.section.icon', id: PANEL_ID }, SettingsIcon),
           )
 
           // ---------- chip ----------
