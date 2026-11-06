@@ -556,8 +556,18 @@ window.__ModuleLoader__.load({
       const effective = isRecord(prompts) && isRecord(prompts.effective) ? prompts.effective : {}
       return {
         delegation: typeof effective.delegation === 'string' ? effective.delegation : '',
-        tiers: isRecord(effective.tiers) ? effective.tiers : {},
+        tiers: tiersOf(effective),
       }
+    }
+
+    /**
+     * 草稿或生效值里的档集合；没有就返回空对象。
+     *
+     * 多处解构都写同一句 `isRecord(x.tiers) ? x.tiers : {}`，漏一处就会拿到 undefined
+     * 再去取键。收成一句，新增字段时也不用逐个改。
+     */
+    function tiersOf(value) {
+      return isRecord(value) && isRecord(value.tiers) ? value.tiers : {}
     }
 
     /** 一档的生效值。缺 label / text 时补空串，输入框不会变成非受控组件。 */
@@ -579,7 +589,7 @@ window.__ModuleLoader__.load({
       const keys = []
       if (!isRecord(overrides)) return keys
       if (typeof overrides.delegation === 'string' && overrides.delegation.trim() !== '') keys.push(PROMPT_DELEGATION_KEY)
-      const tiers = isRecord(overrides.tiers) ? overrides.tiers : {}
+      const tiers = tiersOf(overrides)
       for (const tierId of TIER_IDS) {
         const tier = tiers[tierId]
         if (!isRecord(tier)) continue
@@ -595,7 +605,7 @@ window.__ModuleLoader__.load({
       if (!isRecord(patch)) return next
       if (typeof patch.delegation === 'string') next.delegation = patch.delegation
       const tiers = {}
-      const source = isRecord(patch.tiers) ? patch.tiers : {}
+      const source = tiersOf(patch)
       for (const tierId of TIER_IDS) {
         const tier = source[tierId]
         if (!isRecord(tier)) continue
@@ -622,7 +632,7 @@ window.__ModuleLoader__.load({
         else next.delegation = raw
         return next
       }
-      const tiers = isRecord(next.tiers) ? next.tiers : {}
+      const tiers = tiersOf(next)
       const tier = isRecord(tiers[tierId]) ? tiers[tierId] : {}
       if (raw === base) delete tier[field]
       else tier[field] = raw
@@ -637,7 +647,7 @@ window.__ModuleLoader__.load({
     function promptFieldValue(patch, tierId, field, base) {
       if (!isRecord(patch)) return base
       if (tierId === null) return typeof patch.delegation === 'string' ? patch.delegation : base
-      const tiers = isRecord(patch.tiers) ? patch.tiers : {}
+      const tiers = tiersOf(patch)
       const tier = tiers[tierId]
       if (isRecord(tier) && typeof tier[field] === 'string') return tier[field]
       return base
@@ -650,7 +660,7 @@ window.__ModuleLoader__.load({
         delete next.delegation
         return next
       }
-      const tiers = isRecord(next.tiers) ? next.tiers : {}
+      const tiers = tiersOf(next)
       delete tiers[key]
       if (Object.keys(tiers).length > 0) next.tiers = tiers
       else delete next.tiers
@@ -661,7 +671,7 @@ window.__ModuleLoader__.load({
     function hasPromptPatch(patch) {
       if (!isRecord(patch)) return false
       if (typeof patch.delegation === 'string') return true
-      const tiers = isRecord(patch.tiers) ? patch.tiers : {}
+      const tiers = tiersOf(patch)
       for (const tierId of TIER_IDS) {
         const tier = tiers[tierId]
         if (isRecord(tier) && Object.keys(tier).length > 0) return true
@@ -680,7 +690,7 @@ window.__ModuleLoader__.load({
       const problems = []
       if (!isRecord(patch)) return problems
       if (typeof patch.delegation === 'string' && patch.delegation.trim() === '') problems.push('编排段')
-      const tiers = isRecord(patch.tiers) ? patch.tiers : {}
+      const tiers = tiersOf(patch)
       for (const tierId of TIER_IDS) {
         const tier = tiers[tierId]
         if (!isRecord(tier)) continue
@@ -708,7 +718,7 @@ window.__ModuleLoader__.load({
         command.delegation = patch.delegation
         touched = true
       }
-      const source = isRecord(patch.tiers) ? patch.tiers : {}
+      const source = tiersOf(patch)
       const tierPayload = {}
       for (const tierId of TIER_IDS) {
         const tier = source[tierId]
