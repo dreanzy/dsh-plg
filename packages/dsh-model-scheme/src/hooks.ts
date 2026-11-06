@@ -340,8 +340,17 @@ export function installHooks(ctx: PluginContext, options: HooksOptions = {}): Ho
    * 施加
    * ---------------------------------------------------------------- */
 
-  /** 一个 agent 的完整施加。`select` 为假时只做工具与段（补施加不走会话路由）。 */
-  const applyOne = async (agent: AgentLike, state: AgentState, select: boolean): Promise<void> => {
+  /**
+   * 一个 agent 的完整施加。
+   *
+   * `applySessionRoute` 为假时只做工具与段：恢复的会话与重载后的补施加都不该改写
+   * 用户选过的模型（spec §6.1、§6.5）。
+   */
+  const applyOne = async (
+    agent: AgentLike,
+    state: AgentState,
+    options: { applySessionRoute: boolean },
+  ): Promise<void> => {
     const cwd = cwdOf(agent)
     if (cwd === null) {
       warnOnce('no-cwd', 'agent 缺少 cwd，按空方案运行')
@@ -354,7 +363,7 @@ export function installHooks(ctx: PluginContext, options: HooksOptions = {}): Ho
     const resolved = resolve(loaded, cwd)
     // 提示词覆盖随 loadState 一起读上来；合并是纯函数，不额外碰盘。
     const prompt = resolvePrompt(loaded.prompts)
-    if (select) applySessionRoute(agent, resolved)
+    if (options.applySessionRoute) applySessionRoute(agent, resolved)
     applyTierAndSection(agent, resolved, prompt, state)
   }
 
@@ -382,7 +391,7 @@ export function installHooks(ctx: PluginContext, options: HooksOptions = {}): Ho
 
       const state: AgentState = { disposers: [] }
       states.set(agent.id, state)
-      await applyOne(agent, state, isStartup)
+      await applyOne(agent, state, { applySessionRoute: isStartup })
     } catch (error) {
       // 这个监听器抛错会让会话创建失败，所以一律吞掉降级。
       recordFailure(agent?.id ?? '?', error)
@@ -466,7 +475,7 @@ export function installHooks(ctx: PluginContext, options: HooksOptions = {}): Ho
         if (cwdOf(agent) === null) continue
         const state: AgentState = { disposers: [] }
         states.set(agent.id, state)
-        await applyOne(agent, state, false)
+        await applyOne(agent, state, { applySessionRoute: false })
       } catch (error) {
         ctx.logger.warn('model-scheme: 补施加失败（agent=' + (agent?.id ?? '?') + '）：' + String(error))
       }

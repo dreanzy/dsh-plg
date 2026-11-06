@@ -413,11 +413,24 @@ window.__ModuleLoader__.load({
       return typeof id === 'string' && id !== '' ? id : null
     }
 
+    /**
+     * 一条路由的文本：`provider + separator + model + effort`。
+     *
+     * 两处调用点只有 `separator` 与 `effortFallback` 不同：设置页用 `a/b · 模型默认`
+     * 明示「没指定强度」，浮层摘要用更窄的 `a / b`，缺省就不写。
+     */
+    function routeTextOf(route, separator, effortFallback) {
+      if (!isRecord(route)) return '（未配置）'
+      const effort =
+        typeof route.reasoningEffort === 'string' && route.reasoningEffort !== ''
+          ? ' · ' + route.reasoningEffort
+          : effortFallback
+      return String(route.provider || '?') + separator + String(route.model || '?') + effort
+    }
+
     /** 路由的一行文本。省略 reasoningEffort 时明说「模型默认」，不要留空。 */
     function routeText(route) {
-      if (!isRecord(route)) return '（未配置）'
-      const effort = typeof route.reasoningEffort === 'string' && route.reasoningEffort !== '' ? ' · ' + route.reasoningEffort : ' · 模型默认'
-      return String(route.provider || '?') + '/' + String(route.model || '?') + effort
+      return routeTextOf(route, '/', ' · 模型默认')
     }
 
     /** 会话路由摘要；没有 session 键 = 跟随官方默认。 */
@@ -2246,8 +2259,7 @@ window.__ModuleLoader__.load({
       if (!isRecord(session) || typeof session.provider !== 'string' || typeof session.model !== 'string') {
         return '跟随系统默认'
       }
-      const effort = typeof session.reasoningEffort === 'string' && session.reasoningEffort !== '' ? ' · ' + session.reasoningEffort : ''
-      return session.provider + ' / ' + session.model + effort
+      return routeTextOf(session, ' / ', '')
     }
 
     function SchemeModal(props) {

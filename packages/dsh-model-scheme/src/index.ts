@@ -89,7 +89,7 @@ interface DefaultModelFace {
  * 只在全局方案**自带 session 路由**时接管：没配就说明用户想把默认交给官方设置页。
  * 值相同则跳过，避免每次保存都去写 profile。
  */
-async function syncDefaultModel(context: ApplyContext, name: string): Promise<void> {
+async function syncDefaultModel(context: ApplyContext): Promise<void> {
   try {
     const service = context.get('agentDefaultModel') as DefaultModelFace | undefined
     if (service === undefined || typeof service.saveSelection !== 'function') return
@@ -210,7 +210,7 @@ export function apply(ctx: unknown): void {
       // 每次落盘后同步一次默认模型：改了全局方案或全局默认都可能改变「新会话该用什么」。
       applyCommands: async (cwd, commands) => {
         const state = await applyCommands(cwd, commands as unknown as readonly SchemeCommand[])
-        void syncDefaultModel(context, name)
+        void syncDefaultModel(context)
         return state
       },
       resolve: (state, cwd) => resolve(state as SchemeState, cwd),
@@ -259,7 +259,7 @@ export function apply(ctx: unknown): void {
   })
 
   // 启动时补一次：插件装上/重启后，默认模型可能还停留在上一次手动选择的值。
-  void syncDefaultModel(context, name)
+  void syncDefaultModel(context)
 
   context.logger.info(name + ': applied')
 }
