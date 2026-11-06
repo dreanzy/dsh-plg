@@ -1,0 +1,47 @@
+{
+  "meta": {
+    "title": "Skill Pack",
+    "description": "用 pack 控制模型可以自动调用哪些 skill：工作区只绑一个 pack，未绑定按 default 求值。"
+  },
+  "ui": {
+    "tabs": {
+      "groups": "分组",
+      "packs": "分包"
+    },
+    "packs": {
+      "title": "pack",
+      "newPlaceholder": "新 pack 名",
+      "create": "新建 pack",
+      "rename": "重命名 pack",
+      "delete": "删除 pack",
+      "builtin": "默认",
+      "overrides": "{count} 条覆盖",
+      "editing": "正在编辑"
+    },
+    "switches": {
+      "title": "包内开关",
+      "on": "开",
+      "off": "关",
+      "follow": "跟随",
+      "followOn": "跟随（开）",
+      "followOff": "跟随（关）",
+      "hint": "每个开关三态：开 / 关 / 跟随。「跟随」表示该 pack 不记录这条决定。"
+    },
+    "workspaces": {
+      "title": "工作区绑定",
+      "followDefault": "跟随 default",
+      "addPlaceholder": "手动添加路径，例如 D:/work/repo",
+      "add": "添加",
+      "fromSession": "来自会话",
+      "manual": "手动添加",
+      "remove": "从手动清单移除"
+    },
+    "chip": {
+      "label": "Skills",
+      "unbound": "Default",
+      "goSettings": "去设置",
+      "goSettingsHint": "「去设置」会把设置页的默认分页切到「分包」；设置弹层本身请点侧栏的 ⚙ 打开。",
+      "close": "关闭"
+    }
+  }
+}

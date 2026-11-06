@@ -4,6 +4,7 @@ import { mkdtemp, mkdir, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { installHooks } from '../lib/hooks.js'
+import { normalizeCwd } from '../lib/policy.js'
 
 /** 造一个宿主 ctx 的最小替身，能手动 emit 事件。 */
 function fakeCtx() {
@@ -72,20 +73,51 @@ function fakeSkills(rows, options = {}) {
   return skills
 }
 
-async function makeWorkspace({ global: globalPolicy, workspace, groups } = {}) {
-  const home = await mkdtemp(join(tmpdir(), 'dsm-home-'))
-  const cwd = await mkdtemp(join(tmpdir(), 'dsm-ws-'))
+function emptyPack(name = 'default') {
+  return { name, items: {}, groups: {} }
+}
+
+/**
+ * 建一套 `$DSH_HOME/packs/skill/` 三件套。
+ *
+ * 旧用例写的是 `skill-manager/global.json` + `<cwd>/.dsh/skill-manager.json`；
+ * 本文件按新落盘位置重写，`bind` 简写用来把当前 cwd 绑到某个 pack。
+ */
+async function makeWorkspace(options = {}) {
+  const home = await mkdtemp(join(tmpdir(), 'dsk-home-'))
+  const cwd = await mkdtemp(join(tmpdir(), 'dsk-ws-'))
   process.env['DSH_HOME'] = home
-  await mkdir(join(home, 'skill-manager'), { recursive: true })
-  await writeFile(join(home, 'skill-manager', 'global.json'), `${JSON.stringify(globalPolicy ?? {}, null, 2)}\n`)
-  if (groups !== undefined) {
-    await writeFile(join(home, 'skill-manager', 'groups.json'), `${JSON.stringify(groups, null, 2)}\n`)
+  const stateDir = join(home, 'packs', 'skill')
+  await mkdir(stateDir, { recursive: true })
+
+  const packs = options.packs ?? { default: emptyPack() }
+  await writeFile(
+    join(stateDir, 'packs.json'),
+    `${JSON.stringify(
+      {
+        version: 1,
+        ui: {
+          showOfficialSkills: false,
+          showChip: true,
+          defaultTab: 'groups',
+          ...(options.ui ?? {}),
+        },
+        packs,
+      },
+      null,
+      2,
+    )}\n`,
+  )
+  if (options.groups !== undefined) {
+    await writeFile(join(stateDir, 'groups.json'), `${JSON.stringify(options.groups, null, 2)}\n`)
   }
-  if (workspace !== undefined) {
-    await mkdir(join(cwd, '.dsh'), { recursive: true })
-    await writeFile(join(cwd, '.dsh', 'skill-manager.json'), `${JSON.stringify(workspace, null, 2)}\n`)
-  }
-  return { home, cwd }
+  const bindings = { ...(options.bindings ?? {}) }
+  if (options.bind !== undefined) bindings[normalizeCwd(cwd)] = options.bind
+  await writeFile(
+    join(stateDir, 'workspaces.json'),
+    `${JSON.stringify({ version: 1, bindings, extra: [] }, null, 2)}\n`,
+  )
+  return { home, cwd, stateDir }
 }
 
 function agentFor(cwd, skills, id = 'agent-1') {
@@ -101,8 +133,10 @@ const rows = [
   { name: 'beta', description: 'b', provider: 'filesystem', source: 'custom', path: '/x/beta/SKILL.md', invocation: { modelInvocable: true, userInvocable: true } },
 ]
 
-test('全局项级关掉的 skill 会被注册遮蔽副本', async () => {
-  const { cwd } = await makeWorkspace({ global: { items: { alpha: false } } })
+test('default pack 项级关掉的 skill 会被注册遮蔽副本（原「全局项级」用例）', async () => {
+  const { cwd } = await makeWorkspace({
+    packs: { default: { name: 'default', items: { alpha: false }, groups: {} } },
+  })
   const skills = fakeSkills(rows)
   const ctx = fakeCtx()
   installHooks(ctx)
@@ -116,10 +150,14 @@ test('全局项级关掉的 skill 会被注册遮蔽副本', async () => {
   assert.equal(skills.registered[0].content, 'body of alpha')
 })
 
-test('工作区组级关掉会遮蔽组内成员', async () => {
+test('绑定 pack 的组级关掉会遮蔽组内成员（原「工作区组级」用例）', async () => {
   const { cwd } = await makeWorkspace({
+    packs: {
+      default: emptyPack(),
+      p1: { name: '一组', items: {}, groups: { g1: false } },
+    },
     groups: { groups: [{ id: 'g1', name: '一组' }], assignments: { beta: 'g1' } },
-    workspace: { groups: { g1: false } },
+    bind: 'p1',
   })
   const skills = fakeSkills(rows)
   const ctx = fakeCtx()
@@ -133,8 +171,45 @@ test('工作区组级关掉会遮蔽组内成员', async () => {
   )
 })
 
+test('绑定只影响自己的工作区，别的 cwd 仍按 default 求值', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'dsk-home-'))
+  const boundCwd = await mkdtemp(join(tmpdir(), 'dsk-ws-a-'))
+  const freeCwd = await mkdtemp(join(tmpdir(), 'dsk-ws-b-'))
+  process.env['DSH_HOME'] = home
+  const stateDir = join(home, 'packs', 'skill')
+  await mkdir(stateDir, { recursive: true })
+  await writeFile(
+    join(stateDir, 'packs.json'),
+    `${JSON.stringify({
+      version: 1,
+      ui: {},
+      packs: {
+        default: emptyPack(),
+        p1: { name: '一组', items: { beta: false }, groups: {} },
+      },
+    })}\n`,
+  )
+  await writeFile(
+    join(stateDir, 'workspaces.json'),
+    `${JSON.stringify({ version: 1, bindings: { [normalizeCwd(boundCwd)]: 'p1' }, extra: [] })}\n`,
+  )
+
+  const boundSkills = fakeSkills(rows)
+  const freeSkills = fakeSkills(rows)
+  const ctx = fakeCtx()
+  installHooks(ctx)
+
+  await ctx.emit('agent/created', { agent: agentFor(boundCwd, boundSkills, 'agent-a') })
+  await ctx.emit('agent/created', { agent: agentFor(freeCwd, freeSkills, 'agent-b') })
+
+  assert.deepEqual(boundSkills.registered.map((skill) => skill.name), ['beta'])
+  assert.equal(freeSkills.registered.length, 0)
+})
+
 test('清单不完整时不动任何遮蔽', async () => {
-  const { cwd } = await makeWorkspace({ global: { items: { alpha: false } } })
+  const { cwd } = await makeWorkspace({
+    packs: { default: { name: 'default', items: { alpha: false }, groups: {} } },
+  })
   const skills = fakeSkills(rows, { complete: false })
   const ctx = fakeCtx()
   installHooks(ctx)
@@ -149,7 +224,9 @@ test('清单不完整时不动任何遮蔽', async () => {
 })
 
 test('落地期间由 register 同步发出的 skills/change 不会重入', async () => {
-  const { cwd } = await makeWorkspace({ global: { items: { alpha: false, beta: false } } })
+  const { cwd } = await makeWorkspace({
+    packs: { default: { name: 'default', items: { alpha: false, beta: false }, groups: {} } },
+  })
   const skills = fakeSkills(rows)
   const ctx = fakeCtx()
   installHooks(ctx)
@@ -162,7 +239,7 @@ test('落地期间由 register 同步发出的 skills/change 不会重入', asyn
 })
 
 test('dev 会话建立后保存策略，reapply 让新决定生效', async () => {
-  const { cwd } = await makeWorkspace({ global: {} })
+  const { cwd, stateDir } = await makeWorkspace({ packs: { default: emptyPack() } })
   const skills = fakeSkills(rows)
   const ctx = fakeCtx()
   const hooks = installHooks(ctx)
@@ -171,8 +248,8 @@ test('dev 会话建立后保存策略，reapply 让新决定生效', async () =>
   assert.equal(skills.registered.length, 0)
 
   await writeFile(
-    join(process.env['DSH_HOME'], 'skill-manager', 'global.json'),
-    `${JSON.stringify({ items: { beta: false } }, null, 2)}\n`,
+    join(stateDir, 'packs.json'),
+    `${JSON.stringify({ version: 1, ui: {}, packs: { default: { name: 'default', items: { beta: false }, groups: {} } } }, null, 2)}\n`,
   )
   await hooks.reapply()
   assert.deepEqual(
@@ -181,15 +258,15 @@ test('dev 会话建立后保存策略，reapply 让新决定生效', async () =>
   )
 
   await writeFile(
-    join(process.env['DSH_HOME'], 'skill-manager', 'global.json'),
-    `${JSON.stringify({ items: {} }, null, 2)}\n`,
+    join(stateDir, 'packs.json'),
+    `${JSON.stringify({ version: 1, ui: {}, packs: { default: emptyPack() } }, null, 2)}\n`,
   )
   await hooks.reapply()
   assert.equal(skills.registered.length, 0)
 })
 
 test('多个会话的重新落地并发执行', async () => {
-  const { cwd } = await makeWorkspace({ global: {} })
+  const { cwd } = await makeWorkspace({ packs: { default: emptyPack() } })
   const skills = fakeSkills(rows)
   const ctx = fakeCtx()
   const value = {
@@ -197,9 +274,13 @@ test('多个会话的重新落地并发执行', async () => {
     complete: true,
     hidden: [],
     policy: {
-      global: { items: {}, groups: {}, showOfficialSkills: false, showSidebarEntry: true },
-      workspace: null,
+      packs: { packs: { default: emptyPack() } },
+      ui: { showOfficialSkills: false, showChip: true, defaultTab: 'groups' },
+      binding: null,
+      packId: 'default',
+      pack: null,
       groups: { groups: [], assignments: {} },
+      bindings: { bindings: {}, extra: [] },
       warnings: [],
     },
     warnings: [],
@@ -230,7 +311,9 @@ test('多个会话的重新落地并发执行', async () => {
 })
 
 test('同名项在别的插件先注册时报告关不掉', async () => {
-  const { cwd } = await makeWorkspace({ global: { items: { alpha: false } } })
+  const { cwd } = await makeWorkspace({
+    packs: { default: { name: 'default', items: { alpha: false }, groups: {} } },
+  })
   const skills = fakeSkills(rows)
   // 复验时 alpha 依旧 modelInvocable：模拟同层 first-wins 落败。
   skills.snapshot = async () => ({ skills: rows, complete: true })
@@ -243,7 +326,9 @@ test('同名项在别的插件先注册时报告关不掉', async () => {
 })
 
 test('agent/disposed 释放遮蔽副本并摘掉状态', async () => {
-  const { cwd } = await makeWorkspace({ global: { items: { alpha: false } } })
+  const { cwd } = await makeWorkspace({
+    packs: { default: { name: 'default', items: { alpha: false }, groups: {} } },
+  })
   const skills = fakeSkills(rows)
   const ctx = fakeCtx()
   installHooks(ctx)

@@ -30,9 +30,10 @@ const fakeReact = {
 
 /** 每个面板的断言。count 表示出现次数，未写表示「至少一次」。 */
 const RULES = {
-  'dsh-skill-manager': {
-    must: { 'settledQuery': 1, 'groupOptions.map(': 1 },
-    mustNot: [],
+  'dsh-skill-pack': {
+    must: { 'TABS': 1, 'GroupsPage': 1, 'PackSettings': 1, 'WorkspacePage': 1 },
+    // 侧栏入口与单机开关已废弃：这两个字符串一旦回潮，就是又有人把面板挂回侧栏。
+    mustNot: ['sidebar.panellist', 'showSidebarEntry'],
   },
   'dsh-plugin-manager': {
     must: { 'decorated': 1, 'bucket.items.map(': 1 },

@@ -1,0 +1,47 @@
+{
+  "meta": {
+    "title": "Skill Pack",
+    "description": "Control which skills the model may auto-invoke with packs: a workspace binds one pack, and unbound workspaces follow default."
+  },
+  "ui": {
+    "tabs": {
+      "groups": "Groups",
+      "packs": "Packs"
+    },
+    "packs": {
+      "title": "Packs",
+      "newPlaceholder": "New pack name",
+      "create": "Create pack",
+      "rename": "Rename pack",
+      "delete": "Delete pack",
+      "builtin": "Default",
+      "overrides": "{count} overrides",
+      "editing": "Editing"
+    },
+    "switches": {
+      "title": "Switches in this pack",
+      "on": "On",
+      "off": "Off",
+      "follow": "Follow",
+      "followOn": "Follow (on)",
+      "followOff": "Follow (off)",
+      "hint": "Each switch has three states: on, off and follow. Follow means this pack records no decision."
+    },
+    "workspaces": {
+      "title": "Workspace bindings",
+      "followDefault": "Follow default",
+      "addPlaceholder": "Add a path, e.g. D:/work/repo",
+      "add": "Add",
+      "fromSession": "From sessions",
+      "manual": "Added manually",
+      "remove": "Remove from the manual list"
+    },
+    "chip": {
+      "label": "Skills",
+      "unbound": "Default",
+      "goSettings": "Open settings",
+      "goSettingsHint": "Open settings switches the settings default tab to Packs; open the settings dialog itself from the sidebar gear.",
+      "close": "Close"
+    }
+  }
+}

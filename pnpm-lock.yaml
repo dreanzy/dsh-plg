@@ -220,7 +220,7 @@ importers:
         specifier: ^5.0.0
         version: 5.9.3
 
-  packages/dsh-skill-manager:
+  packages/dsh-skill-pack:
     dependencies:
       '@deepseek-ai/dsh-atomic-write':
         specifier: ^0.2.0-rc.2 || ^0.2.1-0

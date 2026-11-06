@@ -1,10 +1,18 @@
 import { stat } from 'node:fs/promises'
 import type { Inventory, SkillSummaryLike } from './inventory.js'
-import { createResolver, hiddenNames } from './policy.js'
-import { globalPath, groupsPath, workspacePath, type PolicyState } from './store.js'
+import { createResolver, defaultPackOf, hiddenNames, normalizeCwd } from './policy.js'
+import {
+  groupsPath,
+  legacyGlobalPath,
+  legacyGroupsPath,
+  legacyWorkspacePath,
+  packsPath,
+  workspacesPath,
+  type PolicyState,
+} from './store.js'
 
 /**
- * 一份已求值的快照：清单 + 两层策略 + 隐藏集。
+ * 一份已求值的快照：清单 + pack 策略 + 隐藏集。
  *
  * 这是三个 manager 共有的形状：**求值一次，落地多次**。落地（注册遮蔽副本、
  * 施加工具限制、注册名册段）必须 per-agent，因为它依赖各自的 ctx；但求值只
@@ -23,7 +31,7 @@ export interface SnapshotValue {
 
 /** 快照的依赖。全部可注入，测试不必碰真实文件系统。 */
 export interface SnapshotDeps {
-  /** 读两层策略与组定义。真实实现是 `loadState`。 */
+  /** 读 pack 策略与组定义。真实实现是 `loadState`。 */
   readonly loadPolicy: (cwd: string | null) => Promise<PolicyState>
   /** 读 skill 清单。真实实现绕开旧的模块级缓存，直接 `skills.snapshot()`。 */
   readonly readInventory: (cwd: string | null, scope: unknown) => Promise<Inventory>
@@ -56,27 +64,6 @@ export interface ScopeSnapshot {
   /** 打掉缓存。省略 `cwd` 清全部；传 `null` 只清全局那一格。 */
   invalidate(cwd?: string | null): void
   stats(): SnapshotStats
-}
-
-/**
- * 路径归一：同一目录的不同写法必须落到同一个键。
- *
- * Windows 上大小写不敏感、分隔符两种都能写；面板与宿主给的 cwd 未必同写法。
- * 不归一的话同一个目录会各存一份，缓存收益直接减半，而且失效时漏掉一半。
- */
-function normalizeCwd(cwd: string | null): string | null {
-  if (cwd === null) return null
-  const trimmed = cwd.trim()
-  if (trimmed === '') return null
-  let unified = trimmed.replace(/\\/gu, '/')
-  if (process.platform === 'win32') unified = unified.toLowerCase()
-  if (unified.length > 1) {
-    const stripped = unified.replace(/\/+$/u, '')
-    if (stripped === '') return '/'
-    // `C:/` 去掉尾斜杠会变成 `C:`，那不是一个目录。
-    return /^[a-z]:$/iu.test(stripped) ? stripped + '/' : stripped
-  }
-  return unified
 }
 
 function cwdKeyOf(cwd: string | null): string {
@@ -117,17 +104,24 @@ async function fileStamp(path: string): Promise<string> {
 }
 
 /**
- * 三份策略文件的指纹。
+ * 三份新文件与三份旧文件的指纹。
  *
  * **只做兜底**：同进程写入用 `invalidate()` 显式打掉，不依赖时间戳。这里覆盖的是
- * 「用户在编辑器里手改了文件」——那种改动没有事件可订阅。
+ * 「用户在编辑器里手改了文件」——那种改动没有事件可订阅。旧文件也纳入指纹，
+ * 因为新文件缺席时读的是它们。
  *
  * 已知盲区：同毫秒内改完且字节数不变时指纹一样。显式失效路径能覆盖同进程写入，
  * 所以这个盲区只在「外部手改 + 恰好同毫秒同字节数」时成立，代价是旧值多活一轮。
  */
 export async function fingerprintOf(cwd: string | null): Promise<string> {
-  const paths = [globalPath(), groupsPath()]
-  if (cwd !== null && cwd.trim() !== '') paths.push(workspacePath(cwd))
+  const paths = [
+    packsPath(),
+    groupsPath(),
+    workspacesPath(),
+    legacyGlobalPath(),
+    legacyGroupsPath(),
+  ]
+  if (cwd !== null && cwd.trim() !== '') paths.push(legacyWorkspacePath(cwd))
   const stamps = await Promise.all(paths.map((path) => fileStamp(path)))
   return stamps.join('|')
 }
@@ -180,8 +174,9 @@ export function createScopeSnapshot(deps: SnapshotDeps): ScopeSnapshot {
     // 两件事互不依赖：并行读，串行等会白付一次往返。
     const [policy, inventory] = await Promise.all([deps.loadPolicy(cwd), deps.readInventory(cwd, scope)])
     const resolver = createResolver({
-      workspace: policy.workspace,
-      global: policy.global,
+      pack: policy.pack,
+      packId: policy.packId,
+      defaultPack: defaultPackOf(policy.packs),
       assignments: policy.groups.assignments,
     })
     const hidden = inventory.complete

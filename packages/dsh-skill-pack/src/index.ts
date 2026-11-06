@@ -9,7 +9,7 @@ import {
 } from './routes.js'
 
 /** 插件名，同时是 bundle patch 的 entry id。 */
-export const name = 'dsh-skill-manager'
+export const name = 'dsh-skill-pack'
 
 /**
  * 硬依赖只有 `skills`：清单读取与遮蔽注册都取不到替代。
@@ -21,9 +21,9 @@ export const inject = ['skills'] as const
 
 /** 路由路径。宿主按完整 pathname 匹配，`/api` 前缀不能省。 */
 const ROUTES = {
-  global: '/api/skill-manager/global',
-  workspace: '/api/skill-manager/workspace',
-  apply: '/api/skill-manager/apply',
+  global: '/api/skill-pack/global',
+  workspace: '/api/skill-pack/workspace',
+  apply: '/api/skill-pack/apply',
 } as const
 
 interface FetchRouteSpec {

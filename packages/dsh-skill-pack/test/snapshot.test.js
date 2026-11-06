@@ -2,11 +2,23 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createScopeSnapshot } from '../lib/snapshot.js'
 
-function policyOf(items = {}) {
+/**
+ * 本文件只为 `PolicyState` 换了新形状（pack 名册 + 绑定），缓存行为与旧用例一致。
+ */
+function policyOf(items = {}, overrides = {}) {
+  const defaultPack = {
+    name: 'default',
+    items,
+    groups: overrides.defaultGroups ?? {},
+  }
   return {
-    global: { items, groups: {}, showOfficialSkills: false, showSidebarEntry: true },
-    workspace: null,
-    groups: { groups: [], assignments: {} },
+    packs: { packs: { default: defaultPack } },
+    ui: { showOfficialSkills: false, showChip: true, defaultTab: 'groups' },
+    binding: overrides.binding ?? null,
+    packId: overrides.packId ?? 'default',
+    pack: overrides.pack ?? null,
+    groups: { groups: [], assignments: overrides.assignments ?? {} },
+    bindings: { bindings: {}, extra: [] },
     warnings: [],
   }
 }
@@ -21,10 +33,11 @@ function fixture(options = {}) {
   let complete = options.complete !== false
   let rows = options.rows ?? [row('off-a'), row('on-b')]
   let items = options.items ?? { 'off-a': false }
+  let overrides = options.overrides ?? {}
   const snapshot = createScopeSnapshot({
     loadPolicy: async () => {
       calls.loadPolicy += 1
-      return policyOf(items)
+      return policyOf(items, overrides)
     },
     readInventory: async () => {
       calls.readInventory += 1
@@ -42,6 +55,7 @@ function fixture(options = {}) {
     setRows: (value) => { rows = value },
     setComplete: (value) => { complete = value },
     setItems: (value) => { items = value },
+    setOverrides: (value) => { overrides = value },
   }
 }
 
@@ -122,6 +136,21 @@ test('不传 cwd 的调用落在全局那一格', async () => {
   await f.snapshot.refresh(null)
   assert.notEqual(f.snapshot.read(null), null)
   assert.equal(f.snapshot.stats().reads, 1)
+})
+
+test('绑定 pack 的开关参与求值，未被覆盖的项跟随 default', async () => {
+  const f = fixture({
+    items: { inherited: false },
+    overrides: {
+      binding: 'p1',
+      packId: 'p1',
+      pack: { name: 'p1', items: { own: false }, groups: {} },
+    },
+    rows: [row('own'), row('inherited'), row('visible')],
+  })
+  const value = await f.snapshot.refresh('/proj')
+  assert.deepEqual(value.hidden, ['inherited', 'own'])
+  assert.equal(value.policy.packId, 'p1')
 })
 
 test('Windows 上同一目录的两种写法命中同一格', { skip: process.platform !== 'win32' }, async () => {

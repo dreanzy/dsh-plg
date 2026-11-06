@@ -122,7 +122,7 @@ async function buildShadows(
         }),
       )
     } catch (error) {
-      ctx.logger.warn(`dsh-skill-manager: 注册遮蔽副本失败（${row.name}）：${String(error)}`)
+      ctx.logger.warn(`dsh-skill-pack: 注册遮蔽副本失败（${row.name}）：${String(error)}`)
     }
   }
 
@@ -149,7 +149,7 @@ async function buildShadows(
       stuck = hidden.filter((name) => visible.has(name))
       if (stuck.length > 0) {
         ctx.logger.warn(
-          `dsh-skill-manager: 以下 skill 关不掉（同层已被别的插件注册）：${stuck.join(', ')}`,
+          `dsh-skill-pack: 以下 skill 关不掉（同层已被别的插件注册）：${stuck.join(', ')}`,
         )
       }
     }
@@ -254,7 +254,7 @@ export function installHooks(
 
     const skills = scopedSkills(state.agent)
     if (skills === null) {
-      ctx.logger.warn(`dsh-skill-manager: 取不到 agent 作用域的 skills 服务（agent=${state.agent.id}）`)
+      ctx.logger.warn(`dsh-skill-pack: 取不到 agent 作用域的 skills 服务（agent=${state.agent.id}）`)
       return
     }
 
@@ -262,10 +262,14 @@ export function installHooks(
     // 插件重载）只在策略或清单真的变了之后才重新读盘。
     // 清单始终是全量的（含官方技能）：官方技能只是面板默认不展示，一旦用户把它们
     // 放出来并关掉，「显示官方技能」开关再关回去，那条决定仍然有效。
+    //
+    // 绑定表的键是规范化后的 cwd；归一在 `loadState` 内部完成，用的是
+    // `policy.ts` 的 `normalizeCwd` 唯一实现。这里刻意保留原始 cwd 给清单读取：
+    // 宿主按原写法解析工程根，改写大小写会让工程 skill 找不到。
     const view = await snapshot.refresh(cwd, state.agent.raw)
-    for (const warning of view.warnings) ctx.logger.warn(`dsh-skill-manager: ${warning}`)
+    for (const warning of view.warnings) ctx.logger.warn(`dsh-skill-pack: ${warning}`)
     if (!view.complete) {
-      ctx.logger.warn(`dsh-skill-manager: skill 清单不完整，本轮不改变遮蔽（agent=${state.agent.id}）`)
+      ctx.logger.warn(`dsh-skill-pack: skill 清单不完整，本轮不改变遮蔽（agent=${state.agent.id}）`)
       return
     }
 
@@ -293,11 +297,11 @@ export function installHooks(
   const onCreated = async (payload: unknown): Promise<void> => {
     const agent = asAgentLike((payload as { agent?: unknown } | null)?.agent)
     if (agent === null) {
-      ctx.logger.warn('dsh-skill-manager: agent/created 负载形状不符，跳过')
+      ctx.logger.warn('dsh-skill-pack: agent/created 负载形状不符，跳过')
       return
     }
     if (cwdOf(agent) === null) {
-      ctx.logger.warn(`dsh-skill-manager: agent/created 缺少 cwd，跳过（agent=${agent.id}）`)
+      ctx.logger.warn(`dsh-skill-pack: agent/created 缺少 cwd，跳过（agent=${agent.id}）`)
       return
     }
     const state: AgentState = { agent, dispose: null, key: '', stuck: [] }
@@ -309,7 +313,7 @@ export function installHooks(
         await applyOne(state)
       })
     } catch (error) {
-      ctx.logger.warn(`dsh-skill-manager: agent/created 落地失败，本会话按空策略运行：${String(error)}`)
+      ctx.logger.warn(`dsh-skill-pack: agent/created 落地失败，本会话按空策略运行：${String(error)}`)
     }
   }
 
@@ -339,7 +343,7 @@ export function installHooks(
             await applyOne(state)
           } catch (error) {
             ctx.logger.warn(
-              `dsh-skill-manager: 清单变化后重新落地失败（agent=${state.agent.id}）：${String(error)}`,
+              `dsh-skill-pack: 清单变化后重新落地失败（agent=${state.agent.id}）：${String(error)}`,
             )
           }
         }),
@@ -413,7 +417,7 @@ export function installHooks(
           await applyOne(state)
         })
       } catch (error) {
-        ctx.logger.warn(`dsh-skill-manager: 补落地失败（agent=${agent.id}）：${String(error)}`)
+        ctx.logger.warn(`dsh-skill-pack: 补落地失败（agent=${agent.id}）：${String(error)}`)
       }
     }
   }
