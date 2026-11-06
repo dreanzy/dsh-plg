@@ -875,15 +875,19 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * 排序档位：开 0、关 1、跟随 2。
+     * 排序档位：显式开 0、显式关 1、跟随且落到开 2、跟随且落到关 3。
      *
-     * `default` 没有上一层，它的「未记录」显示成「开」，排序也按开算——否则
-     * 同一屏会出现「排在跟随档、按钮却亮在开上」的错位。
+     * 两种跟随在界面上长得一样，但一个等于开、一个等于关，混在同一档里
+     * 用户没法按状态扫读。
+     *
+     * `default` 没有上一层，它的「未记录」就等于开，所以直接归 0——否则同一屏会
+     * 出现「排在跟随档、按钮却亮在开上」的错位。
      */
-    function rankOf(value, isDefault) {
+    function rankOf(value, isDefault, inherit) {
       if (value === true) return 0
       if (value === false) return 1
-      return isDefault ? 0 : 2
+      if (isDefault) return 0
+      return inherit ? 2 : 3
     }
 
     /**
@@ -1166,10 +1170,13 @@ window.__ModuleLoader__.load({
         h(
           'div',
           { style: S.modal, onClick: (event) => event.stopPropagation() },
+          // 插件名常驻在标题上方：这一排 chip 只靠图标区分，弹层里不写明是哪个插件，
+          // 从图标点进来的人会先愣一下。
+          h('div', { style: { ...S.hint, fontSize: '11px' } }, TITLE),
           h(
             'div',
-            { style: { display: 'flex', alignItems: 'baseline', gap: '10px' } },
-            h('div', { style: S.title }, data === null ? TITLE : usingDefault ? '默认配置' : data.packName),
+            { style: { display: 'flex', alignItems: 'baseline', gap: '10px', marginTop: '2px' } },
+            h('div', { style: S.title }, data === null ? '读取中' : usingDefault ? '默认配置' : data.packName),
             h('span', { style: { ...S.hint, marginLeft: 'auto' } }, '当前工作区'),
           ),
           state.error ? h('div', { style: { ...S.error, marginTop: '8px' } }, state.error) : null,
@@ -1705,22 +1712,29 @@ window.__ModuleLoader__.load({
                 const gid = groupOfRow(groups, row)
                 return gid !== null && hitGroups.has(gid)
               })
-        // 顺序是「开 > 关 > 跟随」：显式决定过的排在前面，跟随的垫底——
-        // 用户在调的是那些已经表过态的项，跟随项属于没碰过的默认状态。
-        // 同档按包名排，保证每次渲染顺序稳定。
+        // 顺序是「开 > 关 > 跟随(开) > 跟随(关)」：显式决定过的排在前面，
+        // 跟随项再按它实际会落到开还是关分档。同档按包名排。
         return visible.sort((a, b) => {
-          const left = rankOf(itemValue(pack, itemKey(a)), isDefault)
-          const right = rankOf(itemValue(pack, itemKey(b)), isDefault)
+          const left = rankOf(
+            itemValue(pack, itemKey(a)),
+            isDefault,
+            resolveItem(pack, defaultPack, groups.assignments || {}, itemKey(a)),
+          )
+          const right = rankOf(
+            itemValue(pack, itemKey(b)),
+            isDefault,
+            resolveItem(pack, defaultPack, groups.assignments || {}, itemKey(b)),
+          )
           if (left !== right) return left - right
           return itemKey(a).localeCompare(itemKey(b), 'zh')
         })
-      }, [plugins, groups, query, pack, isDefault])
+      }, [plugins, groups, query, pack, defaultPack, isDefault])
 
-      /** 分组同样「开 > 关 > 跟随」。 */
+      /** 分组同样「开 > 关 > 跟随(开) > 跟随(关)」。 */
       const orderedGroups = useMemo(() => {
         return [...groups.groups].sort((a, b) => {
-          const left = rankOf(groupValue(pack, a.id), isDefault)
-          const right = rankOf(groupValue(pack, b.id), isDefault)
+          const left = rankOf(groupValue(pack, a.id), isDefault, groupInherit(pack, defaultPack, a.id))
+          const right = rankOf(groupValue(pack, b.id), isDefault, groupInherit(pack, defaultPack, b.id))
           if (left !== right) return left - right
           return a.name.localeCompare(b.name, 'zh')
         })
