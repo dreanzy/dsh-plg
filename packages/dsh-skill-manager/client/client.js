@@ -1081,25 +1081,29 @@ window.__ModuleLoader__.load({
           },
         )
 
-        ctx.slots.inject('conversation.input.right', () =>
-          ctx.slots.register({ name: 'conversation.input.right', id: CHIP_ID, order: 42 }, (props) => {
-            sessionId = props && props.sessionId ? props.sessionId : undefined
-            const isOpen = useSyncExternalStore(subscribe, readOpen, readOpen)
-            return h(
-              'button',
-              {
-                type: 'button',
-                style: S.chip,
-                title: '按本工程调整 skill 可见性',
-                onClick: () => {
-                  open = !isOpen
-                  notify()
-                },
+        // 组件必须是稳定标识符：内联箭头每次渲染都是新类型，React 会整棵卸载重挂
+        // （AGENTS.md 客户端红线 4）。
+        const SkillChip = (props) => {
+          sessionId = props && props.sessionId ? props.sessionId : undefined
+          const isOpen = useSyncExternalStore(subscribe, readOpen, readOpen)
+          return h(
+            'button',
+            {
+              type: 'button',
+              style: S.chip,
+              title: '按本工程调整 skill 可见性',
+              onClick: () => {
+                open = !isOpen
+                notify()
               },
-              h(ChipIcon),
-              'Skill',
-            )
-          }),
+            },
+            h(ChipIcon),
+            'Skill',
+          )
+        }
+
+        ctx.slots.inject('conversation.input.right', () =>
+          ctx.slots.register({ name: 'conversation.input.right', id: CHIP_ID, order: 42 }, SkillChip),
         )
 
         ctx.slots.inject('shell.overlay', () =>
