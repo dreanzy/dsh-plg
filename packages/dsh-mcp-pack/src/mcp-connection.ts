@@ -80,7 +80,7 @@ function timeoutOf(ms: number | undefined, fallback: number): number {
  * 空工具列表让它以为服务器没有工具。
  */
 export async function connectMcp(key: string, spec: ConnectionSpec, options: { readonly timeoutMs?: number } = {}): Promise<McpConnection> {
-  const client = new Client({ name: 'dsh-mcp-manager', version: '0.1.0' }, { capabilities: {} })
+  const client = new Client({ name: 'dsh-mcp-pack', version: '0.1.0' }, { capabilities: {} })
   await client.connect(createTransport(spec))
   const deadline = timeoutOf(options.timeoutMs, 30_000)
 

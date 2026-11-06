@@ -72,7 +72,7 @@ export function createGate(deps: GateDeps): Gate {
           suppress(entry)
         }
       } catch (error) {
-        deps.context.logger.warn(`dsh-mcp-manager: 处置 MCP 行失败（${serverName}）：${String(error)}`)
+        deps.context.logger.warn(`dsh-mcp-pack: 处置 MCP 行失败（${serverName}）：${String(error)}`)
       }
     }
   }
@@ -111,7 +111,7 @@ export function createGate(deps: GateDeps): Gate {
           })
         })
       } catch (error) {
-        deps.context.logger.warn(`dsh-mcp-manager: 订阅 loader/entry-init 失败：${String(error)}`)
+        deps.context.logger.warn(`dsh-mcp-pack: 订阅 loader/entry-init 失败：${String(error)}`)
         off = () => {}
       }
       return off

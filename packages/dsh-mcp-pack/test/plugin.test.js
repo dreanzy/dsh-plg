@@ -1,7 +1,13 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { mkdtemp } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { apply, name, inject } from '../lib/index.js'
 import { INVENTORY_SECTION } from '../lib/inventory-section.js'
+
+// apply 会异步读策略文件；不隔离开就会读到跑测试的人自己的 $DSH_HOME。
+process.env['DSH_HOME'] = await mkdtemp(join(tmpdir(), 'dmp-plugin-'))
 
 const MCP = '@deepseek-ai/dsh-mcp-client'
 
@@ -45,7 +51,7 @@ function connection() {
 connection.__routes = []
 
 test('插件声明', () => {
-  assert.equal(name, 'dsh-mcp-manager')
+  assert.equal(name, 'dsh-mcp-pack')
   assert.deepEqual([...inject], ['loader'])
 })
 
@@ -59,12 +65,12 @@ test('apply 注册四条路由，且不在 root 上注册名册段', () => {
   assert.equal(section, undefined, 'root 段不该被注册')
   const paths = connection.__routes.map((spec) => spec.path).sort()
   assert.deepEqual(paths, [
-    '/api/mcp-manager/apply',
-    '/api/mcp-manager/diag',
-    '/api/mcp-manager/global',
-    '/api/mcp-manager/rows',
-    '/api/mcp-manager/servers',
-    '/api/mcp-manager/workspace',
+    '/api/mcp-pack/apply',
+    '/api/mcp-pack/diag',
+    '/api/mcp-pack/global',
+    '/api/mcp-pack/rows',
+    '/api/mcp-pack/servers',
+    '/api/mcp-pack/workspace',
   ])
 })
 

@@ -29,10 +29,10 @@ export interface OwnedServers {
 
 export const EMPTY_OWNED: OwnedServers = { version: 1, servers: {} }
 
-/** `$DSH_HOME/mcp-manager/servers.json`。`home` 只给测试用。 */
+/** `$DSH_HOME/packs/mcp/servers.json`。`home` 只给测试用。 */
 export function serversPath(home?: string): string {
   if (home !== undefined) return join(home, 'servers.json')
-  return dshHomePath('mcp-manager', 'servers.json')
+  return dshHomePath('packs', 'mcp', 'servers.json')
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {

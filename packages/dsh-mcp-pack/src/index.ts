@@ -10,12 +10,12 @@ import { readOwned, type OwnedServers } from './servers.js'
 import { handleApply, handleGlobal, handleServers, handleWorkspace, lastAppliedCommands, type Envelope, type RouteContext, type RouteDeps } from './routes.js'
 import { createInventoryState, sectionText, type InventoryState } from './state.js'
 import { createScopeSnapshot, fingerprintOf, type ScopeSnapshot } from './snapshot.js'
-import { diagPath, loadLayers } from './store.js'
+import { diagPath, loadState } from './store.js'
 import { createOnDemandTools } from './tools.js'
 import type { LoaderFace } from './types.js'
 
 /** 插件名，同时是 bundle patch 的 entry id。 */
-export const name = 'dsh-mcp-manager'
+export const name = 'dsh-mcp-pack'
 
 /**
  * 硬依赖只有 `loader`：MCP 行是组合里的 entry，只有 Loader 能枚举它们。
@@ -27,12 +27,12 @@ export const inject = ['loader'] as const
 
 /** 宿主按完整 pathname 匹配，`/api` 前缀不能省。 */
 const ROUTES = {
-  rows: '/api/mcp-manager/rows',
-  global: '/api/mcp-manager/global',
-  workspace: '/api/mcp-manager/workspace',
-  apply: '/api/mcp-manager/apply',
-  diag: '/api/mcp-manager/diag',
-  servers: '/api/mcp-manager/servers',
+  rows: '/api/mcp-pack/rows',
+  global: '/api/mcp-pack/global',
+  workspace: '/api/mcp-pack/workspace',
+  apply: '/api/mcp-pack/apply',
+  diag: '/api/mcp-pack/diag',
+  servers: '/api/mcp-pack/servers',
 } as const
 
 interface FetchRouteSpec {
@@ -115,7 +115,7 @@ function scanOf(context: PluginContext) {
 }
 
 /**
- * 建共享快照：行发现走 Loader，读盘按 cwd 读两层策略与托管定义。
+ * 建共享快照：行发现走 Loader，读盘按 cwd 读 pack 策略与托管定义。
  *
  * 一份实例服务三处：根 state（名册段）、每个 agent 的视图、`mcp_load` 的目标查表。
  * 这样才能保证「面板上看到的」与「模型能加载的」是同一次求值的结果。
@@ -124,14 +124,9 @@ function createStore(context: PluginContext): ScopeSnapshot {
   return createScopeSnapshot({
     scan: () => scanOf(context),
     load: async (cwd) => {
-      const layers = await loadLayers({ cwd })
+      const policy = await loadState(cwd)
       const owned = await readOwned()
-      return {
-        global: layers.global,
-        workspace: layers.workspace,
-        owned: owned.value,
-        warnings: [...layers.warnings, ...owned.warnings],
-      }
+      return { policy, owned: owned.value, warnings: owned.warnings }
     },
     fingerprint: fingerprintOf,
   })
@@ -218,7 +213,7 @@ export function apply(ctx: unknown): void {
     ) + '\n'
 
   /**
-   * 把自检快照落到 `$DSH_HOME/mcp-manager/diag.json`。
+   * 把自检快照落到 `$DSH_HOME/packs/mcp/diag.json`。
    *
    * 为什么需要它：桌面版的 HTTP 走 `dsh-app://` 协议，命令行拿不到那些接口；
    * 排查只能靠浏览器控制台。落盘之后，出问题时有据可查，不必每次都要求用户
@@ -325,7 +320,7 @@ export function apply(ctx: unknown): void {
   // 刻意不在 root ctx 上注册名册段。
   //
   // 两个原因：宿主在同一层内禁止同名段重复注册，root 段会让每个 agent 的段都撞上它；
-  // 而 root 段只能读全局层，对「工作区里启用、全局里禁用」的行永远是空名册。
+  // 而 root 段只能按 default 求值，对「绑定 pack 里启用、default 里禁用」的行永远是空名册。
   diag.sectionRegistered = false
 
   // 按 agent 落地工作区策略。
@@ -371,7 +366,7 @@ export function apply(ctx: unknown): void {
         defineTool: adapters.defineTool,
         pool,
         resolveTarget: (targetName, callingAgent) => {
-          // 有 agent 就按它的工作区求值；没有（理论上不会）退回全局层。
+          // 有 agent 就按它绑定的 pack 求值；没有（理论上不会）退回 default。
           if (callingAgent !== null && typeof callingAgent === 'object') {
             const scope = hooks.scopeOf(callingAgent)
             if (scope !== null) return scope.inventory.target(targetName)

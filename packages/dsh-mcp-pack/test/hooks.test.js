@@ -1,6 +1,12 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { mkdtemp } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { installHooks } from '../lib/hooks.js'
+
+// hooks 自建的快照会读策略文件；不隔离开就会读到跑测试的人自己的 $DSH_HOME。
+process.env['DSH_HOME'] = await mkdtemp(join(tmpdir(), 'dmp-hooks-'))
 
 const MCP = '@deepseek-ai/dsh-mcp-client'
 

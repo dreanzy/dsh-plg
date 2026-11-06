@@ -17,8 +17,28 @@ function row(rowKey, serverName) {
   }
 }
 
-function layer(rows = {}) {
-  return { version: 1, rows, settings: { showSidebarEntry: true } }
+function emptyPack(name = 'default') {
+  return { name, groups: {}, rows: {} }
+}
+
+function packOf(rows = {}, groups = {}, name = 'p1') {
+  return { name, groups, rows }
+}
+
+/** 造一份 `PolicyState` 形状的最小对象；`pack` 为 null 表示按 default 求值。 */
+function policyOf({ pack = null, packId = 'default', defaultPack = emptyPack(), assignments = {}, binding = null } = {}) {
+  const packs = { default: defaultPack }
+  if (pack !== null) packs[packId] = pack
+  return {
+    packs: { packs },
+    ui: { showChip: true, defaultTab: 'groups' },
+    binding,
+    packId: pack === null ? 'default' : packId,
+    pack,
+    groups: { groups: [], assignments },
+    bindings: { bindings: binding === null ? {} : { 'd:/proj': binding }, extra: [] },
+    warnings: [],
+  }
 }
 
 function stdioDef(command) {
@@ -29,8 +49,7 @@ function fixture(options = {}) {
   const calls = { scan: 0, load: 0, fingerprint: 0 }
   let stamp = options.stamp ?? '0'
   let scanned = options.rows ?? [row('global:a', 'a'), row('global:b', 'b')]
-  let global = options.global ?? layer({ 'global:b': { mode: 'eager' } })
-  let workspace = options.workspace ?? null
+  let policy = options.policy ?? policyOf({ defaultPack: packOf({ 'global:b': { mode: 'eager' } }, {}, 'default') })
   let owned = options.owned ?? { version: 1, servers: {} }
   const snapshot = createScopeSnapshot({
     scan: () => {
@@ -39,7 +58,7 @@ function fixture(options = {}) {
     },
     load: async () => {
       calls.load += 1
-      return { global, workspace, owned, warnings: [] }
+      return { policy, owned, warnings: [] }
     },
     fingerprint: async () => {
       calls.fingerprint += 1
@@ -49,9 +68,15 @@ function fixture(options = {}) {
   return {
     snapshot,
     calls,
-    setStamp: (value) => { stamp = value },
-    setGlobal: (value) => { global = value },
-    setOwned: (value) => { owned = value },
+    setStamp: (value) => {
+      stamp = value
+    },
+    setPolicy: (value) => {
+      policy = value
+    },
+    setOwned: (value) => {
+      owned = value
+    },
   }
 }
 
@@ -84,6 +109,13 @@ test('并发刷新同一格只算一次', async () => {
   assert.equal(f.calls.load, 1)
 })
 
+test('cwd 的写法归一后命中同一格', async () => {
+  const f = fixture()
+  await f.snapshot.refresh('D:/Proj/')
+  await f.snapshot.refresh(process.platform === 'win32' ? 'd:\\proj' : 'D:/Proj')
+  assert.equal(f.snapshot.stats().reads, 1)
+})
+
 test('不同 scope 同 cwd 互不命中', async () => {
   const f = fixture()
   const scopeA = {}
@@ -95,7 +127,13 @@ test('不同 scope 同 cwd 互不命中', async () => {
 
 test('名册只收允许且非 eager 的行', async () => {
   const f = fixture({
-    global: layer({ 'global:b': { mode: 'eager' }, 'global:c': { enabled: false } }),
+    policy: policyOf({
+      defaultPack: packOf(
+        { 'global:b': { mode: 'eager' }, 'global:c': { enabled: false } },
+        {},
+        'default',
+      ),
+    }),
     rows: [row('global:a', 'a'), row('global:b', 'b'), row('global:c', 'c')],
   })
   const value = await f.snapshot.refresh(null)
@@ -117,14 +155,43 @@ test('托管定义并入行，重名则跳过并告警', async () => {
   assert.equal(value.inventory.some((item) => item.serverName === 's1'), true)
 })
 
-test('工作区层覆盖全局层', async () => {
+test('绑定 pack 覆盖 default，逐字段求值', async () => {
   const f = fixture({
-    global: layer({ 'global:a': { enabled: false } }),
-    workspace: layer({ 'global:a': { enabled: true } }),
+    policy: policyOf({
+      pack: packOf({ 'global:a': { enabled: true } }),
+      packId: 'p1',
+      binding: 'p1',
+      defaultPack: packOf({ 'global:a': { enabled: false, mode: 'lazy' } }, {}, 'default'),
+    }),
   })
   const value = await f.snapshot.refresh('D:/proj')
   assert.equal(value.policies.get('a').enabled, true)
-  assert.equal(value.resolved.get('global:a').from, 'workspace')
+  assert.equal(value.policies.get('a').mode, 'lazy')
+  assert.equal(value.resolved.get('global:a').from, 'pack')
+  assert.equal(value.resolved.get('global:a').sources.mode, 'default')
+  assert.equal(value.policy.packId, 'p1')
+})
+
+test('未绑定（pack 为 null）时按 default 求值', async () => {
+  const f = fixture({
+    policy: policyOf({ defaultPack: packOf({ 'global:a': { enabled: false } }, {}, 'default') }),
+  })
+  const value = await f.snapshot.refresh('D:/proj')
+  assert.equal(value.policies.get('a').enabled, false)
+  assert.equal(value.resolved.get('global:a').from, 'default')
+})
+
+test('组级只影响 enabled', async () => {
+  const f = fixture({
+    policy: policyOf({
+      defaultPack: packOf({ 'global:a': { mode: 'lazy' } }, { g1: false }, 'default'),
+      assignments: { 'global:a': 'g1' },
+    }),
+  })
+  const value = await f.snapshot.refresh(null)
+  assert.equal(value.policies.get('a').enabled, false)
+  assert.equal(value.policies.get('a').mode, 'lazy')
+  assert.equal(value.resolved.get('global:a').groupId, 'g1')
 })
 
 test('按目录失效不影响别的目录', async () => {

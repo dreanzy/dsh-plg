@@ -1,4 +1,4 @@
-# dsh-mcp-manager
+# dsh-mcp-pack
 
 Per-workspace control over MCP servers: which projects see which server, and when its tools enter the context.
 
@@ -10,7 +10,7 @@ This plugin takes over that decision:
 
 - **On-demand loading** — rows set to `dynamic` or `lazy` do not mount at all. No connection, no tool registration, and the host's `mcp-resources` has no target. The model reads a roster in the system prompt, then `mcp_load`s what it needs.
 - **Tool filtering** — a server that publishes fifty tools and is used for three pays for all fifty. `!`/wildcard rules narrow what reaches the model.
-- **Workspace layers** — one project can disable or defer a server without touching another.
+- **Packs and groups** — one project can disable or defer a server without touching another.
 
 ## Loading modes
 
@@ -22,29 +22,39 @@ This plugin takes over that decision:
 
 Trade-off: `dynamic` binds arguments best, but every `mcp_load` rewrites the tool section and invalidates the request prefix cache. `lazy` keeps the tool list fixed — the prefix never breaks — at the cost of one proxy hop per call.
 
-## Workspace layers
+## Packs and groups
 
-- A workspace is **a directory path**. Its policy lives in `<cwd>/.dsh/mcp-manager.json` and can be committed.
-- The global layer lives in `$DSH_HOME/mcp-manager/global.json`.
-- Each row's four fields (enabled, mode, tool rules, description) resolve **independently** through workspace → global → default. A workspace that only disables a row keeps inheriting its mode — that is the common case.
+- A **pack** is a named policy table. A workspace binds exactly one pack; an unbound workspace follows the built-in `default`. Policies no longer live inside the project: `<cwd>/.dsh/mcp-manager.json` is legacy, read for compatibility only.
+- A **group** says which rows belong together; it is orthogonal to a pack. `groups.json` keys assignments by row key (`own:<name>` / `global:<name>`).
+- Every field resolves **independently**:
+
+  ```
+  enabled:     pack.rows[row].enabled ?? pack.groups[group] ?? default.rows[row].enabled ?? default.groups[group] ?? true
+  mode:        pack.rows[row].mode ?? default.rows[row].mode ?? dynamic
+  tools:       pack.rows[row].tools ?? default.rows[row].tools ?? []
+  description: pack.rows[row].description ?? default.rows[row].description ?? ''
+  ```
+
+  The group level carries a single on/off boolean. If a group could also set a mode, the next question would be "the group says dynamic, the row says disabled — which wins", and that merge rule has no cheap answer. So mode, tool rules and description stay at the row level.
+- State lives in three independently atomic files under `$DSH_HOME/packs/mcp/`: `packs.json`, `groups.json`, `workspaces.json`.
 - Changing `workingDirectory` mid-session recomputes that session's policy.
 
 ## Panel
 
-Settings page → **MCP 管理**: one card per row (name, transport, source), with mode, switch and description. Edits stay in memory until you press save.
+Settings page → **MCP Pack**: three tabs, Groups / Packs / Workspace. The Groups tab edits structure only; switches live on the Packs tab, because one switch with two entry points drifts apart sooner or later.
 
 The footer's runtime self-check reports whether the host adapters were found, whether the on-demand tools registered, which rows the gate suppressed, and which connections the pool holds.
 
 ## Install
 
 ```sh
-dsh plugin --profile <profile> add @dreanzy/dsh-mcp-manager
+dsh plugin --profile <profile> add @dreanzy/dsh-mcp-pack
 ```
 
 From source (pnpm must be allowed to run the package's build):
 
 ```sh
-dsh plugin --profile <profile> add "github:dreanzy/dsh-plg#<sha>&path:/packages/dsh-mcp-manager"
+dsh plugin --profile <profile> add "github:dreanzy/dsh-plg#<sha>&path:/packages/dsh-mcp-pack"
 ```
 
 ## Managed area or your patch
@@ -53,7 +63,7 @@ The plugin manages two sources, keyed `global:` and `own:` respectively:
 
 | | Rows in your patch | Panel-managed |
 |---|---|---|
-| Definition lives in | your `cordis.patch.yml` | `$DSH_HOME/mcp-manager/servers.json` |
+| Definition lives in | your `cordis.patch.yml` | `$DSH_HOME/packs/mcp/servers.json` |
 | Mounted by | the host's Loader composition | `ctx.plugin` at runtime |
 | Lifetime | follows the host | follows the plugin — disconnects if the plugin is disabled or reloaded |
 | Editable in the panel | no (read-only) | yes |

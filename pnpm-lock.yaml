@@ -166,7 +166,7 @@ importers:
 
   .: {}
 
-  packages/dsh-mcp-manager:
+  packages/dsh-mcp-pack:
     dependencies:
       '@deepseek-ai/dsh-atomic-write':
         specifier: ^0.2.0-rc.2 || ^0.2.1-0

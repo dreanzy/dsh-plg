@@ -4,7 +4,7 @@ import type { Pool } from './pool.js'
 import { createInventoryState, sectionText, type InventoryState } from './state.js'
 import { createScopeSnapshot, type ScopeSnapshot } from './snapshot.js'
 import { readOwned } from './servers.js'
-import { loadLayers } from './store.js'
+import { loadState } from './store.js'
 import { releaseAgent } from './tools.js'
 import type { RowScan } from './types.js'
 
@@ -143,14 +143,9 @@ export function installHooks(deps: HookDeps): Hooks {
     createScopeSnapshot({
       scan: () => deps.scan(),
       load: async (cwd) => {
-        const layers = await loadLayers({ cwd })
+        const policy = await loadState(cwd)
         const owned = await readOwned()
-        return {
-          global: layers.global,
-          workspace: layers.workspace,
-          owned: owned.value,
-          warnings: [...layers.warnings, ...owned.warnings],
-        }
+        return { policy, owned: owned.value, warnings: owned.warnings }
       },
     })
   const scopes = new WeakMap<object, AgentScope>()
@@ -160,7 +155,7 @@ export function installHooks(deps: HookDeps): Hooks {
   let applying = 0
 
   async function reconcile(agent: AgentLike, cwd: string): Promise<AgentScope | null> {
-    // 求值按 cwd + scope 共享：托管定义、两层策略、行发现结果只读一次。
+    // 求值按 cwd + scope 共享：托管定义、pack 策略、行发现结果只读一次。
     const inventory = createInventoryState(snapshot, cwd, agent)
     await inventory.refresh()
 
@@ -195,7 +190,7 @@ export function installHooks(deps: HookDeps): Hooks {
         if (typeof disposer === 'function') disposeSection = disposer as () => void
       } catch (error) {
         sectionError = String(error)
-        deps.context.logger.warn(`dsh-mcp-manager: 为 ${agent.id} 注册名册段失败：${String(error)}`)
+        deps.context.logger.warn(`dsh-mcp-pack: 为 ${agent.id} 注册名册段失败：${String(error)}`)
       }
     }
 
@@ -217,7 +212,7 @@ export function installHooks(deps: HookDeps): Hooks {
         }
       }
     } catch (error) {
-      deps.context.logger.warn(`dsh-mcp-manager: 为 ${agent.id} 罩住 MCP 工具失败：${String(error)}`)
+      deps.context.logger.warn(`dsh-mcp-pack: 为 ${agent.id} 罩住 MCP 工具失败：${String(error)}`)
     }
 
     if (previous !== undefined) {
@@ -248,7 +243,7 @@ export function installHooks(deps: HookDeps): Hooks {
       await reconcile(agent, cwd)
     } catch (error) {
       // 绝不抛：这个监听器在会话创建路径上。
-      deps.context.logger.warn(`dsh-mcp-manager: 为 ${agent.id} 落地工作区策略失败：${String(error)}`)
+      deps.context.logger.warn(`dsh-mcp-pack: 为 ${agent.id} 落地工作区策略失败：${String(error)}`)
     } finally {
       applying -= 1
     }
@@ -260,7 +255,7 @@ export function installHooks(deps: HookDeps): Hooks {
     const retry = setTimeout(() => {
       if (!scopes.has(agent as object)) return
       void reconcile(agent, cwd).catch((error) => {
-        deps.context.logger.warn(`dsh-mcp-manager: 延迟罩住失败（agent=${agent.id}）：${String(error)}`)
+        deps.context.logger.warn(`dsh-mcp-pack: 延迟罩住失败（agent=${agent.id}）：${String(error)}`)
       })
     }, 1500)
     if (typeof retry === 'object' && typeof (retry as { unref?: () => void }).unref === 'function') {
@@ -307,7 +302,7 @@ export function installHooks(deps: HookDeps): Hooks {
     try {
       await reconcile(agent, cwd)
     } catch (error) {
-      deps.context.logger.warn(`dsh-mcp-manager: 切目录后重算失败（agent=${agent.id}）：${String(error)}`)
+      deps.context.logger.warn(`dsh-mcp-pack: 切目录后重算失败（agent=${agent.id}）：${String(error)}`)
     }
   }
 
@@ -316,7 +311,7 @@ export function installHooks(deps: HookDeps): Hooks {
     offs.push(deps.context.on('agent/disposed', onDisposed as never))
     offs.push(deps.context.on('working-directory/change', onDirectoryChange as never))
   } catch (error) {
-    deps.context.logger.warn(`dsh-mcp-manager: 订阅宿主事件失败：${String(error)}`)
+    deps.context.logger.warn(`dsh-mcp-pack: 订阅宿主事件失败：${String(error)}`)
   }
 
   return {
@@ -342,7 +337,7 @@ export function installHooks(deps: HookDeps): Hooks {
         try {
           await reconcile(agent, cwd)
         } catch (error) {
-          deps.context.logger.warn(`dsh-mcp-manager: 补落地失败（agent=${agent.id}）：${String(error)}`)
+          deps.context.logger.warn(`dsh-mcp-pack: 补落地失败（agent=${agent.id}）：${String(error)}`)
         }
       }
     },
@@ -351,7 +346,7 @@ export function installHooks(deps: HookDeps): Hooks {
         try {
           await reconcile(scope.agent, scope.cwd)
         } catch (error) {
-          deps.context.logger.warn(`dsh-mcp-manager: 重算失败（agent=${scope.agent.id}）：${String(error)}`)
+          deps.context.logger.warn(`dsh-mcp-pack: 重算失败（agent=${scope.agent.id}）：${String(error)}`)
         }
       }
     },

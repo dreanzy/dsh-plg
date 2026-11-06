@@ -1,6 +1,0 @@
-{
-  "meta": {
-    "title": "MCP 管理",
-    "description": "按工作区控制 MCP 服务器的可见性与加载方式：摘掉不用的连接与工具 schema，省下每次请求的 token。"
-  }
-}

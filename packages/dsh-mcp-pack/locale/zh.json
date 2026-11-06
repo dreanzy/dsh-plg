@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "MCP Pack",
+    "description": "按分包控制 MCP 服务器的可见性与加载方式：工作区只绑一个分包，未绑定按 default 求值。摘掉不用的连接与工具 schema，省下每次请求的 token。"
+  }
+}

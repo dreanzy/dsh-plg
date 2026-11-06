@@ -2,11 +2,19 @@ import { stat } from 'node:fs/promises'
 import { parseToolFilter } from './filter.js'
 import { renderInventory, type InventoryRow } from './inventory-section.js'
 import type { ConnectionSpec } from './mcp-connection.js'
-import { resolveRow } from './policy.js'
-import { EMPTY_OWNED, serversPath, type OwnedServers, type ServerDef } from './servers.js'
-import { globalPath, workspacePath } from './store.js'
+import { defaultPackOf, normalizeCwd, resolveRow } from './policy.js'
+import { serversPath, type OwnedServers, type ServerDef } from './servers.js'
+import {
+  groupsPath,
+  legacyGlobalPath,
+  legacyRowsPath,
+  legacyWorkspacePath,
+  packsPath,
+  workspacesPath,
+  type PolicyState,
+} from './store.js'
 import type { ToolTarget } from './tools.js'
-import type { LayerPolicy, McpRow, Mode, ResolvedRow, RowScan } from './types.js'
+import type { McpRow, Mode, ResolvedRow, RowScan } from './types.js'
 
 /** 一份已求值的快照：行、求值结果与两张派生表。 */
 export interface SnapshotValue {
@@ -20,8 +28,11 @@ export interface SnapshotValue {
   readonly targets: ReadonlyMap<string, ToolTarget>
   /** serverName → 启用状态与模式。 */
   readonly policies: ReadonlyMap<string, { readonly enabled: boolean; readonly mode: Mode }>
-  /** 两层策略原样保留：面板要显示「这一层有没有显式覆盖」。 */
-  readonly layers: { readonly global: LayerPolicy; readonly workspace: LayerPolicy | null }
+  /**
+   * 这一轮的策略原样保留：面板要显示 pack 名册、组定义、绑定表，
+   * 也要显示「这条行在绑定 pack / default 里有没有显式条目」。
+   */
+  readonly policy: PolicyState
   readonly owned: OwnedServers
   /** 行发现是否完整。false 时面板不得据此隐藏任何东西。 */
   readonly complete: boolean
@@ -32,10 +43,9 @@ export interface SnapshotValue {
 export interface SnapshotDeps {
   /** 行发现，同步：Loader 本来就在内存里。 */
   readonly scan: () => RowScan
-  /** 两层策略 + 托管定义。 */
+  /** 策略 + 托管定义。`warnings` 是策略之外那一部分的（例如托管定义解析）。 */
   readonly load: (cwd: string | null) => Promise<{
-    readonly global: LayerPolicy
-    readonly workspace: LayerPolicy | null
+    readonly policy: PolicyState
     readonly owned: OwnedServers
     readonly warnings: readonly string[]
   }>
@@ -165,20 +175,6 @@ export function mergeOwnedRows(
   return { rows, warnings: out }
 }
 
-function normalizeCwd(cwd: string | null): string | null {
-  if (cwd === null) return null
-  const trimmed = cwd.trim()
-  if (trimmed === '') return null
-  let unified = trimmed.replace(/\\/gu, '/')
-  if (process.platform === 'win32') unified = unified.toLowerCase()
-  if (unified.length > 1) {
-    const stripped = unified.replace(/\/+$/u, '')
-    if (stripped === '') return '/'
-    return /^[a-z]:$/iu.test(stripped) ? stripped + '/' : stripped
-  }
-  return unified
-}
-
 function cwdKeyOf(cwd: string | null): string {
   return normalizeCwd(cwd) ?? '(global)'
 }
@@ -210,13 +206,21 @@ async function fileStamp(path: string): Promise<string> {
 }
 
 /**
- * 三份文件的指纹：全局策略、托管定义、工作区策略。
+ * 状态文件的指纹：三个策略文件、托管定义，以及兼容读会读到的旧文件。
  *
  * 只兜「用户手改了文件」——同进程写入由 `invalidate()` 显式打掉，不靠时间戳。
+ * 旧文件也要算进来：删掉 `packs.json` 退回旧文件时，缓存必须失效。
  */
 export async function fingerprintOf(cwd: string | null): Promise<string> {
-  const paths = [globalPath(), serversPath()]
-  if (cwd !== null && cwd.trim() !== '') paths.push(workspacePath(cwd))
+  const paths = [
+    packsPath(),
+    groupsPath(),
+    workspacesPath(),
+    serversPath(),
+    legacyGlobalPath(),
+    legacyRowsPath(),
+  ]
+  if (cwd !== null && cwd.trim() !== '') paths.push(legacyWorkspacePath(cwd))
   const stamps = await Promise.all(paths.map((path) => fileStamp(path)))
   return stamps.join('|')
 }
@@ -262,16 +266,22 @@ export function createScopeSnapshot(deps: SnapshotDeps): ScopeSnapshot {
     if (!force && cached !== undefined && cached.fingerprint === stamp) return cached.value
 
     reads += 1
-    const layers = await deps.load(cwd)
+    const loaded = await deps.load(cwd)
     const scan = deps.scan()
-    const merged = mergeOwnedRows(scan.rows, layers.owned, [...layers.warnings, ...scan.warnings])
+    const merged = mergeOwnedRows(scan.rows, loaded.owned, [
+      ...loaded.policy.warnings,
+      ...loaded.warnings,
+      ...scan.warnings,
+    ])
+    const defaultPack = defaultPackOf(loaded.policy.packs)
+    const assignments = loaded.policy.groups.assignments
 
     const resolved = new Map<string, ResolvedRow>()
     const targets = new Map<string, ToolTarget>()
     const policies = new Map<string, { enabled: boolean; mode: Mode }>()
     const inventory: InventoryRow[] = []
     for (const row of merged.rows) {
-      const result = resolveRow(row.rowKey, layers.workspace, layers.global)
+      const result = resolveRow(row.rowKey, loaded.policy.pack, defaultPack, assignments)
       resolved.set(row.rowKey, result)
       policies.set(row.serverName, { enabled: result.enabled, mode: result.mode })
       if (!result.enabled) continue
@@ -294,8 +304,8 @@ export function createScopeSnapshot(deps: SnapshotDeps): ScopeSnapshot {
       inventory,
       targets,
       policies,
-      layers: { global: layers.global, workspace: layers.workspace },
-      owned: layers.owned,
+      policy: loaded.policy,
+      owned: loaded.owned,
       complete: scan.complete,
       warnings: merged.warnings,
     }

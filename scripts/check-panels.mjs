@@ -40,10 +40,11 @@ const RULES = {
     // 侧栏入口与工作区层已废弃：这两个字符串一旦回潮，就是又有人把面板挂回侧栏。
     mustNot: ['sidebar.panellist', 'showSidebarEntry'],
   },
-  'dsh-mcp-manager': {
-    must: { 'diagText': 2 },
-    // 渲染表达式里直接序列化 diag 的旧写法。
-    mustNot: ['}, JSON.stringify(diag'],
+  'dsh-mcp-pack': {
+    must: { 'TABS': 1, 'GroupsPage': 1, 'PackSettings': 1, 'WorkspacePage': 1, 'CHIP_CSS': 1, 'diagText': 2 },
+    // 侧栏入口已废弃、diag 的渲染表达式不再就地序列化：这两组字符串一旦回潮，
+    // 就是又有人把面板挂回侧栏，或把预计算改回每次渲染重做。
+    mustNot: ['sidebar.panellist', 'showSidebarEntry', '}, JSON.stringify(diag'],
   },
 }
 
