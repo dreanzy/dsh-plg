@@ -1196,7 +1196,7 @@ window.__ModuleLoader__.load({
         )
 
         ctx.slots.inject('conversation.input.right', () =>
-          ctx.slots.register({ name: 'conversation.input.right', id: CHIP_ID, order: 41 }, PluginChip),
+          ctx.slots.register({ name: 'conversation.input.right', id: CHIP_ID, order: 40 }, PluginChip),
         )
 
         ctx.slots.inject('shell.overlay', () =>

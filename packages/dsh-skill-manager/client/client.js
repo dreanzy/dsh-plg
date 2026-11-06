@@ -1082,7 +1082,7 @@ window.__ModuleLoader__.load({
         )
 
         ctx.slots.inject('conversation.input.right', () =>
-          ctx.slots.register({ name: 'conversation.input.right', id: CHIP_ID, order: 40 }, (props) => {
+          ctx.slots.register({ name: 'conversation.input.right', id: CHIP_ID, order: 42 }, (props) => {
             sessionId = props && props.sessionId ? props.sessionId : undefined
             const isOpen = useSyncExternalStore(subscribe, readOpen, readOpen)
             return h(

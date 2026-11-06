@@ -654,7 +654,7 @@ window.__ModuleLoader__.load({
         let sessionId
         ctx.slots.inject('conversation.input.right', () =>
           ctx.slots.register(
-            { name: 'conversation.input.right', id: 'dsh-mcp-manager-chip', order: 42 },
+            { name: 'conversation.input.right', id: 'dsh-mcp-manager-chip', order: 41 },
             (props) => {
               sessionId = props && props.sessionId ? props.sessionId : undefined
               const open = useSyncExternalStore(subscribeOverlay, readOverlay, readOverlay)
