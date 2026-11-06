@@ -652,30 +652,35 @@ window.__ModuleLoader__.load({
         )
 
         let sessionId
+
+        // 组件必须是稳定标识符：内联箭头每次渲染都是新类型，React 会整棵卸载重挂
+        // （AGENTS.md 客户端红线 4）。
+        const McpChip = (props) => {
+          sessionId = props && props.sessionId ? props.sessionId : undefined
+          const open = useSyncExternalStore(subscribeOverlay, readOverlay, readOverlay)
+          return h(
+            'button',
+            {
+              type: 'button',
+              style: S.chip,
+              'aria-pressed': open ? 'true' : 'false',
+              title: '按本工程调整 MCP 可见性与加载方式',
+              onClick: () => setOverlay(!open),
+            },
+            h(
+              'svg',
+              { width: 12, height: 12, viewBox: '0 0 16 16', 'aria-hidden': true, style: { display: 'block', flexShrink: 0 } },
+              h('rect', { x: 2, y: 2.5, width: 12, height: 4, rx: 1, stroke: 'currentColor', strokeWidth: 1.6, fill: 'none' }),
+              h('rect', { x: 2, y: 9.5, width: 12, height: 4, rx: 1, stroke: 'currentColor', strokeWidth: 1.6, fill: 'none' }),
+            ),
+            'MCP',
+          )
+        }
+
         ctx.slots.inject('conversation.input.right', () =>
           ctx.slots.register(
             { name: 'conversation.input.right', id: 'dsh-mcp-manager-chip', order: 41 },
-            (props) => {
-              sessionId = props && props.sessionId ? props.sessionId : undefined
-              const open = useSyncExternalStore(subscribeOverlay, readOverlay, readOverlay)
-              return h(
-                'button',
-                {
-                  type: 'button',
-                  style: S.chip,
-                  'aria-pressed': open ? 'true' : 'false',
-                  title: '按本工程调整 MCP 可见性与加载方式',
-                  onClick: () => setOverlay(!open),
-                },
-                h(
-                  'svg',
-                  { width: 12, height: 12, viewBox: '0 0 16 16', 'aria-hidden': true, style: { display: 'block', flexShrink: 0 } },
-                  h('rect', { x: 2, y: 2.5, width: 12, height: 4, rx: 1, stroke: 'currentColor', strokeWidth: 1.6, fill: 'none' }),
-                  h('rect', { x: 2, y: 9.5, width: 12, height: 4, rx: 1, stroke: 'currentColor', strokeWidth: 1.6, fill: 'none' }),
-                ),
-                'MCP',
-              )
-            },
+            McpChip,
           ),
         )
 
