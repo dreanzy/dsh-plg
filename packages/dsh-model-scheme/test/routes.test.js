@@ -8,6 +8,7 @@ import {
   ROUTES,
   handleApply,
   handleRead,
+  handleReset,
   handleSupport,
   toResponse,
   wrapHandler,
@@ -76,12 +77,21 @@ function depsFor(home, overrides = {}) {
  * 路径与信封
  * ------------------------------------------------------------------ */
 
-test('路径：三条路由都在 /api/model-scheme/ 前缀下', () => {
+test('路径：四条路由都在 /api/model-scheme/ 前缀下', () => {
   assert.deepEqual(ROUTES, {
     read: '/api/model-scheme/read',
     apply: '/api/model-scheme/apply',
     support: '/api/model-scheme/support',
+    reset: '/api/model-scheme/reset',
   })
+})
+
+test('reset：缺 sessionId 返回 bad-request，不调用宿主', async () => {
+  const home = await tempRoot()
+  const { deps } = depsFor(home)
+  const result = await handleReset(deps, null)
+  assert.equal(result.ok, false)
+  assert.equal(result.error.code, 'bad-request')
 })
 
 test('信封：成功带 data，失败带 error.code 与 message', async () => {

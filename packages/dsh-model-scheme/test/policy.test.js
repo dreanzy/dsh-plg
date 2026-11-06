@@ -341,6 +341,19 @@ test('写入：绑定与解绑，解绑删键而不是写 null', async () => {
   assert.deepEqual(JSON.parse(text), { version: 1 })
 })
 
+test('写入：绑定出厂方案归一化成未绑定', async () => {
+  // 工作区只有两种状态：单独指定某个方案，或不指定、落到全局。
+  // 出厂方案是全局层的取值，不是目录能直接指向的目标。
+  const home = await tempRoot()
+  const cwd = await tempRoot()
+  await applyCommands(cwd, [{ op: 'bindWorkspace', schemeId: BUILTIN_SCHEME_ID }], { home })
+
+  const text = await readFile(workspaceSchemePath(cwd), 'utf8')
+  assert.equal(text.includes('schemeId'), false, '不应在磁盘上留下指向出厂方案的绑定')
+  assert.deepEqual(JSON.parse(text), { version: 1 })
+  assert.equal(resolve(await loadState(cwd, { home }), cwd).source, 'builtin')
+})
+
 test('写入：工作区命令缺 cwd 直接抛错', async () => {
   const home = await tempRoot()
   await assert.rejects(

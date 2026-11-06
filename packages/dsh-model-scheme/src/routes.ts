@@ -51,14 +51,29 @@ export interface RouteDeps {
   builtinPrompt(): unknown
   support(): SupportView
   lastError(): string | undefined
+  /**
+   * 把某个在线会话的模型路由恢复成它所在方案的值。
+   *
+   * 只作用于那一条会话（写一条 `model/selection`），不动方案配置，也不影响其他会话。
+   * 会话必须在线：空白会话同样有 agent，冷会话需要先打开。
+   */
+  resetSession(sessionId: string): Promise<{ provider: string; model: string }>
+  /**
+   * 某条在线会话当前实际用的路由。
+   *
+   * 面板拿它和方案里配的会话路由比对：只有不一致时才需要「恢复」这个动作，
+   * 常驻一个按钮会让人以为每次都要点一下。
+   */
+  sessionModel(sessionId: string): Promise<{ provider: string; model: string; reasoningEffort?: string } | null>
   logger: { warn(message: string): void }
 }
 
 /** 路径。宿主按完整 pathname 匹配，`/api` 前缀不能省。 */
-export const ROUTES: { read: string; apply: string; support: string } = {
+export const ROUTES: { read: string; apply: string; support: string; reset: string } = {
   read: '/api/model-scheme/read',
   apply: '/api/model-scheme/apply',
   support: '/api/model-scheme/support',
+  reset: '/api/model-scheme/reset',
 }
 
 /**
@@ -327,7 +342,18 @@ export async function handleRead(deps: RouteDeps, body: Record<string, unknown> 
     if (!cwdResult.ok) return badRequest(cwdResult.message)
     const cwd = cwdResult.cwd
     const state = await deps.loadState(cwd)
-    return { ok: true, data: buildData(deps, cwd, state) }
+    const data = buildData(deps, cwd, state)
+
+    const rawSessionId = body === null ? undefined : body['sessionId']
+    if (typeof rawSessionId !== 'string' || rawSessionId.trim() === '') return { ok: true, data }
+
+    // 会话不在线属于正常情况（冷会话、别的进程），不该让整次读取失败。
+    try {
+      const sessionModel = await deps.sessionModel(rawSessionId.trim())
+      return { ok: true, data: { ...(data as unknown as Record<string, unknown>), sessionModel } }
+    } catch {
+      return { ok: true, data }
+    }
   } catch (error) {
     return internal(deps, '读取模型方案', error)
   }
@@ -372,6 +398,25 @@ export async function handleSupport(deps: RouteDeps, body: Record<string, unknow
     return { ok: true, data: { support: deps.support(), lastError: deps.lastError() ?? null } }
   } catch (error) {
     return internal(deps, '探测能力', error)
+  }
+}
+
+/**
+ * 把某个会话的模型恢复成方案路由。
+ *
+ * 存在的理由：手动切模型写的是会话级选择，切走再切回会保留——这是对的，
+ * 但用户没有任何“回到方案”的出口。这条路由就是那个出口。
+ */
+export async function handleReset(deps: RouteDeps, body: Record<string, unknown> | null): Promise<Envelope> {
+  const sessionId = body === null ? undefined : body['sessionId']
+  if (typeof sessionId !== 'string' || sessionId.trim() === '') {
+    return badRequest('reset 需要 sessionId')
+  }
+  try {
+    const route = await deps.resetSession(sessionId.trim())
+    return { ok: true, data: { provider: route.provider, model: route.model } }
+  } catch (error) {
+    return internal(deps, '恢复方案路由', error)
   }
 }
 

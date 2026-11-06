@@ -289,6 +289,8 @@ export function installHooks(ctx: PluginContext, options: HooksOptions = {}): Ho
     if (describeTiers(resolved) === null) return
     const deps = tierDeps(agent)
     const support = probeSupport(deps)
+    // 面板的 support() 在根作用域上取不到 subagents，只能沿用它。
+    lastProbe = support
     if (!support.subagents || !support.agentOptions) return
 
     const disposeTool = registerTierTool(agent.raw, deps)
@@ -471,7 +473,11 @@ export function installHooks(ctx: PluginContext, options: HooksOptions = {}): Ho
       restrict = typeof root?.['restrict'] === 'function'
     }
     // support() 在根作用域上，拿不到 subagents；沿用最近一次按 agent 作用域做的探测。
-    const probe = lastProbe ?? { subagents: false, agentOptions: false, reason: '还没有会话创建过，无法判断档位能力' }
+    //
+    // 没有历史探测时按「可用」放行，而不是「不可用」：面板拿这一格决定是否禁用
+    // 档位编辑，判成 false 会让用户「没开会话就配不了方案」。真正的可用性在
+    // agent/created 时按会话判断，那时才是唯一有意义的时点。
+    const probe = lastProbe ?? { subagents: true, agentOptions: true }
     return {
       // 第一格是「档位委派能不能工作」：服务在但 provider 不支持 agentOptions 时同样不可用。
       subagents: probe.subagents && probe.agentOptions,

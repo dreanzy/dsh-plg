@@ -422,7 +422,12 @@ function applyToBinding(
   for (const command of commands) {
     if (command.op !== 'bindWorkspace') continue
     // 与 setDefaultScheme 同理：不校验存在性，悬空绑定由 resolve 降级并报「绑定失效」。
-    const id = command.schemeId
+    //
+    // 出厂方案归一化成「未绑定」：工作区只有两种状态——单独指定某个方案，或不指定、
+    // 落到全局。出厂方案是全局层的取值，不是目录能直接指向的目标。求值上两者等价，
+    // 但数据里留一个 builtin 会让「哪些目录单独指定了方案」的判断多一种特例。
+    const raw = command.schemeId === BUILTIN_SCHEME_ID ? null : command.schemeId
+    const id = raw
     schemeId = id === null || id.trim() === '' ? undefined : id
   }
   return serializeWorkspaceBinding({ ...(schemeId === undefined ? {} : { schemeId }) })

@@ -54,7 +54,6 @@ window.__ModuleLoader__.load({
       deleted: Object.freeze([]),
       // undefined = 这条键没改过；null = 显式删键（跟随出厂方案 / 跟随全局默认）。
       defaultId: undefined,
-      binding: undefined,
       prompts: undefined,
     })
 
@@ -64,6 +63,7 @@ window.__ModuleLoader__.load({
       read: '/api/model-scheme/read',
       apply: '/api/model-scheme/apply',
       support: '/api/model-scheme/support',
+      reset: '/api/model-scheme/reset',
     }
 
     /**
@@ -94,8 +94,14 @@ window.__ModuleLoader__.load({
     }
 
     const api = {
-      read: (cwd) => post(PATHS.read, cwd ? { cwd: cwd } : {}),
+      read: (cwd, sessionId) =>
+        post(PATHS.read, {
+          ...(cwd ? { cwd: cwd } : {}),
+          ...(typeof sessionId === 'string' && sessionId !== '' ? { sessionId: sessionId } : {}),
+        }),
       apply: (cwd, commands) => post(PATHS.apply, cwd ? { cwd: cwd, commands: commands } : { commands: commands }),
+      /** 把一条会话的模型恢复成它所在方案的值。只写一条 model/selection。 */
+      reset: (sessionId) => post(PATHS.reset, { sessionId: sessionId }),
     }
 
     // ---------- 样式 ----------
@@ -209,18 +215,54 @@ window.__ModuleLoader__.load({
         fontFamily: 'inherit',
         resize: 'vertical',
       },
-      // 原生弹层由浏览器绘制，不跟随页面配色；不声明 color-scheme 时选项是浅字浅底。
-      option: { color: 'CanvasText', background: 'Canvas' },
+      // 下拉触发器：与官方设置页的「详细 ⌄」同形——细边框、6px 圆角、透明底，
+      // 右侧留出箭头位置。原生 select 在暗色主题下是系统绘制，无法跟随主题，
+      // 所以选项由 S.menu 自己画。
       select: {
+        display: 'inline-flex',
+        alignItems: 'center',
+        gap: '6px',
         fontSize: '12px',
-        padding: '3px 4px',
-        borderRadius: '4px',
+        padding: '4px 8px',
+        borderRadius: '6px',
         border: '1px solid ' + T.border,
         background: 'transparent',
         color: T.text,
-        colorScheme: 'light dark',
         maxWidth: '260px',
+        cursor: 'pointer',
       },
+      selectLabel: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+      selectCaret: { color: T.faint, fontSize: '10px', lineHeight: 1 },
+      menu: {
+        position: 'absolute',
+        top: 'calc(100% + 4px)',
+        right: 0,
+        minWidth: '100%',
+        maxHeight: '260px',
+        overflow: 'auto',
+        background: T.surface,
+        border: '1px solid ' + T.borderStrong,
+        borderRadius: '8px',
+        padding: '4px',
+        boxShadow: '0 12px 32px rgba(0,0,0,0.28)',
+        zIndex: 30,
+        display: 'flex',
+        flexDirection: 'column',
+        gap: '2px',
+      },
+      menuItem: {
+        textAlign: 'left',
+        background: 'transparent',
+        border: 'none',
+        borderRadius: '6px',
+        padding: '6px 8px',
+        color: T.text,
+        fontSize: '12px',
+        cursor: 'pointer',
+        whiteSpace: 'nowrap',
+      },
+      menuItemActive: { background: 'var(--dsw-alias-bg-layer-2, rgba(127,127,127,0.18))' },
+      menuItemDisabled: { color: T.faint, cursor: 'default' },
       section: { borderRadius: '8px', border: '1px solid ' + T.border, marginBottom: '8px' },
       groupHead: { display: 'flex', alignItems: 'center', gap: '8px', padding: '8px 10px', borderBottom: '1px solid ' + T.border },
       groupName: { fontWeight: 600, flex: '1 1 auto', color: T.text },
@@ -243,24 +285,37 @@ window.__ModuleLoader__.load({
         whiteSpace: 'nowrap',
       },
       row: { display: 'flex', alignItems: 'center', gap: '8px', padding: '8px 10px', borderTop: '1px solid ' + T.border },
-      rowFirst: { display: 'flex', alignItems: 'center', gap: '8px', padding: '8px 10px' },
+      // 分组内的行之间加一条细分隔线：官方设置页每行都有，靠它把「一行一个设置」
+      // 的层级撑起来；没有线的密集列表读起来像一段连续文本。
+      rowFirst: {
+        display: 'flex',
+        alignItems: 'center',
+        gap: '8px',
+        padding: '10px',
+        borderBottom: '1px solid ' + T.border,
+      },
       rowMain: { flex: '1 1 auto', minWidth: 0 },
       rowName: { display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap', color: T.text, fontWeight: 600 },
-      rowMeta: { color: T.dim, fontSize: '11px', marginTop: '3px', lineHeight: 1.5 },
+      rowMeta: { color: T.dim, fontSize: '12px', marginTop: '3px', lineHeight: 1.5 },
       field: { padding: '6px 0 10px', borderTop: '1px solid ' + T.border },
       fieldHead: { display: 'flex', alignItems: 'center', gap: '8px', padding: '0 10px', marginTop: '8px' },
       fieldRow: { display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', padding: '4px 10px' },
       fieldLabel: { color: T.dim, fontSize: '11px', minWidth: '64px' },
       fallbackRow: { display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap', padding: '4px 10px 4px 22px' },
       disabledSection: { opacity: 0.5, pointerEvents: 'none', userSelect: 'none' },
+      /**
+       * 按钮。主操作**不用品牌色实心**：ui-baseline 第 3 条明确禁止，品牌蓝块在暗色
+       * 主题下会盖掉周围信息，官方设置页也不是那个观感。主操作靠浅底 + 字重区分。
+       */
       button: (primary, danger) => ({
-        border: primary ? 0 : '1px solid ' + (danger ? T.error : T.border),
+        border: '1px solid ' + T.border,
         borderRadius: '6px',
         padding: '4px 9px',
         fontSize: '12px',
         cursor: 'pointer',
-        background: primary ? T.accent : 'transparent',
-        color: primary ? T.onAccent : danger ? T.error : T.text,
+        background: primary ? 'var(--dsw-alias-bg-layer-2, rgba(127,127,127,0.18))' : 'transparent',
+        color: danger ? T.error : T.text,
+        fontWeight: primary ? 600 : 400,
         whiteSpace: 'nowrap',
       }),
       probeFail: {
@@ -934,22 +989,82 @@ window.__ModuleLoader__.load({
     }
 
     /** 原生 select；选项色用系统色，理由见 S.select 的注释。 */
+    /**
+     * 自绘下拉。原生 \`<select>\` 的选项由系统绘制，暗色主题下是浅字浅底、还带系统
+     * 边框，和官方设置页的控件完全不是一个观感（官方是细边框胶囊 + 自绘菜单）。
+     *
+     * 调用方式保持不变：传 \`value\` / \`onChange\`，子节点是 \`Option\`。
+     * \`Option\` 返回的是数据而不是 DOM，这里收集后画成菜单项。
+     */
     function Select(props) {
+      const [open, setOpen] = useState(false)
+      const raw = props.children
+      const list = (Array.isArray(raw) ? raw : [raw]).flat().filter(Boolean)
+      const items = []
+      for (const child of list) {
+        if (child && typeof child === 'object' && child.type === Option && child.props) items.push(Option(child.props))
+      }
+      const wanted = props.value === undefined || props.value === null ? '' : String(props.value)
+      const current = items.find((item) => String(item.value) === wanted)
+
+      const choose = (item) => {
+        setOpen(false)
+        if (typeof props.onChange === 'function') props.onChange({ target: { value: item.value } })
+      }
+
       return h(
-        'select',
-        {
-          style: { ...S.select, ...(props.style || {}) },
-          value: props.value,
-          disabled: props.disabled === true,
-          title: props.title,
-          onChange: props.onChange,
-        },
-        props.children,
+        'div',
+        { style: { position: 'relative', ...(props.style || {}) } },
+        h(
+          'button',
+          {
+            type: 'button',
+            style: { ...S.select, ...(props.disabled === true ? { opacity: 0.5, cursor: 'not-allowed' } : null) },
+            title: props.title,
+            disabled: props.disabled === true,
+            'aria-haspopup': 'listbox',
+            'aria-expanded': open,
+            'aria-label': props.title || undefined,
+            onClick: () => setOpen((value) => !value),
+          },
+          h('span', { style: S.selectLabel }, current ? current.label : ''),
+          h('span', { style: S.selectCaret }, '▾'),
+        ),
+        open
+          ? h(
+              'div',
+              { style: S.menu, role: 'listbox' },
+              items.map((item) =>
+                h(
+                  'button',
+                  {
+                    key: String(item.value),
+                    type: 'button',
+                    role: 'option',
+                    'aria-selected': String(item.value) === wanted,
+                    disabled: item.disabled,
+                    style: {
+                      ...S.menuItem,
+                      ...(String(item.value) === wanted ? S.menuItemActive : null),
+                      ...(item.disabled ? S.menuItemDisabled : null),
+                    },
+                    onClick: () => {
+                      if (!item.disabled) choose(item)
+                    },
+                  },
+                  item.label,
+                ),
+              ),
+            )
+          : null,
       )
     }
 
+    /**
+     * 下拉选项的**数据**，不是 DOM 节点。理由见 Select。
+     */
     function Option(props) {
-      return h('option', { value: props.value, style: S.option, disabled: props.disabled === true }, props.children)
+      return { option: true, value: props.value, disabled: props.disabled === true, label: props.children }
     }
 
     // ---------- 路由编辑 ----------
@@ -1034,7 +1149,7 @@ window.__ModuleLoader__.load({
                 effortKnown ? null : h(Option, { value: effort, disabled: true }, effort + '（该模型未公布）'),
                 efforts.map((candidate) => h(Option, { key: candidate.id, value: candidate.id }, candidate.name || candidate.id)),
               )
-            : h('span', { style: S.rowMeta }, efforts.length > 0 ? '跟随模型默认（不写 reasoningEffort）' : '该模型不公布思考等级'),
+            : h('span', { style: S.rowMeta }, efforts.length > 0 ? '跟随模型默认' : '该模型不公布思考等级'),
           effort !== ''
             ? h(Button, { disabled: disabled, title: '删掉 reasoningEffort 键', onClick: () => onChange(routeWithoutEffort(value)) }, '跟随模型默认')
             : efforts.length > 0
@@ -1071,7 +1186,7 @@ window.__ModuleLoader__.load({
             'div',
             { style: S.rowMain },
             h('div', { style: S.rowName }, TIER_NAMES[tierId], h(Tag, null, tierId), h(Tag, null, '未配置')),
-            h('div', { style: S.rowMeta }, '未配置的档不暴露给模型；启用后才出现在 subagent_tier 的枚举里。'),
+            h('div', { style: S.rowMeta }, '没配置的档不会出现在 subagent_tier 的可选值里。'),
           ),
           h(Button, { disabled: disabled, onClick: () => onChange(defaultTier(tierId, catalog)) }, '启用此档'),
         )
@@ -1123,7 +1238,7 @@ window.__ModuleLoader__.load({
           'div',
           { style: { ...S.fieldRow, paddingTop: '8px' } },
           h('span', { style: S.fieldLabel }, '备选'),
-          h('span', { style: S.rowMeta }, fallbacks.length === 0 ? '首选不可用时不换模型，直接报错' : '按顺序前进，只换确定性失败的那一条'),
+          h('span', { style: S.rowMeta }, fallbacks.length === 0 ? '首选不可用时不换模型，直接报错' : '首选不可用时按顺序换下一个'),
           h(Button, {
             disabled: disabled,
             onClick: () => setTier({ ...tier, fallbacks: fallbacks.concat([firstRoute(catalog)]) }),
@@ -1269,11 +1384,11 @@ window.__ModuleLoader__.load({
             'div',
             { style: S.rowName },
             row.name,
-            row.builtin ? h(Tag, { title: '不落盘、不可覆盖、不可删除' }, '出厂') : null,
+            row.builtin ? h(Tag, { title: '内置方案，不能修改或删除' }, '出厂') : null,
             row.dirty ? h(Tag, null, '未保存') : null,
-            props.active ? h(Tag, { title: '当前工作区求值链的结果' }, '生效中') : null,
-            props.isDefault ? h(Tag, { title: '全局层 defaultSchemeId 指向它' }, '全局默认') : null,
-            props.boundHere ? h(Tag, { title: '当前工作区绑定了它' }, '本工作区') : null,
+            props.active ? h(Tag, { title: '这个目录当前实际在用的方案' }, '生效中') : null,
+            props.isDefault ? h(Tag, { title: '所有工作区的默认方案' }, '全局默认') : null,
+            props.boundHere ? h(Tag, { title: '这个目录绑定了它' }, '本工作区') : null,
           ),
           h(
             'div',
@@ -1284,64 +1399,8 @@ window.__ModuleLoader__.load({
         ),
         row.builtin ? null : h(Button, { onClick: props.onEdit }, '编辑'),
         row.builtin ? null : h(Button, { onClick: props.onDelete, danger: true }, '删除'),
-        h(Button, { disabled: props.isDefault, onClick: props.onSetDefault }, props.isDefault ? '已是默认' : '设为全局默认'),
       )
     }
-
-    /**
-     * 工作区绑定：当前 cwd、它绑的方案、「跟随全局默认」。
-     *
-     * 跟随 = 删掉 schemeId 键（bindWorkspace / null），不是写 null 值。
-     * 下拉里只列方案，不列「跟随」——跟随是独立按钮，两种状态一眼分得开。
-     */
-    function WorkspaceSection(props) {
-      const { data, workspaces, currentCwd, draft, onBinding } = props
-      const current = draft.binding !== undefined ? draft.binding : workspaceIdOf(data)
-      const options = []
-      options.push(h(Option, { key: BUILTIN_ID, value: BUILTIN_ID }, BUILTIN_NAME))
-      for (const id of Object.keys(schemesOf(data)).sort()) {
-        options.push(h(Option, { key: id, value: id }, schemeNameOf(data, id)))
-      }
-      return h(
-        'div',
-        { style: S.section },
-        h(
-          'div',
-          { style: S.groupHead },
-          h('span', { style: S.groupName }, '工作区绑定'),
-          h(Tag, { title: '绑定只作用于该目录下之后新建的会话' }, '新建会话生效'),
-        ),
-        h(
-          'div',
-          { style: S.rowFirst },
-          h(
-            'div',
-            { style: S.rowMain },
-            h('div', { style: S.rowMeta }, '当前工作目录'),
-            h('div', { style: S.mono }, currentCwd || '（没有可用的会话目录：先打开一个会话）'),
-            h(
-              'div',
-              { style: S.rowMeta },
-              '本目录绑定：' + (current ? schemeNameOf(data, current) : '跟随全局默认') +
-                (workspaces.length > 1 ? ' · 已统计 ' + String(workspaces.length) + ' 个已知工作区' : ''),
-            ),
-          ),
-          current ? h(Button, { disabled: currentCwd === null, onClick: () => onBinding(null) }, '跟随全局默认') : null,
-          h(
-            Select,
-            {
-              value: current || '',
-              disabled: currentCwd === null,
-              title: currentCwd === null ? '没有工作目录就不能绑定' : '把这个方案绑到当前目录',
-              onChange: (event) => onBinding(event.target.value === '' ? null : event.target.value),
-            },
-            h(Option, { value: '', disabled: true }, current ? '（已绑定）' : '跟随全局默认'),
-            options,
-          ),
-        ),
-      )
-    }
-
 
     // ---------- 提示词编辑 ----------
 
@@ -1355,7 +1414,7 @@ window.__ModuleLoader__.load({
       const value = typeof props.value === 'string' ? props.value : ''
       let inner = null
       if (value.trim() === '') {
-        inner = h('div', { style: S.error }, '空白不保存：空串等于跟随内置，请点「恢复内置」。')
+        inner = h('div', { style: S.error }, '不能为空。想用内置文本请点「恢复内置」。')
       } else {
         const hit = routeLikeIn(value)
         if (hit !== '') {
@@ -1395,7 +1454,7 @@ window.__ModuleLoader__.load({
           { style: S.fieldHead },
           h('span', { style: S.groupName }, TIER_NAMES[tierId]),
           h(Tag, null, tierId),
-          overridden ? h(Tag, { danger: true, title: '该档至少有一个字段来自用户覆盖' }, '已覆盖') : h(Tag, null, '内置'),
+          overridden ? h(Tag, { danger: true, title: '这一档至少有一个字段是你自己填的' }, '已自定义') : h(Tag, null, '内置'),
           h(Button, {
             disabled: disabled || !overridden,
             title: overridden ? '删掉该档的覆盖，回到内置' : '当前就是内置',
@@ -1462,7 +1521,7 @@ window.__ModuleLoader__.load({
           'div',
           { style: S.groupHead },
           h('span', { style: S.groupName }, '提示词'),
-          h(Tag, { title: '所有方案共用同一份覆盖，与方案正交' }, '全局'),
+          h(Tag, { title: '所有方案共用这一份，与具体方案无关' }, '全局'),
         ),
         h(
           'div',
@@ -1470,7 +1529,7 @@ window.__ModuleLoader__.load({
           h(
             'div',
             { style: S.rowMain },
-            h('div', { style: S.rowMeta }, '编排段与四档判据会写进系统提示词；改完点面板底部保存。「恢复内置」立即生效。空输入框不等于恢复内置，请用那个按钮。'),
+            h('div', { style: S.rowMeta }, '这些文字会进入系统提示词。改完点面板底部「保存」；想回到插件自带的文本，点「恢复内置」。输入框留空不算恢复内置。'),
           ),
         ),
         h(
@@ -1480,8 +1539,8 @@ window.__ModuleLoader__.load({
             'div',
             { style: S.fieldHead },
             h('span', { style: S.groupName }, '编排段'),
-            h(Tag, { title: '系统提示词段名' }, 'model-scheme.delegation'),
-            delegationOverridden ? h(Tag, { danger: true, title: '当前用的是用户覆盖' }, '已覆盖') : h(Tag, null, '内置'),
+            h(Tag, { title: '系统提示词里的段名：model-scheme.delegation' }, '系统提示词'),
+            delegationOverridden ? h(Tag, { danger: true, title: '当前用的是你自己写的文本' }, '已自定义') : h(Tag, null, '内置'),
             h(Button, {
               disabled: disabled || !delegationOverridden,
               title: delegationOverridden ? '删掉 delegation 覆盖，回到内置' : '当前就是内置',
@@ -1538,6 +1597,20 @@ window.__ModuleLoader__.load({
       const data = state.data
       const support = (data && data.support) || {}
 
+      /**
+       * 进入编辑态 ≠ 改过。
+       *
+       * 草稿与已存的方案规范化后逐字段相同，就不该显示「未保存」——否则点一下
+       * 「编辑」，底部立刻冒出一条「1 处未保存」，像是已经动了什么。
+       * 新建方案（列表里还没有这个 id）才算真的脏。
+       */
+      const editingDirty = (() => {
+        if (!draft.editing) return false
+        const original = schemesOf(data)[draft.editing.id]
+        if (original === undefined) return true
+        return JSON.stringify(normalizeScheme(draft.editing.value)) !== JSON.stringify(normalizeScheme(original))
+      })()
+
       const rows = useMemo(() => {
         if (!data) return []
         const schemes = schemesOf(data)
@@ -1546,10 +1619,10 @@ window.__ModuleLoader__.load({
         for (const id of Object.keys(schemes).sort()) {
           if (draft.deleted.indexOf(id) >= 0) continue
           const value = id === draftId ? draft.editing.value : schemes[id]
-          list.push({ id: id, name: isRecord(value) && value.name ? value.name : id, scheme: value, builtin: false, dirty: id === draftId })
+          list.push({ id: id, name: isRecord(value) && value.name ? value.name : id, scheme: value, builtin: false, dirty: id === draftId && editingDirty })
         }
         if (draftId !== null && !Object.prototype.hasOwnProperty.call(schemes, draftId) && draft.deleted.indexOf(draftId) < 0) {
-          list.push({ id: draftId, name: draft.editing.value.name || '（未命名）', scheme: draft.editing.value, builtin: false, dirty: true })
+          list.push({ id: draftId, name: draft.editing.value.name || '（未命名）', scheme: draft.editing.value, builtin: false, dirty: editingDirty })
         }
         return list
       }, [data, draft])
@@ -1568,15 +1641,15 @@ window.__ModuleLoader__.load({
 
       const workspaces = state.workspaces
       const currentCwd = state.currentCwd
+      // 只读值：设置页不再提供绑定入口，但列表行仍要标出「本工作区绑定」。
+      const currentBinding = workspaceIdOf(data)
       const defaultId = draft.defaultId !== undefined ? draft.defaultId : defaultIdOf(data)
-      const currentBinding = draft.binding !== undefined ? draft.binding : workspaceIdOf(data)
       const activeId = data.resolved && data.resolved.id ? data.resolved.id : null
       const warnings = data.state && Array.isArray(data.state.warnings) ? data.state.warnings : []
       const dirtyCount =
-        (draft.editing ? 1 : 0) +
+        (editingDirty ? 1 : 0) +
         draft.deleted.length +
         (draft.defaultId !== undefined ? 1 : 0) +
-        (draft.binding !== undefined ? 1 : 0) +
         (hasPromptPatch(draft.prompts) ? 1 : 0)
 
       // ---------- 改动 ----------
@@ -1609,7 +1682,7 @@ window.__ModuleLoader__.load({
         // 求值链回落全局层并在面板标「绑定失效」（见 spec §4）。
         setConfirm({
           title: '删除仍被绑定的方案',
-          message: '这个方案还被 ' + String(bound.length) + ' 个工作区绑定。删除后它们会回落全局默认，绑定记录保留并标为「绑定失效」。要先解绑请先到工作区绑定处选「跟随全局默认」。',
+          message: '这个方案还被 ' + String(bound.length) + ' 个工作区绑定。删除后它们会回落全局默认，绑定记录保留并标为「绑定失效」。要先解绑，请在会话里的 Model 菜单选「全局方案」。',
           names: bound.map((item) => item.cwd),
           confirmLabel: '仍然删除',
           onConfirm: () => {
@@ -1625,11 +1698,6 @@ window.__ModuleLoader__.load({
       const setDefault = (id) => {
         setNotice(null)
         setDraft((prev) => ({ ...prev, defaultId: id }))
-      }
-
-      const setBinding = (id) => {
-        setNotice(null)
-        setDraft((prev) => ({ ...prev, binding: id }))
       }
 
       /** 提示词草稿：整份替换（setPromptField 已返回新对象，这里不就地改）。 */
@@ -1681,13 +1749,6 @@ window.__ModuleLoader__.load({
         }
         for (const id of draft.deleted) commands.push({ op: 'deleteScheme', schemeId: id })
         if (draft.defaultId !== undefined) commands.push({ op: 'setDefaultScheme', schemeId: draft.defaultId })
-        if (draft.binding !== undefined) {
-          if (currentCwd === null) {
-            setError('没有可用的工作目录：工作区绑定需要先打开一个会话。')
-            return
-          }
-          commands.push({ op: 'bindWorkspace', schemeId: draft.binding })
-        }
         // 只带改过的键；promptsCommand 自己在没有实质改动时返回 null。
         const promptCommand = promptsCommand(data.prompts, draft.prompts)
         if (promptCommand !== null) commands.push(promptCommand)
@@ -1746,12 +1807,45 @@ window.__ModuleLoader__.load({
           ? h('div', { style: S.probeWarn }, '配置有告警：' + warnings.slice(0, 4).join('；') + (warnings.length > 4 ? ' …' : ''))
           : null,
 
+        // ---------- 全局默认 ----------
+        h(
+          'div',
+          { style: S.section },
+          h(
+            'div',
+            { style: S.groupHead },
+            h('span', { style: S.groupName }, '全局默认'),
+          ),
+          h(
+            'div',
+            { style: S.rowFirst },
+            h(
+              'div',
+              { style: S.rowMain },
+              h('div', { style: S.rowMeta }, '工作区没单独选方案时用它；这里也没选时，用出厂方案。'),
+            ),
+            // 只有一个下拉：当前值由它自己显示，不再用一行文字复述 + 一个按钮重复表达。
+            // 「出厂方案」是下拉里**有名字的一项**（选中即删键），不是空选项。
+            h(
+              Select,
+              {
+                value: defaultId === BUILTIN_ID ? '' : defaultId || '',
+                onChange: (event) => setDefault(event.target.value === '' ? null : event.target.value),
+              },
+              // 全局层的取值：出厂方案，或某个具体方案。不再有「跟随出厂方案」这一项——
+              // 它和「出厂方案」求值相同，两个看起来一样的选项只会让人犹豫。
+              h(Option, { value: '' }, BUILTIN_NAME),
+              Object.keys(schemesOf(data)).sort().map((id) => h(Option, { key: id, value: id }, schemeNameOf(data, id))),
+            ),
+          ),
+        ),
+
         // ---------- 方案列表 ----------
         h(
           'div',
           { style: { ...S.bar, marginBottom: '4px' } },
           h('span', { style: { ...S.title, fontSize: '13px' } }, '方案'),
-          h('span', { style: S.rowMeta }, '出厂方案不落盘，也没有删除按钮。'),
+          h('span', { style: S.rowMeta }, '出厂方案是内置的，不能删除。'),
           h('span', { style: { flex: '1 1 auto' } }),
           draft.editing ? h(Tag, null, '编辑中') : null,
           h(Button, { primary: true, onClick: startCreate }, '新建方案'),
@@ -1769,56 +1863,17 @@ window.__ModuleLoader__.load({
               boundHere: currentBinding === row.id,
               onEdit: () => startEdit(row),
               onDelete: () => requestDelete(row),
-              onSetDefault: () => setDefault(row.id),
             }),
           ),
           // 出厂方案那一行始终在；空态只补一句解释，不把整块换成提示。
           rows.length === 1 && !draft.editing
-            ? h('div', { style: S.empty }, '还没有自定义方案。新建一个，或直接编辑全局默认与工作区绑定。')
+            ? h('div', { style: S.empty }, '还没有自定义方案。新建一个，或在上面设置全局默认。')
             : null,
         ),
 
-        // ---------- 全局默认 ----------
-        h(
-          'div',
-          { style: S.section },
-          h(
-            'div',
-            { style: S.groupHead },
-            h('span', { style: S.groupName }, '全局默认'),
-            h(Tag, { title: '全局层 defaultSchemeId；工作区没绑定时用它' }, '求值链第二段'),
-          ),
-          h(
-            'div',
-            { style: S.rowFirst },
-            h(
-              'div',
-              { style: S.rowMain },
-              h('div', { style: S.rowMeta }, defaultId ? '全局默认：' + schemeNameOf(data, defaultId) : '跟随出厂方案'),
-              h('div', { style: S.rowMeta }, '工作区层没有 schemeId 时落到这一层；它也没有时用出厂方案。'),
-            ),
-            defaultId ? h(Button, { onClick: () => setDefault(null) }, '跟随出厂方案') : null,
-            h(
-              Select,
-              {
-                value: defaultId || '',
-                onChange: (event) => setDefault(event.target.value === '' ? null : event.target.value),
-              },
-              h(Option, { value: '', disabled: true }, '跟随出厂方案'),
-              h(Option, { value: BUILTIN_ID }, BUILTIN_NAME),
-              Object.keys(schemesOf(data)).sort().map((id) => h(Option, { key: id, value: id }, schemeNameOf(data, id))),
-            ),
-          ),
-        ),
-
-        // ---------- 工作区绑定 ----------
-        h(WorkspaceSection, {
-          data: data,
-          workspaces: workspaces,
-          currentCwd: currentCwd,
-          draft: draft,
-          onBinding: setBinding,
-        }),
+        // 工作区绑定不在这里改：它属于「此刻这个目录用哪个方案」，用户在会话里的
+        // Model 浮层改最直接，也能立刻看到自己正在哪个目录。设置页只负责定义方案
+        // 与全局默认，两处各管一层，避免同一件事有两种入口。
 
         // ---------- 编辑 ----------
         draft.editing
@@ -2112,6 +2167,46 @@ window.__ModuleLoader__.load({
       )
     }
 
+    /**
+     * 面板的错误边界。
+     *
+     * React 在渲染期抛错会卸载整棵子树，用户看到的就是「点进去一片空白」——没有
+     * 任何线索，只能去翻 DevTools。这里把异常转成一行可读文本，把「现象」变成
+     * 「原因」。这类空白已经出现过一次（删变量时漏改引用）。
+     */
+    /** 静态检查用的替身 React 没有 Component：没有它就退化成透传，不能在这里抛。 */
+    const BoundaryBase = typeof React.Component === 'function' ? React.Component : null
+
+    const PanelBoundary =
+      BoundaryBase === null
+        ? function PanelBoundaryPassThrough(props) {
+            return props.children
+          }
+        : class extends BoundaryBase {
+            constructor(props) {
+              super(props)
+              this.state = { error: null }
+            }
+
+            static getDerivedStateFromError(error) {
+              return { error: error }
+            }
+
+            render() {
+              if (this.state.error) {
+                const message =
+                  this.state.error && this.state.error.message ? this.state.error.message : String(this.state.error)
+                return h(
+                  'div',
+                  { style: S.error },
+                  '模型方案面板渲染失败：' + message,
+                  h('div', { style: { ...S.hint, marginTop: '6px' } }, '这是插件自身的错误，不影响会话与其他插件。'),
+                )
+              }
+              return this.props.children
+            }
+          }
+
     function SchemeChip(props) {
       const sessionId = props && typeof props.sessionId === 'string' ? props.sessionId : undefined
       useEffect(() => {
@@ -2132,21 +2227,38 @@ window.__ModuleLoader__.load({
       )
     }
 
+    /**
+     * 方案行的一句话路由：`provider / model · effort`。
+     *
+     * 只列会话路由，不展开四档子智能体：那部分信息量太大，一行放不下，
+     * 也会把「这个方案默认给谁来用」这件唯一要判断的事埋掉。
+     */
+    function routeSummary(session) {
+      if (!isRecord(session) || typeof session.provider !== 'string' || typeof session.model !== 'string') {
+        return '跟随系统默认'
+      }
+      const effort = typeof session.reasoningEffort === 'string' && session.reasoningEffort !== '' ? ' · ' + session.reasoningEffort : ''
+      return session.provider + ' / ' + session.model + effort
+    }
+
     function SchemeModal(props) {
       const host = props.host
       const open = useSyncExternalStore(schemeOverlay.subscribe, schemeOverlay.read, schemeOverlay.read)
       const [state, setState] = useState({ phase: 'idle', cwd: null, data: null, error: null })
       const [busy, setBusy] = useState(false)
+      const [notice, setNotice] = useState(null)
       const sessionId = useSyncExternalStore(sessionBus.subscribe, sessionBus.read, sessionBus.read)
 
       useEffect(() => {
         if (!open) return undefined
         let alive = true
+        // 每次打开都清空上一次的提示：它是「这次操作的结果」，不是常驻状态。
+        setNotice(null)
         setState((prev) => ({ ...prev, phase: 'loading', error: null }))
         ;(async () => {
           const listing = await listWorkspaces(host, sessionId)
           const cwd = listing.currentCwd
-          const data = cwd === null ? null : await api.read(cwd)
+          const data = cwd === null ? null : await api.read(cwd, sessionId)
           if (!alive) return
           setState({ phase: 'ready', cwd: cwd, data: data, error: null })
         })().catch((error) => {
@@ -2163,11 +2275,40 @@ window.__ModuleLoader__.load({
       const data = state.data
       const cwd = state.cwd
       const current = data ? workspaceIdOf(data) : null
-      const rows = [{ id: BUILTIN_ID, name: BUILTIN_NAME }]
+      // 工作区只有两种选择：单独指定某个方案，或不指定、落到「全局方案」。
+      // 出厂方案不在这张列表里——它只是全局那一层可以取的值，不是目录能直接绑的目标。
+      // 全局方案那一行也要能看到它实际指向的路由：否则用户只看到「全局方案」四个字，
+      // 还得去设置页翻全局默认是什么。
+      const globalId = defaultIdOf(data)
+      const globalScheme = data && globalId && globalId !== BUILTIN_ID ? schemesOf(data)[globalId] : undefined
+      const globalSession = isRecord(globalScheme) && isRecord(globalScheme.session) ? globalScheme.session : null
+      const rows = [
+        { id: null, name: '全局方案', session: globalSession, note: '不单独指定时用它' },
+      ]
       if (data) {
         const schemes = schemesOf(data)
-        for (const id of Object.keys(schemes).sort()) rows.push({ id: id, name: schemeNameOf(data, id) })
+        for (const id of Object.keys(schemes).sort()) {
+          const scheme = schemes[id]
+          rows.push({
+            id: id,
+            name: schemeNameOf(data, id),
+            session: isRecord(scheme) && isRecord(scheme.session) ? scheme.session : null,
+          })
+        }
       }
+
+      /**
+       * 当前会话是否偏离了方案路由。
+       *
+       * 只有偏离时才需要「恢复」：常驻一个按钮会让人以为每次都得点一下，
+       * 而正正常常的会话根本没这个动作可做。
+       */
+      const schemeRoute = data && data.resolved && data.resolved.scheme ? data.resolved.scheme.session : undefined
+      const liveModel = data && data.sessionModel ? data.sessionModel : null
+      const offScheme =
+        isRecord(schemeRoute) &&
+        liveModel !== null &&
+        (liveModel.provider !== schemeRoute.provider || liveModel.model !== schemeRoute.model)
 
       const bind = (schemeId) => {
         if (cwd === null || busy) return
@@ -2184,6 +2325,42 @@ window.__ModuleLoader__.load({
         )
       }
 
+      /**
+       * 把当前会话的模型改回方案里的路由。
+       *
+       * 只对这条会话生效：写一条 model/selection，不碰方案配置，也不影响别的会话。
+       * 会话不在线时 Host 会拒绝，这里照原样把原因显示出来。
+       */
+      const doReset = () => {
+        if (busy || typeof sessionId !== 'string' || sessionId === '') return
+        setBusy(true)
+        setNotice(null)
+        api.reset(sessionId).then(
+          (result) => {
+            setBusy(false)
+            setNotice('已恢复为方案路由：' + result.provider + ' / ' + result.model)
+            // 必须重读：按钮的显示条件来自读回来的 sessionModel，不刷新的话
+            // 它会一直挂着，像是「点了没用」。
+            const target = state.cwd
+            if (target !== null) {
+              api.read(target, sessionId).then(
+                (fresh) => setState({ phase: 'ready', cwd: target, data: fresh, error: null }),
+                () => {
+                  // 重读失败不影响「已恢复」这个事实，保留提示即可。
+                },
+              )
+            }
+          },
+          (failure) => {
+            setBusy(false)
+            setState((prev) => ({
+              ...prev,
+              error: String(failure && failure.message ? failure.message : failure),
+            }))
+          },
+        )
+      }
+
       return h(
         'div',
         { style: S.modalBack, onClick: () => schemeOverlay.set(false) },
@@ -2191,7 +2368,7 @@ window.__ModuleLoader__.load({
           'div',
           { style: S.modal, onClick: (event) => event.stopPropagation() },
           h('div', { style: S.title }, '模型方案'),
-          h('div', { style: S.hint }, '选中的方案绑定到当前工作目录 ' + (cwd || '（没有可用的会话目录）') + '，只作用于之后新建的会话。'),
+          h('div', { style: S.hint }, '当前目录 ' + (cwd || '（没有可用的会话目录）') + ' 使用哪个方案；只影响之后新建的会话。'),
           state.error ? h('div', { style: S.error }, state.error) : null,
           state.phase === 'loading' && data === null ? h('div', { style: S.hint }, '读取中…') : null,
           h(
@@ -2204,18 +2381,46 @@ window.__ModuleLoader__.load({
                 h(
                   'div',
                   { style: S.rowMain },
-                  h('div', { style: S.rowName }, row.name),
-                  h('div', { style: S.mono }, row.id),
+                  h(
+                    'div',
+                    { style: S.rowName },
+                    row.name,
+                    row.note === undefined
+                      ? null
+                      : h('span', { style: { color: T.faint, fontSize: '11px', fontWeight: 400 } }, row.note),
+                  ),
+                  h('div', { style: S.mono }, routeSummary(row.session)),
                 ),
-                current === row.id ? h(Tag, null, '当前绑定') : null,
-                h(Button, { disabled: busy || cwd === null || current === row.id, onClick: () => bind(row.id) }, '绑到这里'),
+                current === row.id
+                  ? h(Tag, null, '当前使用')
+                  : h(Button, { disabled: busy || cwd === null, onClick: () => bind(row.id) }, '使用'),
               ),
             ),
           ),
-          current === null ? null : h(Button, { disabled: busy || cwd === null, onClick: () => bind(null) }, '跟随全局默认'),
+
+          notice ? h('div', { style: S.notice }, notice) : null,
           h(
             'div',
-            { style: { display: 'flex', justifyContent: 'flex-end', marginTop: '12px' } },
+            {
+              style: {
+                display: 'flex',
+                justifyContent: 'flex-end',
+                alignItems: 'center',
+                gap: '8px',
+                marginTop: '12px',
+              },
+            },
+            offScheme
+              ? h(
+                  Button,
+                  {
+                    disabled: busy || typeof sessionId !== 'string' || sessionId === '',
+                    title: '只影响当前会话：把它改回方案里的路由',
+                    onClick: doReset,
+                  },
+                  '本会话恢复方案路由',
+                )
+              : null,
             h(Button, { onClick: () => schemeOverlay.set(false) }, '关闭'),
           ),
         ),
@@ -2271,7 +2476,7 @@ window.__ModuleLoader__.load({
         // 组件类型必须是稳定的标识符：写成内联箭头函数的话，每次渲染都是新类型，
         // React 会整棵卸载重挂——输入框每敲一个字就失焦。apply 只跑一次，所以在这里
         // 定义成常量既稳定又拿得到闭包里的 host。
-        const SettingsSection = () => h(Panel, { host: host })
+        const SettingsSection = () => h(PanelBoundary, null, h(Panel, { host: host }))
 
         // 入口与 skill-manager / mcp-manager / plugin-manager 一致：只挂设置页的
         // settings.section，不注册 plugins.item 卡片。三个既有插件的用户已经习惯
@@ -2304,7 +2509,7 @@ window.__ModuleLoader__.load({
         const SchemeOverlay = () => h(SchemeModal, { host: host })
 
         ctx.slots.inject('conversation.input.right', () =>
-          ctx.slots.register({ name: 'conversation.input.right', id: 'model-scheme-chip', order: 42 }, SchemeChip),
+          ctx.slots.register({ name: 'conversation.input.right', id: 'model-scheme-chip', order: 43 }, SchemeChip),
         )
         ctx.slots.inject('shell.overlay', () =>
           ctx.slots.register({ name: 'shell.overlay', id: 'model-scheme-overlay', order: 62 }, SchemeOverlay),
