@@ -286,15 +286,26 @@ export function installHooks(ctx: PluginContext, options: HooksOptions = {}): Ho
     prompt: PromptText,
     state: AgentState,
   ): void => {
-    if (describeTiers(resolved) === null) return
+    // 这几条失败路径都把原因写进 lastErrorText：面板上能直接看到「为什么没注入」，
+    // 而不是只看到工具凭空消失。排障时最贵的一步永远是「不知道哪一步没走通」。
+    if (describeTiers(resolved) === null) {
+      lastErrorText = '档位工具未注册：方案「' + resolved.id + '」没有配置任何档位'
+      return
+    }
     const deps = tierDeps(agent)
     const support = probeSupport(deps)
     // 面板的 support() 在根作用域上取不到 subagents，只能沿用它。
     lastProbe = support
-    if (!support.subagents || !support.agentOptions) return
+    if (!support.subagents || !support.agentOptions) {
+      lastErrorText = '档位工具未注册：' + (support.reason ?? '宿主不支持按档位指定模型')
+      return
+    }
 
     const disposeTool = registerTierTool(agent.raw, deps)
-    if (disposeTool === null) return
+    if (disposeTool === null) {
+      lastErrorText = '档位工具未注册：能力探测通过，但注册被宿主拒绝（详见日志）'
+      return
+    }
     state.disposers.push(disposeTool)
 
     const tools = scopedService(agent, 'tools')
