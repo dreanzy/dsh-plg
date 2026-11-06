@@ -1,7 +1,7 @@
 /**
- * 面板数据路由：`POST /api/model-scheme/{read,apply,support}`。
+ * 面板数据路由：`POST /api/model-scheme/{read,apply,support,reset}`。
  *
- * 三个处理函数只依赖注入进来的 `RouteDeps`，不读宿主 ctx、不 import policy：
+ * 四个处理函数只依赖注入进来的 `RouteDeps`，不读宿主 ctx、不 import policy：
  * 这样它们能在 `node --test` 下用真的 policy 函数加一个临时 home 完整跑通。
  * 注册动作（取 `connection.fetch.register`、生命周期 disposer）留在编排层，
  * 与 `dsh-plugin-manager` 的分工一致。

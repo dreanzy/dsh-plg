@@ -109,7 +109,7 @@ window.__ModuleLoader__.load({
     /**
      * 颜色一律取宿主主题 token（--dsw-*，不是 --dsh-*），见 docs/ui-baseline.md。
      * 卡片底用 bg-layer-1 而不是 bg-overlay：后者在暗色主题下是中灰浮层，当卡片底会发亮。
-     * 开态/主按钮的反色规则同理：不按变量名猜语义，品牌色只用于主按钮的实心块。
+     * 开态与主按钮同理：不按变量名猜语义，也不用品牌色实心块（ui-baseline 第 3 条）。
      */
     const T = {
       text: 'var(--dsw-alias-label-primary, CanvasText)',
@@ -118,10 +118,8 @@ window.__ModuleLoader__.load({
       surface: 'var(--dsw-alias-bg-layer-1, Canvas)',
       border: 'var(--dsw-alias-border-l1, rgba(127,127,127,0.35))',
       borderStrong: 'var(--dsw-alias-border-l2, rgba(127,127,127,0.55))',
-      accent: '#2f6fed',
       error: 'var(--dsw-alias-state-error-primary, #c0392b)',
       warn: 'var(--dsw-alias-state-warning-primary, #b7791f)',
-      onAccent: '#ffffff',
     }
 
     const S = {
@@ -807,11 +805,12 @@ window.__ModuleLoader__.load({
 
     /** apply 里创建一次，组件通过闭包拿到同一个实例。 */
     function createHost(ctx) {
-      // remote 是软依赖：inject 只声明 slots，remote 从 ctx 上探测。
-      // 缺了它面板照常打开——只是模型下拉为空、绑定工作区不可用，而不是整个插件不加载。
+      // remote 在文件末尾的 inject 里声明了：想用某个服务必须声明它。从 inject 里
+      // 去掉只会让面板静默变空（模型目录读不到 → 所有下拉为空），不是优雅降级。
       //
-      // ctx.get 在服务不存在时**抛错**，不返回 undefined：少了这个 try，这一行
-      // 会让整个 client 模块加载失败，进而把 web boot 判成 entry failed、桌面端起不来。
+      // 取用仍要兜底：ctx.get 在服务不存在时**抛错**，不返回 undefined；少了这个 try，
+      // 这一行会让整个 client 模块加载失败，进而把 web boot 判成 entry failed、
+      // 桌面端起不来。
       let remote = null
       try {
         remote = (ctx && ctx.remote) || null

@@ -358,6 +358,9 @@ export function installHooks(ctx: PluginContext, options: HooksOptions = {}): Ho
       return
     }
     const loaded = await loadState(cwd, pathOptions)
+    // 读盘期间该 agent 可能已被销毁（onDisposed 先删了 states 项）。此时再注册工具或
+    // 注入段，disposer 会挂到一个已删除的 state 上，永不释放。校验身份，不等就放弃。
+    if (states.get(agent.id) !== state) return
     const resolved = resolve(loaded, cwd)
     // 提示词覆盖随 loadState 一起读上来；合并是纯函数，不额外碰盘。
     const prompt = resolvePrompt(loaded.prompts)

@@ -114,15 +114,19 @@ async function readText(path: string, warnings: string[]): Promise<string | unde
  */
 export async function loadState(cwd: string | null, options: SchemePathOptions = {}): Promise<SchemeState> {
   const warnings: string[] = []
-  const storeParsed = parseSchemeStore(await readText(globalSchemePath(options), warnings))
+  // 路径同时传给解析器：坏 JSON 的 warning 里带上它，面板才能直接定位到文件。
+  const storePath = globalSchemePath(options)
+  const storeParsed = parseSchemeStore(await readText(storePath, warnings), storePath)
   warnings.push(...storeParsed.warnings)
 
-  const promptsParsed = parsePromptOverrides(await readText(globalPromptsPath(options), warnings))
+  const promptsPath = globalPromptsPath(options)
+  const promptsParsed = parsePromptOverrides(await readText(promptsPath, warnings), promptsPath)
   warnings.push(...promptsParsed.warnings)
 
   let workspace: WorkspaceBinding = EMPTY_BINDING
   if (cwd !== null && cwd.trim() !== '') {
-    const bindingParsed = parseWorkspaceBinding(await readText(workspaceSchemePath(cwd), warnings))
+    const bindingPath = workspaceSchemePath(cwd)
+    const bindingParsed = parseWorkspaceBinding(await readText(bindingPath, warnings), bindingPath)
     warnings.push(...bindingParsed.warnings)
     workspace = bindingParsed.value
   }

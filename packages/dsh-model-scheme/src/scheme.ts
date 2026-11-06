@@ -127,13 +127,23 @@ function readString(value: unknown): string | undefined {
  * 空文件与不存在等价：调用方传进来的是 `undefined`。坏 JSON 是 warning 不是异常，
  * 理由与 spec §6.4 一致——配置文件坏了只该回落出厂方案，不该让会话建不出来。
  */
-function readJsonObject(text: string | undefined, label: string, warnings: string[]): Record<string, unknown> | null {
+/** 报错里的位置：有路径就带上，面板才能直接定位到文件（spec §6.4）。 */
+function where(label: string, path: string | undefined): string {
+  return path === undefined || path === '' ? label : label + '（' + path + '）'
+}
+
+function readJsonObject(
+  text: string | undefined,
+  label: string,
+  warnings: string[],
+  path?: string,
+): Record<string, unknown> | null {
   if (text === undefined || text.trim() === '') return null
   let raw: unknown
   try {
     raw = JSON.parse(text)
   } catch (error) {
-    warnings.push(`${label} 不是合法 JSON，已按空配置处理：${String(error)}`)
+    warnings.push(`${where(label, path)} 不是合法 JSON，已按空配置处理：${String(error)}`)
     return null
   }
   if (!isRecord(raw)) {
@@ -249,9 +259,9 @@ export function parseScheme(raw: unknown, id: string): ParseResult<Scheme | null
 }
 
 /** 解析全局层文件。 */
-export function parseSchemeStore(text: string | undefined): ParseResult<SchemeStore> {
+export function parseSchemeStore(text: string | undefined, path?: string): ParseResult<SchemeStore> {
   const warnings: string[] = []
-  const raw = readJsonObject(text, '方案文件', warnings)
+  const raw = readJsonObject(text, '方案文件', warnings, path)
   if (raw === null) return { value: EMPTY_STORE, warnings }
   checkVersion(raw, '方案文件', warnings)
 
@@ -290,9 +300,9 @@ export function parseSchemeStore(text: string | undefined): ParseResult<SchemeSt
 }
 
 /** 解析工作区层文件。 */
-export function parseWorkspaceBinding(text: string | undefined): ParseResult<WorkspaceBinding> {
+export function parseWorkspaceBinding(text: string | undefined, path?: string): ParseResult<WorkspaceBinding> {
   const warnings: string[] = []
-  const raw = readJsonObject(text, '工作区方案绑定', warnings)
+  const raw = readJsonObject(text, '工作区方案绑定', warnings, path)
   if (raw === null) return { value: EMPTY_BINDING, warnings }
   checkVersion(raw, '工作区方案绑定', warnings)
 
@@ -324,9 +334,9 @@ function readOverrideText(
 }
 
 /** 解析提示词覆盖文件。全部字段可选，缺省即跟随内置。 */
-export function parsePromptOverrides(text: string | undefined): ParseResult<PromptOverrides> {
+export function parsePromptOverrides(text: string | undefined, path?: string): ParseResult<PromptOverrides> {
   const warnings: string[] = []
-  const raw = readJsonObject(text, '提示词覆盖文件', warnings)
+  const raw = readJsonObject(text, '提示词覆盖文件', warnings, path)
   if (raw === null) return { value: EMPTY_PROMPTS, warnings }
   checkVersion(raw, '提示词覆盖文件', warnings)
 
