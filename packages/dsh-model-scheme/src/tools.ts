@@ -416,9 +416,15 @@ async function refreshCatalog(
  * 判断「有没有可用档」，没有就不调用本函数——注册之后再撤销，会让已经 deny 掉
  * 官方 `subagent` 的模型两个工具都没有。
  */
-export function registerTierTool(agent: unknown, deps: TierToolDeps): (() => void) | null {
+export function registerTierTool(
+  agent: unknown,
+  deps: TierToolDeps,
+  known?: TierSupport,
+): (() => void) | null {
   try {
-    const support = probeSupport(deps)
+    // 编排层在调用前已经探测过一次（它还要拿结果做降级判断）。传进来就复用，
+    // 免得同一个 agent 上跑两遍 provider 查询；不传时自行探测，保持单独可调用。
+    const support = known ?? probeSupport(deps)
     if (!support.subagents || !support.agentOptions) {
       warn(deps, `subagent_tier 未注册：${support.reason ?? '宿主不支持档位委派'}`)
       return null

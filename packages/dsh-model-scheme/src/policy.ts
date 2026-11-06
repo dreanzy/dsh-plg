@@ -221,18 +221,25 @@ export interface PromptTierPatch {
   readonly text?: string | null
 }
 
-function isGlobalCommand(command: SchemeCommand): boolean {
-  return command.op !== 'bindWorkspace'
+/**
+ * 命令落到哪个文件。工作区层单独一格：它还需要 cwd。
+ *
+ * 用 `Record<SchemeCommand['op'], ...>` 声明：新增一个 op 时编译器会强制补齐这张表，
+ * 不会出现「新命令被接受、却悄悄不落盘」。
+ */
+type CommandTarget = 'store' | 'prompts' | 'workspace'
+
+const COMMAND_TARGET: Readonly<Record<SchemeCommand['op'], CommandTarget>> = {
+  setDefaultScheme: 'store',
+  putScheme: 'store',
+  deleteScheme: 'store',
+  bindWorkspace: 'workspace',
+  putPrompts: 'prompts',
+  resetPrompts: 'prompts',
 }
 
-/** 落到方案文件的那几条。只改提示词时不该顺手重写 schemes.json。 */
-function touchesSchemeStore(command: SchemeCommand): boolean {
-  return command.op === 'setDefaultScheme' || command.op === 'putScheme' || command.op === 'deleteScheme'
-}
-
-/** 落到提示词文件的那几条。 */
-function touchesPrompts(command: SchemeCommand): boolean {
-  return command.op === 'putPrompts' || command.op === 'resetPrompts'
+function targetOf(command: SchemeCommand): CommandTarget {
+  return COMMAND_TARGET[command.op]
 }
 
 /**
@@ -449,18 +456,18 @@ export async function applyCommands(
   commands: readonly SchemeCommand[],
   options: SchemePathOptions = {},
 ): Promise<SchemeState> {
-  const wantsWorkspace = commands.some((command) => !isGlobalCommand(command))
+  const wantsWorkspace = commands.some((command) => targetOf(command) === 'workspace')
   if (wantsWorkspace && (cwd === null || cwd.trim() === '')) {
     throw new Error('工作区命令缺少工作目录（cwd）')
   }
   const root = cwd === null || cwd.trim() === '' ? null : cwd
 
   const warnings: string[] = []
-  if (commands.some(touchesSchemeStore)) {
+  if (commands.some((command) => targetOf(command) === 'store')) {
     await transact(globalSchemePath(options), (current) => applyToStore(current, commands, warnings), warnings)
   }
   // 提示词覆盖是全局层的一份独立文件，与方案文件各自一把锁。
-  if (commands.some(touchesPrompts)) {
+  if (commands.some((command) => targetOf(command) === 'prompts')) {
     await transact(globalPromptsPath(options), (current) => applyToPrompts(current, commands, warnings), warnings)
   }
   if (wantsWorkspace && root !== null) {

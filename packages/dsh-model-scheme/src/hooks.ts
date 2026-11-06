@@ -291,7 +291,7 @@ export function installHooks(ctx: PluginContext, options: HooksOptions = {}): Ho
       return
     }
 
-    const disposeTool = registerTierTool(agent.raw, deps)
+    const disposeTool = registerTierTool(agent.raw, deps, support)
     if (disposeTool === null) {
       lastErrorText = '档位工具未注册：能力探测通过，但注册被宿主拒绝（详见日志）'
       return
