@@ -9,8 +9,27 @@
 1. 会话使用的 provider / model / reasoningEffort；
 2. 子智能体（`subagent_tier` 工具）四档难度各自的路由，含首选与备选。
 
-不做进程级默认模型的替代品，不接管官方 composer 模型选择器的交互，不管智能体团队（`spawn_teammate`）的成员路由。
+会为空白会话把全局方案的会话路由同步成进程级默认显示（不改写任何已有会话的选择），不接管官方 composer 模型选择器的交互，不管智能体团队（`spawn_teammate`）的成员路由。
 
 ## 状态
 
-包骨架。当前只导出插件 identity 与空的 `apply`，装得上、加载不报错，设置页可见但无功能。行为随后续 ticket 补齐。
+功能完整：两层求值链、`subagent_tier` 工具、委派提示词段、设置页与模型位方案名都已实现。宿主缺少子智能体服务或 `tools.restrict` 时按 spec §6.4 降级，面板显示原因。
+
+## 配置
+
+```jsonc
+// $DSH_HOME/model-scheme/schemes.json
+{ "version": 1, "defaultSchemeId": "standard", "schemes": { "standard": {
+  "name": "标准",
+  "session": { "provider": "deepseek", "model": "deepseek-chat", "reasoningEffort": "high" },
+  "tiers": { "tier1": { "name": "侦察", "primary": { "provider": "deepseek", "model": "deepseek-chat" }, "fallbacks": [] } }
+} } }
+```
+
+## 安装
+
+```sh
+dsh plugin --profile <profile> add ./packages/dsh-model-scheme
+```
+
+装完重启宿主。未绑定工作区、也未设全局默认时，插件不改变任何行为。
