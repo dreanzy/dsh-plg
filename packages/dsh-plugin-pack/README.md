@@ -1,4 +1,4 @@
-# @dreanzy/dsh-plugin-manager
+# @dreanzy/dsh-plugin-pack
 
 按工作区停用插件。停用一个插件做两件事：把它注册的工具从模型可见的工具里摘掉，把它注入的提示词段从 system prompt 里剔掉。
 
@@ -13,28 +13,22 @@
 
 插件是**开关单位**：一个 npm 包要么整体可用，要么整体不可用。不提供「关插件但保留某个工具」——那需要一个反向开关，而底层只有收紧语义（见[已知边界](#已知边界)）。
 
-## 两层与求值
+## pack 与求值
 
 ```
-工作区项级  ??  工作区组级  ??  全局项级  ??  全局组级  ??  默认开
+绑定的 pack 项级  ??  绑定的 pack 组级  ??  default 项级  ??  default 组级  ??  默认开
 ```
 
-前一环存在就不读后面的。**工作区的任何决定都压过全局的任何决定**，否则会出现「在工作区点了开、界面显示开、模型看不见」这类最难排查的状态。
+前一环存在就不读后面的。pack 是一张具名的策略表，只含覆盖决定，不含成员清单。工作区只存一个绑定：绑到某个 pack，或什么都不绑（走 `default`）。`default` 是内置 pack，不可删除、不可改名，内容可编辑——它就是原来全局层的落点。
 
-两层各自只有一种编辑面：
+键不存在即「跟随」，`false` 是「明令关」，两者不是一回事。所以普通 pack 的每个开关是三态（开 / 关 / 跟随），而 `default` 只有两态：它是求值链的终点，没有上一层可跟。
 
-| 挂载点 | 编辑的层 |
-| --- | --- |
-| 侧栏「Plugin 管理」 | 全局层 |
-| 设置 → Plugin 管理 | 全局层 |
-| 会话输入框右侧「Plugins」浮层 | 本工作区层 |
-
-页面上不提供层切换器：一个挂载点只编辑一层，避免同一处出现两套视角。
+工作区目录下不再产生任何状态文件。
 
 ## 安装
 
 ```sh
-dsh plugin --profile <profile> add 'github:<owner>/<repo>#<sha>&path:/packages/dsh-plugin-manager'
+dsh plugin --profile <profile> add 'github:<owner>/<repo>#<sha>&path:/packages/dsh-plugin-pack'
 ```
 
 把 `<owner>/<repo>#<sha>` 换成实际仓库与提交（用提交而不是分支，安装结果才可复现）。装完重启 Host、刷新页面。
@@ -43,24 +37,28 @@ dsh plugin --profile <profile> add 'github:<owner>/<repo>#<sha>&path:/packages/d
 
 | 路径 | 内容 |
 | --- | --- |
-| `$DSH_HOME/plugin-manager/global.json` | 全局层的项级与组级决定、`ui.showSidebarEntry` |
-| `<cwd>/.dsh/plugin-manager.json` | 某个工作区的那一层 |
-| `$DSH_HOME/plugin-manager/groups.json` | 组定义与归属，跨工作区共享 |
-| `$DSH_HOME/plugin-manager/catalog.json` | 归属扫描的缓存（可删，删了重扫） |
+| `$DSH_HOME/packs/plugin/packs.json` | pack 名册与 `ui` 段（`showChip`、`defaultTab`） |
+| `$DSH_HOME/packs/plugin/groups.json` | 组定义与归属，跨工作区共享 |
+| `$DSH_HOME/packs/plugin/workspaces.json` | 工作区 → pack 的绑定表，外加手动添加的路径 |
+| `$DSH_HOME/packs/plugin/catalog.json` | 归属扫描的缓存（可删，删了重扫） |
 
-工作区文件算工程约定：它与 `<cwd>/.dsh/` 下其它文件同处一处，表达「这个工程需要哪些插件」，可以提交、可以共享。插件不碰 `.gitignore`——如果你的仓库整体忽略了 `.dsh/`，需要单独给这个文件加一条例外。
+三个策略文件各自独立事务：pack 的编辑压力都在 `packs.json`，组定义与绑定变动稀少，拆开是为了让每份文件都能单独原子写。删除一个 pack 后，绑定表里指向它的键会成为悬空引用，读侧按 `default` 求值，写侧顺手清掉。
+
+旧路径（`$DSH_HOME/plugin-manager/` 与 `<cwd>/.dsh/plugin-manager.json`）仍被**兼容读**：新文件不存在时在内存里映射成 pack，读取路径绝不写盘。迁移由独立脚本完成。
 
 ## 面板
 
-- **一个挂载点只编辑一层**（见上表）。每行标「本层」或「跟随」，看的是本层有没有这条键——值与上层相同也不等于跟随，`↺` 清除本层决定、回到跟随。
+- **三页**：`分组 | 分包 | 工作区`，顺序固定，打开时落在 `ui.defaultTab`。切页只改当前页，不写盘；只有页首那组「打开设置时默认显示」的单选才改默认页。
+- **一个开关只有一个入口**。开关属于 pack，只在「分包」页出现；「分组」页只做结构（新建、改名、删除、改归属），不放开关。普通 pack 的开关三态——开 / 关 / 跟随，跟随是独立的可点选项；`default` 只有两态，未记录即内置缺省（开）。
+- **工作区页**只做绑定：每行一个 pack 下拉，未选即「跟随 default」。绑定只影响该目录下**新开**的会话；策略在会话创建时求值，已经开着的会话不会换 pack。
 - **分区**：官方 / 第三方，按包名的 npm 作用域自动切（`@deepseek-ai/` 是官方）。只用于展示，不参与求值，也不能当开关单位。分区标题可点开合。
 - **排序**：按 `toolVolume + sectionChars / 4` 降序，贵的先出现。顶部统计「已停用 N 个插件，约省 M token」，跟着草稿实时变。
 - **行内容**：完整包名（不去 `@scope/` 前缀——`@a/x` 与 `@b/x` 会撞名）、官方/第三方标签、`N 工具`、`N 段`、`≈M token`、开关。
 - **搜索**：包名子串匹配，大小写不敏感。刻意不做模糊匹配：`dsh` 这类片段到处都是，模糊只会让结果更难认。搜索时分区强制展开。
-- **受保护插件**：行标「受保护」。停用它要二次确认，确认框里列出包名。名单固定（读写工具、执行器、system-prompt、本插件自己），不由任何一层策略改写。
+- **受保护插件**：行标「受保护」。停用它要二次确认，确认框里列出包名。名单固定（读写工具、执行器、system-prompt、本插件自己），不由任何 pack 改写。
 - **草稿**：所有开关先改内存，底部浮出「保存 / 撤销」，一次提交一组意图。连拨十次只发一条请求，保存失败草稿保留。
-- **不渲染分组**：插件本身就是开关单位。`policy.groups` 仍然参与求值（旧策略里可能留着组决定），面板只透传不显示。
-- **不显示 cwd**：工作区面板显示策略文件路径，它已经包含工作目录。
+- **分组与 pack 正交**：分组描述「哪些插件是一类」，pack 描述「这些插件对这些工作区是开是关」。组开关写在 pack 里，与项开关并列；「分组」页不改任何开关。
+- **不显示 cwd**：工作区页按目录名认工作区，绑定表里的键是规范化后的路径。
 
 ### 探针
 
@@ -78,7 +76,9 @@ dsh plugin --profile <profile> add 'github:<owner>/<repo>#<sha>&path:/packages/d
 
 ## 写入语义
 
-每次保存提交的是一组**意图**（`{op:'item', layer, name, value | null}`），服务端在文件锁内读—改—写，不比对版本。命令幂等、可交换，写同一键即后点者赢，所以不存在 `stale-revision` 这类冲突。`null` 表示删掉这条键、回到跟随——写一个同值不等于跟随。
+每次保存提交的是一组**意图**（`{ op: 'packItem' | 'packGroup', packId, name, value: boolean | null }`、`createPack` / `renamePack` / `deletePack`、`bind` / `addExtra` / `removeExtra`、分组的 `assign` / `createGroup` / `renameGroup` / `deleteGroup`、`showChip` / `defaultTab`），服务端在文件锁内读—改—写，不比对版本。命令幂等、可交换，写同一键即后点者赢，所以不存在 `stale-revision` 这类冲突。`null` 表示删掉这条键、回到跟随——写一个同值不等于跟随。
+
+`bind` 自带 `cwd`，所以写入不依赖会话；`sessionId` 只决定 apply 返回哪一种视图。显式绑到 `default` 与 `packId: null` 等价，落盘时不留冗余键。
 
 保存后插件会显式重新施加一次：策略写入不产生宿主事件，这是「同一会话内改策略立刻生效」的唯一来源。施加失败只降级，不会让写成功的保存报错。
 

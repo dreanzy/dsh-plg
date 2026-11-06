@@ -1,4 +1,4 @@
-# @dreanzy/dsh-plugin-manager
+# @dreanzy/dsh-plugin-pack
 
 Disable plugins per workspace. Disabling one does two things: it drops the tools the plugin registers from what the model can see, and removes the prompt sections it injects from the system prompt.
 
@@ -13,28 +13,22 @@ Two goals, usually at the same time:
 
 The plugin is the **switch unit**: an npm package is either wholly available or wholly disabled. There is no "disable the plugin but keep one tool" — that needs a reverse switch, and the underlying capability only tightens (see [Known limits](#known-limits)).
 
-## Two layers
+## Packs and evaluation
 
 ```
-workspace item  ??  workspace group  ??  global item  ??  global group  ??  default on
+bound pack item  ??  bound pack group  ??  default item  ??  default group  ??  on
 ```
 
-The first ring that has a decision wins. **Any workspace decision beats any global decision**, otherwise you get the hardest failure class to diagnose: the panel says on, the toggle looks on, and the model still cannot see the plugin.
+The first ring that has a decision wins. A pack is a named policy table holding only override decisions and no membership list. A workspace stores exactly one binding: bound to one pack, or bound to nothing (which uses `default`). `default` is a built-in pack: it cannot be deleted or renamed, but its contents are editable — it is where the old global layer now lives.
 
-Each layer has exactly one editing surface:
+A missing key means "follow"; `false` means "explicitly off". They are not the same thing. Every switch of an ordinary pack therefore has three states (on / off / follow), while `default` has two: it is the end of the evaluation chain and has no layer above it.
 
-| Surface | Layer |
-| --- | --- |
-| "Plugin 管理" in the sidebar | global |
-| Settings → Plugin 管理 | global |
-| "Plugins" overlay at the right of the composer | this workspace |
-
-There is no layer switcher on the page: one mount point edits one layer, so the same place never shows two viewpoints.
+No state file is produced inside the workspace directory any more.
 
 ## Install
 
 ```sh
-dsh plugin --profile <profile> add 'github:<owner>/<repo>#<sha>&path:/packages/dsh-plugin-manager'
+dsh plugin --profile <profile> add 'github:<owner>/<repo>#<sha>&path:/packages/dsh-plugin-pack'
 ```
 
 Replace `<owner>/<repo>#<sha>` with the real repository and commit (use a commit, not a branch, so the install is reproducible). Restart the Host and refresh the page.
@@ -43,24 +37,28 @@ Replace `<owner>/<repo>#<sha>` with the real repository and commit (use a commit
 
 | Path | Contents |
 | --- | --- |
-| `$DSH_HOME/plugin-manager/global.json` | Global item-level and group-level decisions, `ui.showSidebarEntry` |
-| `<cwd>/.dsh/plugin-manager.json` | The layer belonging to one workspace |
-| `$DSH_HOME/plugin-manager/groups.json` | Group definitions and membership, shared across workspaces |
-| `$DSH_HOME/plugin-manager/catalog.json` | Attribution scan cache (safe to delete; it rebuilds) |
+| `$DSH_HOME/packs/plugin/packs.json` | Pack catalogue and the `ui` section (`showChip`, `defaultTab`) |
+| `$DSH_HOME/packs/plugin/groups.json` | Group definitions and membership, shared across workspaces |
+| `$DSH_HOME/packs/plugin/workspaces.json` | Workspace → pack bindings, plus manually added paths |
+| `$DSH_HOME/packs/plugin/catalog.json` | Attribution scan cache (safe to delete; it rebuilds) |
 
-The workspace file is a project convention: it sits beside the other files under `<cwd>/.dsh/` and states what this project needs, so it can be committed and shared. The plugin never touches `.gitignore` — if your repository ignores `.dsh/` wholesale, add an exception for this file.
+The three policy files transact independently: editing pressure lands on `packs.json`, while groups and bindings change rarely, so splitting them lets each file be written atomically on its own. After a pack is deleted, keys in the binding table that still point at it become dangling references: the read side evaluates them as `default`, and the write side cleans them up.
+
+The old paths (`$DSH_HOME/plugin-manager/` and `<cwd>/.dsh/plugin-manager.json`) are still **read for compatibility**: when the new files are absent they are mapped to packs in memory, and the read path never writes. Migration is done by a separate script.
 
 ## The panel
 
-- **One mount point, one layer** (see the table above). Every row is labelled "本层" (this layer) or "跟随" (follow). Following is decided by whether this layer has the key, not by whether the value matches the layer above; `↺` clears this layer's decision and returns to follow.
+- **Three pages**: `分组 | 分包 | 工作区` (groups / packs / workspace), fixed order, landing on `ui.defaultTab`. Switching pages only changes the current one and never writes; only the "打开设置时默认显示" radios at the top of the page change the default.
+- **One switch, one entry point**. Switches belong to packs and appear only on the "分包" page; the "分组" page is structure only (create, rename, delete, re-assign) and carries no switches. An ordinary pack's switch has three states — on / off / follow — and follow is its own clickable option; `default` has two, where an unrecorded key means the built-in default (on).
+- **The workspace page** only binds: one pack dropdown per row, and "未选" means follow `default`. A binding only affects **new** sessions in that directory; policy is evaluated when a session is created, so sessions already open keep their pack.
 - **Sections**: official / third-party, split automatically by the package's npm scope (`@deepseek-ai/` is official). Presentation only — sections never take part in evaluation and cannot act as switch units. Click a section header to fold it.
 - **Sorting**: descending by `toolVolume + sectionChars / 4`, so the expensive plugins come first. The header shows "已停用 N 个插件，约省 M token" and follows the draft live.
 - **Rows**: the full package name (no stripping of the `@scope/` prefix — `@a/x` and `@b/x` would collide), an official/third-party tag, `N 工具`, `N 段`, `≈M token`, and the switch.
 - **Search**: case-insensitive substring match on the package name. Deliberately not fuzzy: fragments like `dsh` appear everywhere, and fuzzy matching only makes the result harder to identify. Search force-expands every section.
-- **Protected plugins**: the row is tagged "受保护". Disabling one asks for confirmation, and the dialog lists the package name. The list is fixed (file tools, executors, system-prompt, this plugin itself) and no policy layer can rewrite it.
+- **Protected plugins**: the row is tagged "受保护". Disabling one asks for confirmation, and the dialog lists the package name. The list is fixed (file tools, executors, system-prompt, this plugin itself) and no pack can rewrite it.
 - **Draft**: every toggle edits memory first; a bar with "保存 / 撤销" floats at the bottom and one request submits the whole batch. Ten quick flips still send exactly one request, and a failed save keeps the draft.
-- **No group UI**: the plugin already is the switch unit. `policy.groups` still participates in evaluation (older policies may carry group decisions), but the panel passes it through without rendering it.
-- **No cwd row**: the workspace panel shows the policy file path, which already contains the working directory.
+- **Groups are orthogonal to packs**: groups say which plugins belong together, packs say whether those plugins are on or off for these workspaces. Group switches live in packs alongside item switches; the "分组" page changes no switches.
+- **No cwd row**: the workspace page identifies a workspace by its directory name; the binding keys are normalized paths.
 
 ### Probes
 
@@ -78,7 +76,10 @@ These appear above the list, in this order, and every one of them is seen before
 
 ## Write semantics
 
-Every save submits a set of **intents** (`{op:'item', layer, name, value | null}`). The server reads, mutates and writes under a cross-process file lock, comparing no revisions at all. Intents are idempotent and commutative, and the last writer of one key wins, so conflicts such as `stale-revision` cannot occur. `null` deletes the key and returns to follow — writing the same value is not the same thing.
+Every save submits a set of **intents** (`{ op: 'packItem' | 'packGroup', packId, name, value: boolean | null }`, `createPack` / `renamePack` / `deletePack`, `bind` / `addExtra` / `removeExtra`, the group commands `assign` / `createGroup` / `renameGroup` / `deleteGroup`, and `showChip` / `defaultTab`). The server reads, mutates and writes under a cross-process file lock, comparing no revisions at all. Intents are idempotent and commutative, and the last writer of one key wins, so conflicts such as `stale-revision` cannot occur. `null` deletes the key and returns to follow — writing the same value is not the same thing.
+
+`bind` carries its own `cwd`, so writes no longer depend on a session; `sessionId` only selects which view `apply` returns. Binding explicitly to `default` is equivalent to `packId: null`, and no redundant key is persisted.
+
 
 After a successful save the plugin re-applies explicitly: writing policy emits no host event, so this call is the only way a change becomes visible in the same session. A failed re-apply only degrades; it never turns a successful write into an error.
 

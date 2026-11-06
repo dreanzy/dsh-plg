@@ -318,3 +318,10 @@ test('指纹对「同 mtime 但字节数变化」敏感', () => {
 test('指纹对同一批候选稳定', () => {
   assert.equal(fingerprint([candidateOf()]), fingerprint([candidateOf()]))
 })
+
+test('归属缓存在 $DSH_HOME/packs/plugin/ 下，与三份策略文件同目录', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'dpp-catalog-path-'))
+  process.env['DSH_HOME'] = home
+  assert.equal(catalogPath(), join(home, 'packs', 'plugin', 'catalog.json'))
+})
+

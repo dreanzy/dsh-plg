@@ -1,9 +1,11 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtemp, mkdir, writeFile } from 'node:fs/promises'
+import { mkdtemp, writeFile, mkdir, readFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { installHooks } from '../lib/hooks.js'
+import { applyCommands, packsPath, workspacesPath } from '../lib/store.js'
+import { normalizeCwd } from '../lib/policy.js'
 
 const NEWLINE = String.fromCharCode(10)
 
@@ -116,23 +118,26 @@ function feedFor(catalog) {
   return { read: () => catalog, load: async () => catalog }
 }
 
-async function makeWorkspace({ global: globalPolicy, workspace, groups } = {}) {
-  const home = await mkdtemp(join(tmpdir(), 'dpm-home-'))
-  const cwd = await mkdtemp(join(tmpdir(), 'dpm-ws-'))
+/**
+ * 造一份全新的 home 与工作区目录。
+ *
+ * 只设 `$DSH_HOME`，**不写任何策略文件**：策略由用例用 `applyCommands` 写，
+ * 这样断言的就是新语义（pack 求值），而不是旧的两层文件。
+ */
+async function makeWorkspace() {
+  const home = await mkdtemp(join(tmpdir(), 'dpp-home-'))
+  const cwd = await mkdtemp(join(tmpdir(), 'dpp-ws-'))
   process.env['DSH_HOME'] = home
-  await mkdir(join(home, 'plugin-manager'), { recursive: true })
-  await writeFile(
-    join(home, 'plugin-manager', 'global.json'),
-    JSON.stringify(globalPolicy ?? {}, null, 2) + NEWLINE,
-  )
-  if (groups !== undefined) {
-    await writeFile(join(home, 'plugin-manager', 'groups.json'), JSON.stringify(groups, null, 2) + NEWLINE)
-  }
-  if (workspace !== undefined) {
-    await mkdir(join(cwd, '.dsh'), { recursive: true })
-    await writeFile(join(cwd, '.dsh', 'plugin-manager.json'), JSON.stringify(workspace, null, 2) + NEWLINE)
-  }
   return { home, cwd }
+}
+
+async function writeJson(path, value) {
+  await mkdir(join(path, '..'), { recursive: true })
+  await writeFile(path, JSON.stringify(value, null, 2) + NEWLINE)
+}
+
+async function readJson(path) {
+  return JSON.parse(await readFile(path, 'utf8'))
 }
 
 function agentFor(cwd, tools) {
@@ -144,7 +149,7 @@ function agentFor(cwd, tools) {
 }
 
 test('没有被停用的插件时绝不调用 restrict', async () => {
-  const { cwd } = await makeWorkspace({ global: {} })
+  const { cwd } = await makeWorkspace()
   const tools = fakeTools()
   const ctx = fakeCtx()
   installHooks(ctx, { catalog: feedFor(catalogFor(defaultPlugins)) })
@@ -156,7 +161,8 @@ test('没有被停用的插件时绝不调用 restrict', async () => {
 })
 
 test('停用插件后它的工具进 deny 掩码，别的插件不受影响', async () => {
-  const { cwd } = await makeWorkspace({ global: { items: { 'plug-a': false } } })
+  const { cwd } = await makeWorkspace()
+  await applyCommands(null, [{ op: 'packItem', packId: 'default', name: 'plug-a', value: false }])
   const tools = fakeTools()
   const ctx = fakeCtx()
   installHooks(ctx, { catalog: feedFor(catalogFor(defaultPlugins)) })
@@ -168,15 +174,52 @@ test('停用插件后它的工具进 deny 掩码，别的插件不受影响', as
   assert.equal(tools.denied.has('beta'), false)
 })
 
-test('工作区层停用只影响该工作区', async () => {
-  const { cwd } = await makeWorkspace({ global: {}, workspace: { items: { 'plug-b': false } } })
+test('绑定 pack 的停用只影响该工作区', async () => {
+  const { cwd, home } = await makeWorkspace()
+  const other = await mkdtemp(join(tmpdir(), 'dpp-ws2-'))
+  await applyCommands(null, [{ op: 'createPack', name: '工作' }])
+  await applyCommands(cwd, [
+    { op: 'packItem', packId: 'p1', name: 'plug-b', value: false },
+    { op: 'bind', cwd, packId: 'p1' },
+  ])
+  assert.ok(home.length > 0)
+
+  const bound = fakeTools()
+  const ctx = fakeCtx()
+  installHooks(ctx, { catalog: feedFor(catalogFor(defaultPlugins)) })
+  await ctx.emit('agent/created', { agent: agentFor(cwd, bound) })
+  assert.deepEqual(bound.calls, [['beta']])
+
+  // default 里没有这条决定，别的工作区照常全开。
+  const idle = fakeTools()
+  const ctx2 = fakeCtx()
+  installHooks(ctx2, { catalog: feedFor(catalogFor(defaultPlugins)) })
+  await ctx2.emit('agent/created', {
+    agent: {
+      id: 'agent-2',
+      ctx: { get: (name) => (name === 'tools' ? idle : undefined) },
+      session: { id: 'session-2', header: { cwd: other } },
+    },
+  })
+  assert.deepEqual(idle.calls, [])
+})
+
+test('绑定悬空（指向已删除的 pack）时按 default 求值', async () => {
+  const { cwd } = await makeWorkspace()
+  await applyCommands(null, [{ op: 'packItem', packId: 'default', name: 'plug-a', value: false }])
+  // 手工制造悬空绑定：p1 不存在。
+  await writeJson(workspacesPath(), {
+    version: 1,
+    bindings: { [normalizeCwd(cwd)]: 'p1-gone' },
+    extra: [],
+  })
+
   const tools = fakeTools()
   const ctx = fakeCtx()
   installHooks(ctx, { catalog: feedFor(catalogFor(defaultPlugins)) })
-
   await ctx.emit('agent/created', { agent: agentFor(cwd, tools) })
 
-  assert.deepEqual(tools.calls, [['beta']])
+  assert.deepEqual(tools.calls, [['alpha']])
 })
 
 test('停用插件里只有 run_code 时不施加限制：宿主对它是整批拒绝', async () => {
@@ -195,7 +238,8 @@ test('停用插件里只有 run_code 时不施加限制：宿主对它是整批�
       sectionsKnown: true,
     },
   ]
-  const { cwd } = await makeWorkspace({ global: { items: { 'plug-a': false } } })
+  const { cwd } = await makeWorkspace()
+  await applyCommands(null, [{ op: 'packItem', packId: 'default', name: 'plug-a', value: false }])
   const tools = fakeTools(withRunCode)
   const ctx = fakeCtx()
   installHooks(ctx, { catalog: feedFor(catalogFor(plugins)) })
@@ -206,7 +250,8 @@ test('停用插件里只有 run_code 时不施加限制：宿主对它是整批�
 })
 
 test('waterfall 剔除被停用插件的段，保留其他段', async () => {
-  const { cwd } = await makeWorkspace({ global: { items: { 'plug-a': false } } })
+  const { cwd } = await makeWorkspace()
+  await applyCommands(null, [{ op: 'packItem', packId: 'default', name: 'plug-a', value: false }])
   const tools = fakeTools()
   const ctx = fakeCtx()
   installHooks(ctx, { catalog: feedFor(catalogFor(defaultPlugins)) })
@@ -241,7 +286,8 @@ test('waterfall 剔除被停用插件的段，保留其他段', async () => {
 })
 
 test('waterfall 只按段名精确匹配，不做前缀猜测', async () => {
-  const { cwd } = await makeWorkspace({ global: { items: { 'plug-a': false } } })
+  const { cwd } = await makeWorkspace()
+  await applyCommands(null, [{ op: 'packItem', packId: 'default', name: 'plug-a', value: false }])
   const tools = fakeTools()
   const ctx = fakeCtx()
   installHooks(ctx, { catalog: feedFor(catalogFor(defaultPlugins)) })
@@ -264,7 +310,8 @@ test('waterfall 只按段名精确匹配，不做前缀猜测', async () => {
 })
 
 test('scope 身份未命中且 id 也查不到时不动段', async () => {
-  const { cwd } = await makeWorkspace({ global: { items: { 'plug-a': false } } })
+  const { cwd } = await makeWorkspace()
+  await applyCommands(null, [{ op: 'packItem', packId: 'default', name: 'plug-a', value: false }])
   const tools = fakeTools()
   const ctx = fakeCtx()
   installHooks(ctx, { catalog: feedFor(catalogFor(defaultPlugins)) })
@@ -287,7 +334,8 @@ test('scope 身份未命中且 id 也查不到时不动段', async () => {
 })
 
 test('scope 身份未命中时按 session id 回退命中', async () => {
-  const { cwd } = await makeWorkspace({ global: { items: { 'plug-a': false } } })
+  const { cwd } = await makeWorkspace()
+  await applyCommands(null, [{ op: 'packItem', packId: 'default', name: 'plug-a', value: false }])
   const tools = fakeTools()
   const ctx = fakeCtx()
   installHooks(ctx, { catalog: feedFor(catalogFor(defaultPlugins)) })
@@ -309,7 +357,8 @@ test('scope 身份未命中时按 session id 回退命中', async () => {
 })
 
 test('宿主没有 restrict 时不施加也不抛错，只 warn 一次', async () => {
-  const { cwd } = await makeWorkspace({ global: { items: { 'plug-a': false } } })
+  const { cwd } = await makeWorkspace()
+  await applyCommands(null, [{ op: 'packItem', packId: 'default', name: 'plug-a', value: false }])
   const tools = fakeTools(rows, { noRestrict: true })
   const ctx = fakeCtx()
   const hooks = installHooks(ctx, { catalog: feedFor(catalogFor(defaultPlugins)) })
@@ -323,7 +372,8 @@ test('宿主没有 restrict 时不施加也不抛错，只 warn 一次', async (
 })
 
 test('插件目录未就绪时本轮不动，只 warn 一次', async () => {
-  const { cwd } = await makeWorkspace({ global: { items: { 'plug-a': false } } })
+  const { cwd } = await makeWorkspace()
+  await applyCommands(null, [{ op: 'packItem', packId: 'default', name: 'plug-a', value: false }])
   const tools = fakeTools()
   const ctx = fakeCtx()
   const hooks = installHooks(ctx, { catalog: { read: () => null, load: async () => catalogFor(defaultPlugins) } })
@@ -336,7 +386,8 @@ test('插件目录未就绪时本轮不动，只 warn 一次', async () => {
 })
 
 test('隐藏集变化后 reapply 释放旧限制并重建', async () => {
-  const { home, cwd } = await makeWorkspace({ global: { items: { 'plug-a': false } } })
+  const { cwd } = await makeWorkspace()
+  await applyCommands(null, [{ op: 'packItem', packId: 'default', name: 'plug-a', value: false }])
   const tools = fakeTools()
   const ctx = fakeCtx()
   const hooks = installHooks(ctx, { catalog: feedFor(catalogFor(defaultPlugins)) })
@@ -344,16 +395,16 @@ test('隐藏集变化后 reapply 释放旧限制并重建', async () => {
   await ctx.emit('agent/created', { agent: agentFor(cwd, tools) })
   assert.deepEqual([...tools.denied], ['alpha'])
 
-  await writeFile(
-    join(home, 'plugin-manager', 'global.json'),
-    JSON.stringify({ items: { 'plug-b': false } }, null, 2) + NEWLINE,
-  )
+  await applyCommands(null, [
+    { op: 'packItem', packId: 'default', name: 'plug-a', value: null },
+    { op: 'packItem', packId: 'default', name: 'plug-b', value: false },
+  ])
   await hooks.reapply()
 
   assert.deepEqual(tools.calls, [['alpha'], ['beta']])
   assert.deepEqual([...tools.denied], ['beta'])
 
-  await writeFile(join(home, 'plugin-manager', 'global.json'), JSON.stringify({ items: {} }, null, 2) + NEWLINE)
+  await applyCommands(null, [{ op: 'packItem', packId: 'default', name: 'plug-b', value: null }])
   await hooks.reapply()
 
   // 一条都不剩时必须释放旧掩码，绝不能拿空数组去调 restrict。
@@ -362,7 +413,8 @@ test('隐藏集变化后 reapply 释放旧限制并重建', async () => {
 })
 
 test('隐藏集没变化时 reapply 不重建限制', async () => {
-  const { cwd } = await makeWorkspace({ global: { items: { 'plug-a': false } } })
+  const { cwd } = await makeWorkspace()
+  await applyCommands(null, [{ op: 'packItem', packId: 'default', name: 'plug-a', value: false }])
   const tools = fakeTools()
   const ctx = fakeCtx()
   const hooks = installHooks(ctx, { catalog: feedFor(catalogFor(defaultPlugins)) })
@@ -376,7 +428,8 @@ test('隐藏集没变化时 reapply 不重建限制', async () => {
 })
 
 test('agent/disposed 释放限制并摘掉状态', async () => {
-  const { cwd } = await makeWorkspace({ global: { items: { 'plug-a': false } } })
+  const { cwd } = await makeWorkspace()
+  await applyCommands(null, [{ op: 'packItem', packId: 'default', name: 'plug-a', value: false }])
   const tools = fakeTools()
   const ctx = fakeCtx()
   const hooks = installHooks(ctx, { catalog: feedFor(catalogFor(defaultPlugins)) })
@@ -393,10 +446,21 @@ test('agent/disposed 释放限制并摘掉状态', async () => {
 })
 
 test('没有任何 agent 时 bootstrap 不报错', async () => {
-  await makeWorkspace({ global: {} })
+  await makeWorkspace()
   const ctx = fakeCtx({ agents: { list: () => [] } })
   const hooks = installHooks(ctx, { catalog: feedFor(catalogFor(defaultPlugins)) })
 
   await hooks.bootstrap()
   assert.deepEqual(hooks.stuck(), [])
+})
+
+test('策略写入后 packs.json 落在新路径，工作区目录下不产生文件', async () => {
+  const { cwd } = await makeWorkspace()
+  await applyCommands(null, [{ op: 'packItem', packId: 'default', name: 'plug-a', value: false }])
+  assert.deepEqual((await readJson(packsPath())).packs.default.items, { 'plug-a': false })
+  const exists = await readFile(join(cwd, '.dsh', 'plugin-manager.json'), 'utf8').then(
+    () => true,
+    () => false,
+  )
+  assert.equal(exists, false)
 })

@@ -1,8 +1,24 @@
-# dsh-plugin-manager
+# dsh-plugin-pack
 
 按工作区停用插件的 DSH 插件。本节只收本插件独有的词；DSH 装配语义与仓库约定见[根术语表](../../GLOSSARY.md)，这里不重复。
 
 ## 术语
+
+**Pack（分包）**:
+一张具名的策略表，只含覆盖决定（项级与组级），不含成员清单。工作区绑一个 pack；未绑定走 `default`。`default` 是内置项，不可删除、不可改名，内容可编辑。
+_Avoid_: 方案、配置组、profile
+
+**绑定（Binding）**:
+工作区目录 → pack 的一对一映射，键是规范化后的 cwd（反斜杠为正斜杠、剥尾斜杠、Windows 转小写）。绑定只影响该目录下**新开**的会话；已经开着的会话不会换 pack。删除 pack 后残留的键是悬空引用，读侧按 `default` 求值。
+_Avoid_: 关联、挂载、切换
+
+**求值链（Resolution chain）**:
+`pack.items ?? pack.groups ?? default.items ?? default.groups ?? 开`。前一环存在就不读后面的。
+_Avoid_: 合并、继承
+
+**三态（Tri-state）**:
+开 / 关 / 跟随。键不存在即跟随，`false` 是明令关——两者不是一回事，界面上也不能共用一个按钮。`default` 没有上一层可跟，只有两态。
+_Avoid_: 开关、覆盖
 
 **插件（Plugin）**:
 一个 npm 包，对模型的贡献可能是工具、提示词段，或两者都有。本插件以包名为键。

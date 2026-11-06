@@ -1,16 +1,22 @@
 import {
-  applyPolicyCommands,
   defaultCatalogFeed,
-  loadPolicyState,
-  workspacePolicyPath,
   type CatalogFeed,
-  type PolicyState,
   type Support,
   type ToolSchemaLike,
   type ToolsFace,
 } from './hooks.js'
-import { createResolver } from './policy.js'
-import type { Catalog, Command, GlobalPolicy, GroupRegistry, LayerPolicy } from './types.js'
+import { createResolver, defaultPackOf } from './policy.js'
+import { applyCommands, loadState, type PolicyState } from './store.js'
+import {
+  DEFAULT_PACK_ID,
+  type Bindings,
+  type Catalog,
+  type Command,
+  type GroupRegistry,
+  type LayerPolicy,
+  type PackBook,
+  type UiState,
+} from './types.js'
 
 /**
  * 面板路由的三条入口。
@@ -34,7 +40,11 @@ export type Envelope<T> =
   | { readonly ok: true; readonly value: T }
   | { readonly ok: false; readonly error: { readonly code: ErrorCode; readonly message: string } }
 
-/** 面板用的一行插件。求值结果由服务端算好，前端只负责渲染。 */
+/**
+ * 面板用的一行插件。求值结果由服务端算好，前端只负责渲染。
+ *
+ * 键是插件包名：一个 npm 包要么整体可用，要么整体不可用。
+ */
 export interface PluginRow {
   readonly pkg: string
   /** 官方包还是 profile 里的第三方包。 */
@@ -49,31 +59,68 @@ export interface PluginRow {
   readonly sectionChars: number
   /** 段归属是否完整。不完整的部分留在孤儿里，面板标注「提示词占用未知」。 */
   readonly sectionKnown: boolean
-  /** 按工作区（两层）求值的最终状态。 */
+  /** 该工作区绑定 pack 求值出的最终状态。全局面板只看 default。 */
   readonly open: boolean
-  /** 只按全局层求值的状态。全局面板用它渲染开关。 */
+  /** 只按 default pack 求值的状态。全局面板用它渲染开关。 */
   readonly openGlobal: boolean
+  /** 行内是否带 default pack 的项级覆盖。 */
   readonly itemGlobal: boolean | null
+  /** 行内是否带绑定 pack 的项级覆盖。 */
   readonly itemWorkspace: boolean | null
+  /** 生效值来自哪个 pack；取内置缺省时是 `default`。 */
+  readonly decidedBy: string
+  /** 生效值来自 pack 的哪一级；两层都没记录时是 `builtin`。 */
+  readonly decidedVia: 'item' | 'group' | 'builtin'
   /** 关闭前需要二次确认：关掉它，模型基本失去工作能力，或本插件自己失效。 */
   readonly protected: boolean
 }
 
+/** 一个 pack 的面板投影。 */
+export interface PackView {
+  readonly id: string
+  readonly name: string
+  readonly items: Readonly<Record<string, boolean>>
+  readonly groups: Readonly<Record<string, boolean>>
+  /** `default` 是内置 pack：不可删除、不可改名。 */
+  readonly builtin: boolean
+}
+
 export interface PluginView {
-  readonly policy: GlobalPolicy
-  readonly plugins: readonly PluginRow[]
+  /** 全部 pack，`default` 排第一。 */
+  readonly packs: readonly PackView[]
+  readonly ui: UiState
   readonly groups: GroupRegistry
+  /** 绑定表：键是规范化后的 cwd。 */
+  readonly bindings: Bindings
+  readonly plugins: readonly PluginRow[]
+  /**
+   * 过滤前识别到的官方插件数。
+   *
+   * 面板用它判断「归属扫描有没有定位到 app.asar」——拿过滤后的 `plugins` 数判断，
+   * 关掉「显示官方插件」时会把正常情况误报成扫描失败。
+   */
+  readonly officialTotal: number
   readonly warnings: readonly string[]
   readonly support: Support
   /** 策略里有、目录里没有的包名。保留不删（卸载再装回来决定还在）。 */
   readonly outOfScope: readonly string[]
   /** 目录还没扫完。前端据此把空的归属显示成「识别中」而不是「未知」。 */
   readonly pending: boolean
+  /**
+   * 兼容字段：旧面板按「全局层」读取 `policy.items` / `policy.groups`。
+   * 值是 `default` pack 的只读投影，不是独立的一层。
+   */
+  readonly policy: LayerPolicy
 }
 
 export interface WorkspaceView extends PluginView {
   readonly cwd: string
-  readonly policyPath: string
+  /** 该 cwd 的原始绑定 id；未绑定为 `null`。可能悬空。 */
+  readonly binding: string | null
+  /** 生效的 pack id；未绑定或悬空时为 `default`。 */
+  readonly packId: string
+  readonly packName: string
+  /** 兼容字段：绑定 pack 的只读投影，不再落盘。 */
   readonly workspace: LayerPolicy | null
   /** 该工作区是否有活的 Agent（没有时清单只有全局视图）。 */
   readonly live: boolean
@@ -107,7 +154,7 @@ const PROTECTED_PACKAGES: ReadonlySet<string> = new Set([
   '@deepseek-ai/dsh-tool-executor-native',
   '@deepseek-ai/dsh-system-prompt',
   '@deepseek-ai/dsh-tools',
-  '@dreanzy/dsh-plugin-manager',
+  '@dreanzy/dsh-plugin-pack',
 ])
 
 /** 扫描失败后的退避：失败后立刻重试没有意义，空转会把 CPU 打满。 */
@@ -163,20 +210,24 @@ async function currentCatalog(
   try {
     catalog = feed.read()
   } catch (error) {
-    ctx.logger.warn('dsh-plugin-manager: 读取插件目录缓存失败：' + String(error))
+    ctx.logger.warn('dsh-plugin-pack: 读取插件目录缓存失败：' + String(error))
   }
 
   // 残缺缓存也要重扫：有东西可用，但结果不可信。限流用「上次发起扫描的时间」，
   // 否则「扫描成功但结果残缺」会让每个面板请求都再扫一轮。
   // 只有明确的 `complete: false` 才算残缺；字段缺席（旧缓存、测试替身）按完整处理，
   // 与 `parseCatalog` 的缺省一致。
-  if ((catalog === null || catalog.complete === false) && state.scanning === null && Date.now() - state.lastScanAt >= RETRY_AFTER_MS) {
+  if (
+    (catalog === null || catalog.complete === false) &&
+    state.scanning === null &&
+    Date.now() - state.lastScanAt >= RETRY_AFTER_MS
+  ) {
     state.lastScanAt = Date.now()
     const scanning = feed
       .load()
       .then(() => undefined)
       .catch((error: unknown) => {
-        ctx.logger.warn('dsh-plugin-manager: 扫描插件目录失败：' + String(error))
+        ctx.logger.warn('dsh-plugin-pack: 扫描插件目录失败：' + String(error))
       })
       .finally(() => {
         state.scanning = null
@@ -224,6 +275,35 @@ function tryVolumes(tools: ToolsFace | null, scope: unknown): Map<string, number
   }
 }
 
+/** 全部 pack，`default` 排第一，其余按 id 排序。 */
+function packViews(book: PackBook): PackView[] {
+  const ids = Object.keys(book.packs).sort((a, b) => {
+    if (a === b) return 0
+    if (a === DEFAULT_PACK_ID) return -1
+    if (b === DEFAULT_PACK_ID) return 1
+    return a < b ? -1 : 1
+  })
+  const out: PackView[] = []
+  for (const id of ids) {
+    const pack = book.packs[id]
+    if (pack === undefined) continue
+    out.push({
+      id,
+      name: pack.name,
+      items: pack.items,
+      groups: pack.groups,
+      builtin: id === DEFAULT_PACK_ID,
+    })
+  }
+  return out
+}
+
+/** 旧面板字段的投影：`default` pack 就是原来的全局层。 */
+function compatPolicy(state: PolicyState): LayerPolicy {
+  const pack = defaultPackOf(state.packs)
+  return { items: { ...pack.items }, groups: { ...pack.groups } }
+}
+
 interface BuildInput {
   readonly loaded: PolicyState
   readonly catalog: Catalog | null
@@ -231,6 +311,8 @@ interface BuildInput {
   readonly tools: ToolsFace | null
   readonly scope: unknown
   readonly deps: RouteDeps
+  /** `true` 走「绑定 pack → default」，`false` 只按 default 求值。 */
+  readonly workspaceScoped: boolean
 }
 
 /**
@@ -241,17 +323,13 @@ interface BuildInput {
  * 实测读不到时退回目录记录，并在 warnings 里说明——比显示 0 诚实。
  */
 function buildPluginView(input: BuildInput): PluginView {
-  const { loaded, catalog, pending, tools, scope, deps } = input
-  const workspaceResolver = createResolver({
-    workspace: loaded.workspace,
-    global: loaded.global,
-    assignments: loaded.groups.assignments,
-  })
-  const globalResolver = createResolver({
-    workspace: null,
-    global: loaded.global,
-    assignments: loaded.groups.assignments,
-  })
+  const { loaded, catalog, pending, tools, scope, deps, workspaceScoped } = input
+  const defaultPack = defaultPackOf(loaded.packs)
+  const assignments = loaded.groups.assignments
+  const resolver = workspaceScoped
+    ? createResolver({ pack: loaded.pack, packId: loaded.packId, defaultPack, assignments })
+    : createResolver({ pack: null, defaultPack, assignments })
+  const defaultResolver = createResolver({ pack: null, defaultPack, assignments })
 
   const names = tryNames(tools, scope)
   const volumes = tryVolumes(tools, scope)
@@ -265,14 +343,20 @@ function buildPluginView(input: BuildInput): PluginView {
     left.pkg < right.pkg ? -1 : left.pkg > right.pkg ? 1 : 0,
   )
 
+  const showOfficial = loaded.ui.showOfficialPlugins === true
+  const officialTotal = plugins.filter((plugin) => plugin.pkg.startsWith(OFFICIAL_SCOPE)).length
   const rows: PluginRow[] = []
   for (const plugin of plugins) {
+    // 官方插件只在面板层面过滤；求值始终用全量清单——否则拨一下「显示官方插件」
+    // 就会连带改变它们的生效状态，而那个开关只该影响列表。
+    if (!showOfficial && plugin.pkg.startsWith(OFFICIAL_SCOPE)) continue
     const present = names === null ? plugin.tools : plugin.tools.filter((name) => names.has(name))
     let toolVolume = plugin.toolVolume
     if (volumes !== null) {
       toolVolume = 0
       for (const name of present) toolVolume += volumes.get(name) ?? 0
     }
+    const decision = resolver.decide(plugin.pkg)
     rows.push({
       pkg: plugin.pkg,
       origin: plugin.pkg.startsWith(OFFICIAL_SCOPE) ? 'official' : 'profile',
@@ -281,10 +365,12 @@ function buildPluginView(input: BuildInput): PluginView {
       toolVolume,
       sectionChars: plugin.sectionChars,
       sectionKnown: plugin.sectionsKnown,
-      open: workspaceResolver.isOpen(plugin.pkg),
-      openGlobal: globalResolver.isOpen(plugin.pkg),
-      itemGlobal: loaded.global.items[plugin.pkg] ?? null,
-      itemWorkspace: loaded.workspace?.items[plugin.pkg] ?? null,
+      open: decision.value,
+      openGlobal: defaultResolver.isOpen(plugin.pkg),
+      itemGlobal: defaultPack.items[plugin.pkg] ?? null,
+      itemWorkspace: loaded.pack === null ? null : (loaded.pack.items[plugin.pkg] ?? null),
+      decidedBy: decision.packId,
+      decidedVia: decision.via,
       protected: PROTECTED_PACKAGES.has(plugin.pkg),
     })
   }
@@ -292,21 +378,27 @@ function buildPluginView(input: BuildInput): PluginView {
   // 范围外名字：策略里有、目录里没有。保留不删——卸载再装回来时决定还在。
   const known = new Set(plugins.map((plugin) => plugin.pkg))
   const extras = new Set<string>()
-  const collect = (namesInLayer: Iterable<string>): void => {
-    for (const name of namesInLayer) if (!known.has(name)) extras.add(name)
+  const collect = (namesInPack: Iterable<string>): void => {
+    for (const name of namesInPack) if (!known.has(name)) extras.add(name)
   }
-  collect(Object.keys(loaded.global.items))
-  if (loaded.workspace !== null) collect(Object.keys(loaded.workspace.items))
-  collect(Object.keys(loaded.groups.assignments))
+  collect(Object.keys(defaultPack.items))
+  if (loaded.pack !== null) collect(Object.keys(loaded.pack.items))
+  collect(Object.keys(assignments))
 
   return {
-    policy: loaded.global,
-    plugins: rows,
+    packs: packViews(loaded.packs),
+    ui: loaded.ui,
     groups: loaded.groups,
+    bindings: loaded.bindings,
+    plugins: rows,
+    // 过滤前的官方插件数。面板用「扫描到几个官方包」判断归属扫描是否失败，
+    // 不能拿过滤后的行数判断——关掉「显示官方插件」时会把自己骗成扫描失败。
+    officialTotal,
     warnings,
     support: deps.support(),
     outOfScope: [...extras].sort(),
     pending,
+    policy: compatPolicy(loaded),
   }
 }
 
@@ -390,14 +482,14 @@ function releaseObservation(ctx: RouteContext, observation: unknown, sessionId: 
     const dispose = (record as Record<symbol, unknown>)[Symbol.dispose]
     if (typeof dispose === 'function') (dispose as () => void).call(observation)
   } catch (error) {
-    ctx.logger.warn('dsh-plugin-manager: 释放会话观察失败（sessionId=' + sessionId + '）：' + String(error))
+    ctx.logger.warn('dsh-plugin-pack: 释放会话观察失败（sessionId=' + sessionId + '）：' + String(error))
   }
 }
 
-/** POST api/plugin-manager/global：全局层策略 + 全量插件行。 */
+/** POST api/plugin-pack/global：全部 pack + 组注册表 + 绑定表 + 全量插件行。 */
 export async function handleGlobal(ctx: RouteContext, deps: RouteDeps): Promise<Envelope<PluginView>> {
   try {
-    const loaded = await loadPolicyState(null)
+    const loaded = await loadState(null)
     const found = await currentCatalog(ctx, deps)
     return {
       ok: true,
@@ -408,6 +500,7 @@ export async function handleGlobal(ctx: RouteContext, deps: RouteDeps): Promise<
         tools: rootTools(ctx),
         scope: pickAgent(ctx),
         deps,
+        workspaceScoped: false,
       }),
     }
   } catch (error) {
@@ -422,7 +515,7 @@ async function buildWorkspaceView(
   live: boolean,
   deps: RouteDeps,
 ): Promise<Envelope<WorkspaceView>> {
-  const loaded = await loadPolicyState(cwd)
+  const loaded = await loadState(cwd)
   const found = await currentCatalog(ctx, deps)
   const base = buildPluginView({
     loaded,
@@ -431,21 +524,27 @@ async function buildWorkspaceView(
     tools: rootTools(ctx),
     scope: agent,
     deps,
+    workspaceScoped: true,
   })
+  const defaultPack = defaultPackOf(loaded.packs)
+  const workspace: LayerPolicy | null =
+    loaded.pack === null ? null : { items: { ...loaded.pack.items }, groups: { ...loaded.pack.groups } }
   return {
     ok: true,
     value: {
       ...base,
       cwd,
-      policyPath: workspacePolicyPath(cwd),
-      workspace: loaded.workspace,
+      binding: loaded.binding,
+      packId: loaded.packId,
+      packName: loaded.pack?.name ?? defaultPack.name,
+      workspace,
       live,
       stuck: deps.stuck(),
     },
   }
 }
 
-/** POST api/plugin-manager/workspace：{ sessionId }。 */
+/** POST api/plugin-pack/workspace：{ sessionId }。 */
 export async function handleWorkspace(
   ctx: RouteContext,
   body: Record<string, unknown> | null,
@@ -467,95 +566,157 @@ export async function handleWorkspace(
 }
 
 const OPS = new Set([
-  'item',
-  'group',
+  'packItem',
+  'packGroup',
+  'createPack',
+  'renamePack',
+  'deletePack',
+  'bind',
+  'addExtra',
+  'removeExtra',
   'assign',
   'createGroup',
   'renameGroup',
   'deleteGroup',
-  'showSidebarEntry',
+  'showOfficialPlugins',
+  'showChip',
+  'defaultTab',
 ])
+
+function readNonEmpty(record: Record<string, unknown>, key: string): string | null {
+  const value = record[key]
+  return typeof value === 'string' && value !== '' ? value : null
+}
+
+function readValue(record: Record<string, unknown>): boolean | null | undefined {
+  const value = record['value']
+  if (value === null) return null
+  return typeof value === 'boolean' ? value : undefined
+}
 
 /** 校验入站意图。宁可拒绝整批，也不要半懂地写一半。 */
 export function parseCommands(raw: unknown): { ok: true; commands: Command[] } | { ok: false; message: string } {
   if (!Array.isArray(raw)) return { ok: false, message: 'commands 必须是数组' }
   if (raw.length === 0) return { ok: false, message: 'commands 不能为空' }
   const commands: Command[] = []
+  const bad = (index: number, message: string) => ({ ok: false as const, message: `commands[${index}] ${message}` })
+
   for (const [index, entry] of raw.entries()) {
     const record = asRecord(entry)
-    if (record === null) return { ok: false, message: 'commands[' + String(index) + '] 不是对象' }
+    if (record === null) return bad(index, '不是对象')
     const op = record['op']
-    if (typeof op !== 'string' || !OPS.has(op)) {
-      return { ok: false, message: 'commands[' + String(index) + '].op 不是已知操作' }
-    }
-    if (op === 'showSidebarEntry') {
-      const value = record['value']
-      if (typeof value !== 'boolean') return { ok: false, message: 'commands[' + String(index) + '].value 必须是布尔' }
-      commands.push({ op: 'showSidebarEntry', value })
-      continue
-    }
-    if (op === 'assign') {
-      const name = record['name']
-      const groupId = record['groupId']
-      if (typeof name !== 'string' || name === '') {
-        return { ok: false, message: 'commands[' + String(index) + '].name 必须是非空字符串' }
+    if (typeof op !== 'string' || !OPS.has(op)) return bad(index, 'op 不是已知操作')
+
+    switch (op) {
+      case 'showOfficialPlugins':
+      case 'showChip': {
+        const value = record['value']
+        if (typeof value !== 'boolean') return bad(index, 'value 必须是布尔')
+        commands.push({ op, value })
+        break
       }
-      if (groupId !== null && (typeof groupId !== 'string' || groupId === '')) {
-        return { ok: false, message: 'commands[' + String(index) + '].groupId 必须是分组 id 或 null' }
+      case 'defaultTab': {
+        const value = record['value']
+        if (value !== 'groups' && value !== 'packs' && value !== 'workspace') {
+          return bad(index, 'value 必须是 groups、packs 或 workspace')
+        }
+        commands.push({ op: 'defaultTab', value })
+        break
       }
-      commands.push({ op: 'assign', name, groupId })
-      continue
-    }
-    if (op === 'createGroup' || op === 'renameGroup') {
-      const name = record['name']
-      if (typeof name !== 'string' || name.trim() === '') {
-        return { ok: false, message: 'commands[' + String(index) + '].name 必须是非空字符串' }
+      case 'createPack': {
+        const name = record['name']
+        if (typeof name !== 'string' || name.trim() === '') return bad(index, 'name 必须是非空字符串')
+        commands.push({ op: 'createPack', name })
+        break
       }
-      if (op === 'createGroup') {
-        commands.push({ op: 'createGroup', name })
-        continue
+      case 'renamePack': {
+        const packId = readNonEmpty(record, 'packId')
+        if (packId === null) return bad(index, 'packId 必须是非空字符串')
+        const name = record['name']
+        if (typeof name !== 'string' || name.trim() === '') return bad(index, 'name 必须是非空字符串')
+        commands.push({ op: 'renamePack', packId, name })
+        break
       }
-      const groupId = record['groupId']
-      if (typeof groupId !== 'string' || groupId === '') {
-        return { ok: false, message: 'commands[' + String(index) + '].groupId 必须是非空字符串' }
+      case 'deletePack': {
+        const packId = readNonEmpty(record, 'packId')
+        if (packId === null) return bad(index, 'packId 必须是非空字符串')
+        commands.push({ op: 'deletePack', packId })
+        break
       }
-      commands.push({ op: 'renameGroup', groupId, name })
-      continue
-    }
-    if (op === 'deleteGroup') {
-      const groupId = record['groupId']
-      if (typeof groupId !== 'string' || groupId === '') {
-        return { ok: false, message: 'commands[' + String(index) + '].groupId 必须是非空字符串' }
+      case 'packItem': {
+        const packId = readNonEmpty(record, 'packId')
+        if (packId === null) return bad(index, 'packId 必须是非空字符串')
+        const name = readNonEmpty(record, 'name')
+        if (name === null) return bad(index, 'name 必须是非空字符串')
+        const value = readValue(record)
+        if (value === undefined) return bad(index, 'value 必须是布尔或 null')
+        commands.push({ op: 'packItem', packId, name, value })
+        break
       }
-      commands.push({ op: 'deleteGroup', groupId })
-      continue
-    }
-    const layer = record['layer']
-    if (layer !== 'global' && layer !== 'workspace') {
-      return { ok: false, message: 'commands[' + String(index) + '].layer 必须是 global 或 workspace' }
-    }
-    const value = record['value']
-    if (value !== null && typeof value !== 'boolean') {
-      return { ok: false, message: 'commands[' + String(index) + '].value 必须是布尔或 null' }
-    }
-    if (op === 'item') {
-      const name = record['name']
-      if (typeof name !== 'string' || name === '') {
-        return { ok: false, message: 'commands[' + String(index) + '].name 必须是非空字符串' }
+      case 'packGroup': {
+        const packId = readNonEmpty(record, 'packId')
+        if (packId === null) return bad(index, 'packId 必须是非空字符串')
+        const groupId = readNonEmpty(record, 'groupId')
+        if (groupId === null) return bad(index, 'groupId 必须是非空字符串')
+        const value = readValue(record)
+        if (value === undefined) return bad(index, 'value 必须是布尔或 null')
+        commands.push({ op: 'packGroup', packId, groupId, value })
+        break
       }
-      commands.push({ op: 'item', layer, name, value })
-    } else {
-      const groupId = record['groupId']
-      if (typeof groupId !== 'string' || groupId === '') {
-        return { ok: false, message: 'commands[' + String(index) + '].groupId 必须是非空字符串' }
+      case 'bind': {
+        const cwd = readNonEmpty(record, 'cwd')
+        if (cwd === null || cwd.trim() === '') return bad(index, 'cwd 必须是非空字符串')
+        const packId = record['packId']
+        if (packId !== null && (typeof packId !== 'string' || packId === '')) {
+          return bad(index, 'packId 必须是 pack id 或 null')
+        }
+        commands.push({ op: 'bind', cwd, packId })
+        break
       }
-      commands.push({ op: 'group', layer, groupId, value })
+      case 'addExtra':
+      case 'removeExtra': {
+        const cwd = readNonEmpty(record, 'cwd')
+        if (cwd === null || cwd.trim() === '') return bad(index, 'cwd 必须是非空字符串')
+        commands.push({ op, cwd })
+        break
+      }
+      case 'assign': {
+        const name = readNonEmpty(record, 'name')
+        if (name === null) return bad(index, 'name 必须是非空字符串')
+        const groupId = record['groupId']
+        if (groupId !== null && (typeof groupId !== 'string' || groupId === '')) {
+          return bad(index, 'groupId 必须是分组 id 或 null')
+        }
+        commands.push({ op: 'assign', name, groupId })
+        break
+      }
+      case 'createGroup':
+      case 'renameGroup': {
+        const name = record['name']
+        if (typeof name !== 'string' || name.trim() === '') return bad(index, 'name 必须是非空字符串')
+        if (op === 'createGroup') {
+          commands.push({ op: 'createGroup', name })
+          break
+        }
+        const groupId = readNonEmpty(record, 'groupId')
+        if (groupId === null) return bad(index, 'groupId 必须是非空字符串')
+        commands.push({ op: 'renameGroup', groupId, name })
+        break
+      }
+      case 'deleteGroup': {
+        const groupId = readNonEmpty(record, 'groupId')
+        if (groupId === null) return bad(index, 'groupId 必须是非空字符串')
+        commands.push({ op: 'deleteGroup', groupId })
+        break
+      }
+      default:
+        return bad(index, 'op 不是已知操作')
     }
   }
   return { ok: true, commands }
 }
 
-/** POST api/plugin-manager/apply：{ sessionId?, commands }。 */
+/** POST api/plugin-pack/apply：{ sessionId?, commands }。 */
 export async function handleApply(
   ctx: RouteContext,
   body: Record<string, unknown> | null,
@@ -565,39 +726,29 @@ export async function handleApply(
     const parsed = parseCommands(body?.['commands'])
     if (!parsed.ok) return { ok: false, error: { code: 'bad-request', message: parsed.message } }
 
-    const needsWorkspace = parsed.commands.some(
-      (command) => (command.op === 'item' || command.op === 'group') && command.layer === 'workspace',
-    )
-
-    let cwd: string | null = null
-    let live = false
-    let agent: unknown
-    if (needsWorkspace) {
-      const sessionId = readString(body, 'sessionId')
-      if (sessionId === null) {
-        return { ok: false, error: { code: 'unknown-session', message: '工作区写入需要 sessionId' } }
+    // `bind` 自带 cwd，所以写入本身不再依赖会话；sessionId 只决定回哪种视图。
+    const sessionId = readString(body, 'sessionId')
+    let target: { cwd: string; live: boolean; agent: unknown } | null = null
+    if (sessionId !== null) {
+      try {
+        target = await resolveSession(ctx, sessionId)
+      } catch {
+        // 会话解析失败不影响写入：绑定命令带自己的 cwd。
       }
-      const resolved = await resolveSession(ctx, sessionId)
-      if (resolved === null) {
-        return { ok: false, error: { code: 'unknown-session', message: '未找到会话：' + sessionId } }
-      }
-      cwd = resolved.cwd
-      live = resolved.live
-      agent = resolved.agent
     }
 
-    await applyPolicyCommands(cwd, parsed.commands)
+    await applyCommands(target?.cwd ?? null, parsed.commands)
     // 策略写入不产生宿主事件，这条显式调用是「同一会话内改策略立刻生效」的唯一来源。
     // 失败只降级，不能让写成功的保存报错。
     try {
       await deps.reapply()
     } catch (error) {
-      ctx.logger.warn('dsh-plugin-manager: 保存后重新施加失败（策略已写入）：' + String(error))
+      ctx.logger.warn('dsh-plugin-pack: 保存后重新施加失败（策略已写入）：' + String(error))
     }
 
-    if (cwd === null) return await handleGlobal(ctx, deps)
-    return await buildWorkspaceView(ctx, cwd, agent, live, deps)
+    if (target === null) return await handleGlobal(ctx, deps)
+    return await buildWorkspaceView(ctx, target.cwd, target.agent, target.live, deps)
   } catch (error) {
-    return { ok: false, error: { code: 'internal', message: '写入插件策略失败：' + String(error) } }
+    return { ok: false, error: { code: 'internal', message: '写入策略失败：' + String(error) } }
   }
 }

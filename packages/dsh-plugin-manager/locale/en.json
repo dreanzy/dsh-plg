@@ -1,6 +1,0 @@
-{
-  "meta": {
-    "title": "Plugin Manager",
-    "description": "Disable plugins per workspace: drop the tools they register and the prompt sections they inject, saving tokens on every request."
-  }
-}

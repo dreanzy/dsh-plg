@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Plugin Pack",
+    "description": "Disable plugins with packs: drop the tools they register and the prompt sections they inject, saving tokens on every request. A workspace binds one pack; unbound workspaces follow default."
+  }
+}

@@ -1,28 +1,7 @@
-import { mkdir, readFile } from 'node:fs/promises'
-import { dirname, join } from 'node:path'
-import { withFileLock, writeFileAtomic } from '@deepseek-ai/dsh-atomic-write'
-import { dshHomePath } from '@deepseek-ai/dsh-home-paths'
 import { loadCatalog, readCachedCatalog } from './catalog.js'
-import {
-  createResolver,
-  parseGlobal,
-  parseGroups,
-  parseLayer,
-  serializeGlobal,
-  serializeGroups,
-  serializeLayer,
-  type Resolver,
-} from './policy.js'
-import {
-  EMPTY_GLOBAL,
-  EMPTY_GROUPS,
-  LOCKED_TOOLS,
-  type Catalog,
-  type Command,
-  type GlobalPolicy,
-  type GroupRegistry,
-  type LayerPolicy,
-} from './types.js'
+import { createResolver, defaultPackOf, type Resolver } from './policy.js'
+import { loadState, type PolicyState } from './store.js'
+import { LOCKED_TOOLS, type Catalog } from './types.js'
 
 /**
  * 生效层：把「停用插件」落到两条通道上。
@@ -37,202 +16,6 @@ import {
  * 多省几百 token 远不如删错一个 1300 字符的段严重。所有失败路径都只 warn，
  * 因为 agent/created 是 serial 派发，监听器抛错会让会话创建失败。
  */
-
-/* ------------------------------------------------------------------ *
- * 策略文件：读写
- * ------------------------------------------------------------------ */
-
-/** DSH_HOME/plugin-manager/global.json：全局层，所有工作区的默认值。 */
-export function globalPolicyPath(): string {
-  return dshHomePath('plugin-manager', 'global.json')
-}
-
-/** DSH_HOME/plugin-manager/groups.json：组定义，跨工作区共享。 */
-export function groupsPolicyPath(): string {
-  return dshHomePath('plugin-manager', 'groups.json')
-}
-
-/** cwd/.dsh/plugin-manager.json：某个工作区的那一层。 */
-export function workspacePolicyPath(cwd: string): string {
-  return join(cwd, '.dsh', 'plugin-manager.json')
-}
-
-async function readText(path: string): Promise<string | undefined> {
-  try {
-    return await readFile(path, 'utf8')
-  } catch (error) {
-    if ((error as { code?: string }).code === 'ENOENT') return undefined
-    throw error
-  }
-}
-
-/** 当前完整状态，读侧不加锁（原子 rename 保证读到的是完整版本）。 */
-export interface PolicyState {
-  readonly global: GlobalPolicy
-  readonly workspace: LayerPolicy | null
-  readonly groups: GroupRegistry
-  readonly warnings: readonly string[]
-}
-
-/**
- * 读两层策略与组定义。
- *
- * cwd 为 null 时只有全局层：工作区粒度需要目录，没有目录就没有那一层。
- * 解析失败由 policy.ts 降级成空策略并附一条说明，这里只负责把文件读上来。
- */
-export async function loadPolicyState(cwd: string | null): Promise<PolicyState> {
-  const warnings: string[] = []
-  const globalParsed = parseGlobal(await readText(globalPolicyPath()))
-  warnings.push(...globalParsed.warnings)
-
-  const groupsParsed = parseGroups(await readText(groupsPolicyPath()))
-  warnings.push(...groupsParsed.warnings)
-
-  let workspace: LayerPolicy | null = null
-  if (cwd !== null && cwd !== '') {
-    const workspaceParsed = parseLayer(await readText(workspacePolicyPath(cwd)))
-    warnings.push(...workspaceParsed.warnings)
-    workspace = workspaceParsed.value
-  }
-
-  return { global: globalParsed.value, workspace, groups: groupsParsed.value, warnings }
-}
-
-/**
- * 一次写事务：建父目录 → 拿跨进程锁 → 读 → 改 → 原子覆盖写。
- *
- * 父目录必须在拿锁之前建好：withFileLock 用 wx 直接建 file.lock，它不会建父目录。
- */
-async function transact(path: string, mutate: (current: string | undefined) => string): Promise<void> {
-  await mkdir(dirname(path), { recursive: true, mode: 0o700 })
-  await withFileLock(path, async () => {
-    const current = await readText(path)
-    await writeFileAtomic(path, mutate(current), { mode: 0o600, dirMode: 0o700 })
-  })
-}
-
-function setKey(map: Record<string, boolean>, key: string, value: boolean | null): Record<string, boolean> {
-  const next = { ...map }
-  if (value === null) delete next[key]
-  else next[key] = value
-  return next
-}
-
-function applyToGlobal(current: string | undefined, commands: readonly Command[]): string {
-  const parsed = parseGlobal(current).value
-  let { items, groups, showSidebarEntry } = parsed
-  for (const command of commands) {
-    if (command.op === 'item' && command.layer === 'global') {
-      items = setKey(items, command.name, command.value)
-    } else if (command.op === 'group' && command.layer === 'global') {
-      groups = setKey(groups, command.groupId, command.value)
-    } else if (command.op === 'showSidebarEntry') {
-      showSidebarEntry = command.value
-    }
-  }
-  return serializeGlobal({ items, groups, showSidebarEntry })
-}
-
-function applyToWorkspace(current: string | undefined, commands: readonly Command[]): string {
-  const parsed = parseLayer(current).value
-  let { items, groups } = parsed
-  for (const command of commands) {
-    if (command.op === 'item' && command.layer === 'workspace') {
-      items = setKey(items, command.name, command.value)
-    } else if (command.op === 'group' && command.layer === 'workspace') {
-      groups = setKey(groups, command.groupId, command.value)
-    }
-  }
-  return serializeLayer({ items, groups })
-}
-
-function nextGroupId(groups: readonly { id: string }[]): string {
-  const taken = new Set(groups.map((group) => group.id))
-  for (let index = groups.length + 1; ; index += 1) {
-    const candidate = 'g' + String(index)
-    if (!taken.has(candidate)) return candidate
-  }
-}
-
-function applyToGroups(current: string | undefined, commands: readonly Command[]): string {
-  const parsed = parseGroups(current).value
-  const assignments = { ...parsed.assignments }
-  let groups = [...parsed.groups]
-  const known = (): Set<string> => new Set(groups.map((group) => group.id))
-
-  for (const command of commands) {
-    if (command.op === 'createGroup') {
-      const name = command.name.trim()
-      if (name === '') throw new Error('分组名不能为空')
-      // id 稳定且与名字脱钩：改名不需要扫任何工程文件。
-      groups = [...groups, { id: nextGroupId(groups), name }]
-      continue
-    }
-    if (command.op === 'renameGroup') {
-      const name = command.name.trim()
-      if (name === '') throw new Error('分组名不能为空')
-      if (!known().has(command.groupId)) throw new Error('未知分组：' + command.groupId)
-      groups = groups.map((group) => (group.id === command.groupId ? { id: group.id, name } : group))
-      continue
-    }
-    if (command.op === 'deleteGroup') {
-      if (!known().has(command.groupId)) throw new Error('未知分组：' + command.groupId)
-      groups = groups.filter((group) => group.id !== command.groupId)
-      for (const [name, groupId] of Object.entries(assignments)) {
-        if (groupId === command.groupId) delete assignments[name]
-      }
-      continue
-    }
-    if (command.op !== 'assign') continue
-    if (command.groupId === null) {
-      delete assignments[command.name]
-      continue
-    }
-    if (!known().has(command.groupId)) throw new Error('未知分组：' + command.groupId)
-    assignments[command.name] = command.groupId
-  }
-  return serializeGroups({ groups, assignments })
-}
-
-function targets(cwd: string | null, commands: readonly Command[]) {
-  let global = false
-  let workspace = false
-  let groups = false
-  for (const command of commands) {
-    if (
-      command.op === 'assign' ||
-      command.op === 'createGroup' ||
-      command.op === 'renameGroup' ||
-      command.op === 'deleteGroup'
-    ) {
-      groups = true
-    } else if (command.op === 'showSidebarEntry') {
-      global = true
-    } else if (command.layer === 'global') {
-      global = true
-    } else {
-      if (cwd === null || cwd === '') throw new Error('工作区命令缺少工作目录')
-      workspace = true
-    }
-  }
-  return { global, workspace, groups }
-}
-
-/**
- * 应用一批意图。
- *
- * 命令是绝对状态，幂等、可交换，写同一键即后点者赢；三个文件各自一把锁，
- * 固定顺序（全局 → 工作区 → 组定义）避免交叉等待。
- */
-export async function applyPolicyCommands(cwd: string | null, commands: readonly Command[]): Promise<PolicyState> {
-  const plan = targets(cwd, commands)
-  if (plan.global) await transact(globalPolicyPath(), (current) => applyToGlobal(current, commands))
-  if (plan.workspace && cwd !== null) {
-    await transact(workspacePolicyPath(cwd), (current) => applyToWorkspace(current, commands))
-  }
-  if (plan.groups) await transact(groupsPolicyPath(), (current) => applyToGroups(current, commands))
-  return await loadPolicyState(cwd)
-}
 
 /* ------------------------------------------------------------------ *
  * 宿主面：只声明用到的形状
@@ -525,7 +308,7 @@ export function installHooks(ctx: PluginContext, options?: HooksOptions): HooksH
   const warnOnce = (key: string, message: string): void => {
     if (warned.has(key)) return
     warned.add(key)
-    ctx.logger.warn('dsh-plugin-manager: ' + message)
+    ctx.logger.warn('dsh-plugin-pack: ' + message)
   }
 
   const readCatalog = (): Catalog | null => {
@@ -583,7 +366,7 @@ export function installHooks(ctx: PluginContext, options?: HooksOptions): HooksH
 
     let loaded: PolicyState
     try {
-      loaded = await loadPolicyState(cwd)
+      loaded = await loadState(cwd)
     } catch (error) {
       warnOnce('policy-read', '读取停用策略失败，本轮不改变限制：' + String(error))
       return
@@ -596,9 +379,13 @@ export function installHooks(ctx: PluginContext, options?: HooksOptions): HooksH
       return
     }
 
+    // 求值链：工作区绑定的 pack → default pack → 内置缺省（开）。
+    // 绑定悬空或未绑定时 `loaded.pack` 为 `null`，求值自然退回 default；
+    // 绑定表的键是规范化后的 cwd，归一在 `loadState` 内部完成。
     const resolver = createResolver({
-      workspace: loaded.workspace,
-      global: loaded.global,
+      pack: loaded.pack,
+      packId: loaded.packId,
+      defaultPack: defaultPackOf(loaded.packs),
       assignments: loaded.groups.assignments,
     })
 
@@ -667,7 +454,7 @@ export function installHooks(ctx: PluginContext, options?: HooksOptions): HooksH
         }
         effective = remaining
         state.stuck = [...new Set([...state.stuck, ...unknown])]
-        ctx.logger.warn('dsh-plugin-manager: 以下名字无法限制，已跳过：' + unknown.join(', '))
+        ctx.logger.warn('dsh-plugin-pack: 以下名字无法限制，已跳过：' + unknown.join(', '))
       }
     }
     if (dispose === undefined) return
@@ -691,7 +478,7 @@ export function installHooks(ctx: PluginContext, options?: HooksOptions): HooksH
       if (stuck.length > 0) {
         state.stuck = [...new Set([...state.stuck, ...stuck])]
         ctx.logger.warn(
-          'dsh-plugin-manager: 以下工具关不掉（同名工具注册在该 agent 自己的作用域里）：' + stuck.join(', '),
+          'dsh-plugin-pack: 以下工具关不掉（同名工具注册在该 agent 自己的作用域里）：' + stuck.join(', '),
         )
       }
     } catch {
@@ -702,7 +489,7 @@ export function installHooks(ctx: PluginContext, options?: HooksOptions): HooksH
   const onCreated = async (payload: unknown): Promise<void> => {
     const agent = asAgentLike(asRecord(payload)?.['agent'])
     if (agent === null) {
-      ctx.logger.warn('dsh-plugin-manager: agent/created 负载形状不符，跳过')
+      ctx.logger.warn('dsh-plugin-pack: agent/created 负载形状不符，跳过')
       return
     }
     const state: AgentState = { agent, dispose: null, key: '', stuck: [], denied: [], snapshot: null }
@@ -711,7 +498,7 @@ export function installHooks(ctx: PluginContext, options?: HooksOptions): HooksH
       // 这个事件的监听器抛错会让会话创建失败，所以一律吞掉降级。
       await applyOne(state)
     } catch (error) {
-      ctx.logger.warn('dsh-plugin-manager: agent/created 施加失败，本会话按空策略运行：' + String(error))
+      ctx.logger.warn('dsh-plugin-pack: agent/created 施加失败，本会话按空策略运行：' + String(error))
     }
   }
 
@@ -784,7 +571,7 @@ export function installHooks(ctx: PluginContext, options?: HooksOptions): HooksH
       try {
         await applyOne(state)
       } catch (error) {
-        ctx.logger.warn('dsh-plugin-manager: 重新施加失败（agent=' + state.agent.id + '）：' + String(error))
+        ctx.logger.warn('dsh-plugin-pack: 重新施加失败（agent=' + state.agent.id + '）：' + String(error))
       }
     }
   }
@@ -848,7 +635,7 @@ export function installHooks(ctx: PluginContext, options?: HooksOptions): HooksH
       try {
         await applyOne(state)
       } catch (error) {
-        ctx.logger.warn('dsh-plugin-manager: 补施加失败（agent=' + agent.id + '）：' + String(error))
+        ctx.logger.warn('dsh-plugin-pack: 补施加失败（agent=' + agent.id + '）：' + String(error))
       }
     }
   }
@@ -879,9 +666,4 @@ export function installHooks(ctx: PluginContext, options?: HooksOptions): HooksH
     },
     support,
   }
-}
-
-/** 未落盘时的空状态，供读取失败的降级路径与测试使用。 */
-export function emptyPolicyState(): PolicyState {
-  return { global: EMPTY_GLOBAL, workspace: null, groups: EMPTY_GROUPS, warnings: [] }
 }

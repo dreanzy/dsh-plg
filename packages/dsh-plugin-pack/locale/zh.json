@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Plugin Pack",
+    "description": "按 pack 停用插件：摘掉它注册的工具与注入的提示词段，省下每次请求的 token。工作区只绑一个 pack，未绑定按 default。"
+  }
+}

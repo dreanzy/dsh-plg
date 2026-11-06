@@ -10,7 +10,7 @@ import {
 } from './routes.js'
 
 /** 插件名，同时是 bundle patch 的 entry id。 */
-export const name = 'dsh-plugin-manager'
+export const name = 'dsh-plugin-pack'
 
 /**
  * 硬依赖只有 tools：工具掩码与体积实测都取不到替代。
@@ -23,9 +23,9 @@ export const inject = ['tools'] as const
 
 /** 路由路径。宿主按完整 pathname 匹配，/api 前缀不能省。 */
 const ROUTES = {
-  global: '/api/plugin-manager/global',
-  workspace: '/api/plugin-manager/workspace',
-  apply: '/api/plugin-manager/apply',
+  global: '/api/plugin-pack/global',
+  workspace: '/api/plugin-pack/workspace',
+  apply: '/api/plugin-pack/apply',
 } as const
 
 interface FetchRouteSpec {

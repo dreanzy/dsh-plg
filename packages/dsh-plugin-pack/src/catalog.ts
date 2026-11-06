@@ -41,9 +41,13 @@ import type { Catalog, PluginContribution } from './types.js'
  * 命中就只读 package.json 与 stat，不读任何 js 内容。
  */
 
-/** `$DSH_HOME/plugin-manager/catalog.json`。 */
+/**
+ * `$DSH_HOME/packs/plugin/catalog.json`。
+ *
+ * 与三份策略文件同目录，但它只是归属扫描的缓存：不参与求值，可删，删了重扫。
+ */
 export function catalogPath(): string {
-  return dshHomePath('plugin-manager', 'catalog.json')
+  return dshHomePath('packs', 'plugin', 'catalog.json')
 }
 
 /** 扫描总预算：超时就带着已抓到的结果返回，不让装配路径无限等。 */

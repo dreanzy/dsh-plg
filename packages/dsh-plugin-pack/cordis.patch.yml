@@ -1,0 +1,3 @@
+- insert:
+    - id: dsh-plugin-pack
+      name: '@dreanzy/dsh-plugin-pack'
