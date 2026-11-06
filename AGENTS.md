@@ -25,4 +25,4 @@ Single-context layout: one `GLOSSARY.md` at the repo root plus `docs/adr/`. See 
 
 ## 宿主插件红线
 
-`agent/created` 是 serial 派发，监听器抛错会让**会话创建失败**。所有 `applyOne` 路径包 `try/catch`，失败只 `logger.warn`；慢活（读盘、扫目录）不得放进该回调。
+`agent/created` 是 serial 派发，监听器抛错会让**会话创建失败**。所有 `applyOne` 路径包 `try/catch`，失败只 `logger.warn`；该回调里只做**有界**读盘（1–3 个小配置文件，结果按 cwd 缓存），不扫目录、不做无界遍历。

@@ -6,7 +6,7 @@
 
 ## 1. 目标
 
-按**工作区**为新建会话决定两件事，且不影响已有会话：
+按**工作区**为新建会话决定两件事，且不自动改写已有会话（会话浮层里可手动把当前会话拉回方案路由）：
 
 1. 会话使用的 provider / model / reasoningEffort；
 2. 子智能体（`subagent_tier` 工具）四档难度各自的路由，含首选与备选。
@@ -15,7 +15,7 @@
 
 ## 2. 非目标
 
-- 不做进程级默认模型的替代品；官方 `设置 → 模型` 继续存在。
+- 不替代官方 `设置 → 模型`；只为空白会话把全局方案的会话路由同步成进程级默认显示，官方设置页继续存在。
 - 不接管官方 composer 模型选择器的交互（只在其上挂展示）。
 - 不管智能体团队（`spawn_teammate`）的成员路由——它直接调 `subagents.startActivation`，插件无介入点。
 - 不给 `subagent_fork` 分档：fork 的价值是前缀复用，换模型即浪费。
@@ -110,12 +110,12 @@ _Avoid_: 继承、默认
 
 ```
 on agent/created({ agent, source }):
-  source !== 'startup'                    → return    // 恢复/旧会话天然排除
   agent.session.header.origin === 'subagent' → return // 不与父级捕获打架
   cwd === undefined                       → return
   scheme = resolve(cwd)
-  // 1) 会话路由
-  if scheme.session && 会话日志里没有 request/header:
+  isStartup = source === 'startup'
+  // 1) 会话路由：只在新建会话做
+  if isStartup && scheme.session && 会话日志里没有 request/header:
       try agent.model.select(scheme.session) catch warn
 
   // 判据说明：宿主在**创建会话时**就写一条初始 model/selection
@@ -129,6 +129,9 @@ on agent/created({ agent, source }):
       注册失败 → 不 deny（宁可让官方工具留着）
   // 3) 提示词段
   仅当 subagent_tier 注册成功才注入（段名 model-scheme.delegation）
+
+第 2、3 步对恢复的会话同样执行：工具与段挂在 agent 作用域上，agent 重建后旧注册随
+旧 agent 一起消失。不重挂的话，恢复出来的会话只有模型、没有 subagent_tier。
 ```
 
 顺序是硬要求：**先注册成功再 deny**。反过来一旦注册失败，模型会完全失去委派能力。
@@ -173,7 +176,7 @@ execute：
 
 - 逐键合并：用户有则用用户，无则用内置。**空串等于缺省**，写入时直接拒绝，不静默忽略。
 - 面板为每段提供文本框与「恢复内置」（= 删键）。
-- 内置文本更新后不自动合并用户覆盖；面板提示「内置已变化，可重置」。
+- 内置文本更新后不自动合并用户覆盖；面板不主动提示变化，恢复内置由清空文本框（= 删键）完成。
 
 两条硬约束：
 
@@ -190,16 +193,20 @@ execute：
 | `llm.resolveModelInfo` 失败 | 跳过该路由试备选；全失败则不注册该档 | 列表内逐条标「当前不可用」 |
 | 配置文件坏 JSON | 回落出厂方案 | 标红 + 文件路径 + 解析错误原文 |
 
+`support()` 在没有探测历史时按可用放行：面板用这一格决定是否禁用档位编辑，判成不可用
+会让「没开过会话就配不了方案」。真实可用性在 `agent/created` 时按会话判断。
+
 ## 7. UI
 
-**设置页**（`plugins.item`，插件页里的独立项）：
+**设置页**（`settings.section`，与另外三个 manager 同级的设置项）：
 
-- 方案列表：名称、会话路由、四档摘要、当前是否被任何工作区绑定；
+- 方案列表：名称、会话路由、四档摘要、当前被哪些会话的工作区绑定（最近 8 个，不是全盘扫描）；
 - 增删改方案；出厂方案不可删；删除仍被绑定的方案需先解绑或确认回落；
 - 每档：首选 + 备选的有序列表，**每条各自带模型与思考等级**，从 `modelCatalog` 选，无效路由标灰；强度下拉只列该模型公布的 `reasoning.efforts`，另有「跟随模型默认」一项（= 该键不存在）；
-- 工作区绑定：显示当前 cwd、其绑定、以及「跟随全局默认」按钮（跟随 = 删除 `schemeId` 键，不是写 null）。
+- 工作区绑定在会话浮层里改，设置页只定义方案与全局默认：浮层显示当前 cwd、其绑定、
+  以及「跟随全局默认」按钮（跟随 = 删除 `schemeId` 键，不是写 null）。
 
-**会话界面**：不新增常驻控件。用 `conversation.input.model.label` 在官方模型位触发按钮上显示 `方案名 · 模型名`（纯展示）。切方案走 `/scheme` 命令。
+**会话界面**：`conversation.input.right` 的 chip 打开方案浮层（`shell.overlay`），用于会话内切方案与把当前会话拉回方案路由；`conversation.input.model.label` 在官方模型位触发按钮上显示 `方案名 · 模型名`（纯展示）。
 
 ## 8. 模块边界
 
@@ -213,7 +220,7 @@ packages/dsh-model-scheme/
   src/hooks.ts          agent/created、restrict 生命周期、按 agent 登记
   src/tools.ts          subagent_tier 定义与 execute
   src/prompt.ts         段文本生成
-  src/routes.ts         /api/model-scheme/read|apply|support
+  src/routes.ts         /api/model-scheme/read|apply|support|reset
   client/client.js      设置页 + 模型位展示
   locale/{zh,en}.json
   test/*.test.js        node --test，测编译产物
@@ -225,7 +232,7 @@ host 侧 `inject` 只声明 `tools`；`subagents` / `agentPresets` / `connection
 
 1. **求值链**：工作区有绑定 / 绑定指向已删方案 / 全局有默认 / 都没有 / 坏 JSON / 文件不存在。
 2. **注册顺序**：注册成功 → 有 deny；注册抛错 → 无 deny、无段。
-3. **事件过滤**：`source === 'resume'` 不动；`origin === 'subagent'` 不动；无 cwd 不动。
+3. **事件过滤**：`source === 'resume'` 不调 `select`（但重挂工具与段）；`origin === 'subagent'` 不动；无 cwd 不动。
 4. **select 条件**：已有 pending/lastUsed 时不 select。
 5. **备选前进**：`resolveCallConfig` 抛错 → 换下一条；全失败 → 工具返回错误而不是崩。
 6. **降级矩阵**逐格。
