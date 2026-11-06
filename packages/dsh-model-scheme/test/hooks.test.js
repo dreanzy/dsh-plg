@@ -163,7 +163,10 @@ function install({ ctx, home }) {
  * 事件过滤（spec §6.1 前三步：零动作）
  * ------------------------------------------------------------------ */
 
-test('source 不是 startup：恢复的会话零动作', async (t) => {
+test('source 不是 startup：恢复的会话不改模型，但工具与段要重新挂', async (t) => {
+  // 工具与段注册在 agent 作用域上，agent 重建后旧注册随旧 agent 一起消失。
+  // 只在 startup 时挂，会让恢复出来的会话只有模型、没有 subagent_tier，
+  // 模型于是只能去调官方 subagent。
   const ws = await makeWorkspace()
   t.after(ws.cleanup)
   const { ctx, listeners } = makeContext({ subagents: makeSubagents() })
@@ -172,10 +175,10 @@ test('source 不是 startup：恢复的会话零动作', async (t) => {
   install({ ctx, home: ws.home })
   await fire(listeners, 'agent/created', { agent, source: 'resume' })
 
-  assert.deepEqual(calls.select, [])
-  assert.deepEqual(calls.register, [])
-  assert.deepEqual(calls.restrict, [])
-  assert.deepEqual(calls.section, [])
+  assert.deepEqual(calls.select, [], '恢复的会话不该被工作区方案改写模型')
+  assert.equal(calls.register.length, 1, '工具必须重新注册')
+  assert.equal(calls.restrict.length, 1, '官方 subagent 要重新屏蔽')
+  assert.equal(calls.section.length, 1, '委派段要重新注入')
 })
 
 test('origin 为 subagent：零动作，不与父级捕获打架', async (t) => {

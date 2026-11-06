@@ -373,9 +373,6 @@ export function installHooks(ctx: PluginContext, options: HooksOptions = {}): Ho
         warnOnce('payload', 'agent/created 负载形状不符，跳过')
         return
       }
-      // 恢复/旧会话天然排除：它们的选择已经写在日志里，不该被工作区方案改写。
-      if (record['source'] !== 'startup') return
-
       agent = asAgentLike(record['agent'])
       if (agent === null) {
         warnOnce('payload', 'agent/created 负载缺少 agent，跳过')
@@ -384,9 +381,15 @@ export function installHooks(ctx: PluginContext, options: HooksOptions = {}): Ho
       // 子智能体的路由由父级在创建前捕获，这里插手会与 dsh-subagent 打架。
       if (agent.session.header?.origin === 'subagent') return
 
+      // 新会话：模型、工具、段三样都做。
+      // 恢复的会话：只做工具与段——模型选择已经写在它自己的日志里，不该被工作区方案改写，
+      // 但工具和段挂在 agent 作用域上，agent 重建后旧注册随旧 agent 一起消失，
+      // 不重新挂的话，恢复出来的会话只有模型、没有 subagent_tier，模型只能去调官方 subagent。
+      const isStartup = record['source'] === 'startup'
+
       const state: AgentState = { disposers: [] }
       states.set(agent.id, state)
-      await applyOne(agent, state, true)
+      await applyOne(agent, state, isStartup)
     } catch (error) {
       // 这个监听器抛错会让会话创建失败，所以一律吞掉降级。
       recordFailure(agent?.id ?? '?', error)
