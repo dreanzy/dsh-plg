@@ -2448,7 +2448,9 @@ window.__ModuleLoader__.load({
       // 依赖声明照抄官方 settings-subagent：remote.session 是独立服务名，
       // 只声明 remote 拿不到它（ctx.remote.session 会是空的，模型目录读不到）。
       // 声明里少一个 → 插件停在 pending → 整个设置分区连入口都不出现。
-      inject: ['slots', 'locale', 'remote', 'remote.session'],
+      // 与另外三个包一致：这里只声明运行时真正取用的服务。入口级依赖（含 locale）
+      // 由 package.json 的 dsh.client.inject 声明，那是加载顺序，不是服务注入。
+      inject: ['slots', 'remote', 'remote.session'],
       apply(ctx) {
         // 兜底：client 模块的 apply 抛错会把 web boot 判成 entry failed，桌面端整个起不来。
         // 任何意外都只降级成「面板不出来」，绝不连坐宿主。
@@ -2466,82 +2468,82 @@ window.__ModuleLoader__.load({
 
     /** 面板的实际挂载，由 apply 包一层兜底后调用。 */
     function applyPanel(ctx) {
-        const host = createHost(ctx)
+      const host = createHost(ctx)
 
-        /**
-         * 目录只在 apply 里加载一次，并在宿主事件上重读：
-         * 换适配器或连接重置后，模型下拉必须跟着变，否则会写成一条已失效的路由。
-         * 每个 effect 都返回（或由 ctx 记住）清理函数；释放时事件订阅随 ctx 一起拆。
-         */
-        ctx.effect(() => {
-          host.catalog.load()
-        }, 'model-scheme: 首次读取模型目录')
+      /**
+       * 目录只在 apply 里加载一次，并在宿主事件上重读：
+       * 换适配器或连接重置后，模型下拉必须跟着变，否则会写成一条已失效的路由。
+       * 每个 effect 都返回（或由 ctx 记住）清理函数；释放时事件订阅随 ctx 一起拆。
+       */
+      ctx.effect(() => {
+        host.catalog.load()
+      }, 'model-scheme: 首次读取模型目录')
 
-        if (typeof ctx.on === 'function') {
-          ctx.effect(() => ctx.on('llm/adapters-updated', () => host.catalog.load()), 'model-scheme: 适配器变化')
-          ctx.effect(() => ctx.on('connection/reset', () => host.catalog.load()), 'model-scheme: 连接重置')
+      if (typeof ctx.on === 'function') {
+        ctx.effect(() => ctx.on('llm/adapters-updated', () => host.catalog.load()), 'model-scheme: 适配器变化')
+        ctx.effect(() => ctx.on('connection/reset', () => host.catalog.load()), 'model-scheme: 连接重置')
+      }
+
+      // 组件类型必须是稳定的标识符：写成内联箭头函数的话，每次渲染都是新类型，
+      // React 会整棵卸载重挂——输入框每敲一个字就失焦。apply 只跑一次，所以在这里
+      // 定义成常量既稳定又拿得到闭包里的 host。
+      const SettingsSection = () => h(PanelBoundary, null, h(Panel, { host: host }))
+
+      // 入口与 skill-manager / mcp-manager / plugin-manager 一致：只挂设置页的
+      // settings.section，不注册 plugins.item 卡片。三个既有插件的用户已经习惯
+      // 在设置里找它们，多一个入口反而分散。
+      ctx.slots.inject('settings.section', () =>
+        ctx.slots.register(
+          { name: 'settings.section', id: PANEL_ID, order: 61, label: () => TITLE },
+          SettingsSection,
+        ),
+      )
+
+      // ---------- 模型位方案名（ticket 08） ----------
+
+      /**
+       * 只注册 `conversation.input.model.label` 这一处，且只处理 placement 'trigger'。
+       * `slots.inject` 会等父 slot `conversation.input.model` 的声明出现后再注册，
+       * 与 composer 的挂载顺序无关；注册冲突（别的插件也占了这个 single slot）时
+       * 静默让位——官方行为原样保留，比抛错好。
+       */
+      ctx.slots.inject('conversation.input.model.label', () => {
+        try {
+          return ctx.slots.register({ name: 'conversation.input.model.label', id: 'model-scheme-label' }, labelView)
+        } catch {
+          return () => {}
         }
+      })
 
-        // 组件类型必须是稳定的标识符：写成内联箭头函数的话，每次渲染都是新类型，
-        // React 会整棵卸载重挂——输入框每敲一个字就失焦。apply 只跑一次，所以在这里
-        // 定义成常量既稳定又拿得到闭包里的 host。
-        const SettingsSection = () => h(PanelBoundary, null, h(Panel, { host: host }))
+      // 会话输入框右侧的入口与它的浮层。组件引用必须稳定（apply 只跑一次），
+      // 内联箭头函数会每次渲染换新类型，导致整棵卸载重挂。
+      const SchemeOverlay = () => h(SchemeModal, { host: host })
 
-        // 入口与 skill-manager / mcp-manager / plugin-manager 一致：只挂设置页的
-        // settings.section，不注册 plugins.item 卡片。三个既有插件的用户已经习惯
-        // 在设置里找它们，多一个入口反而分散。
-        ctx.slots.inject('settings.section', () =>
-          ctx.slots.register(
-            { name: 'settings.section', id: PANEL_ID, order: 61, label: () => TITLE },
-            SettingsSection,
-          ),
-        )
+      ctx.slots.inject('conversation.input.right', () =>
+        ctx.slots.register({ name: 'conversation.input.right', id: 'model-scheme-chip', order: 43 }, SchemeChip),
+      )
+      ctx.slots.inject('shell.overlay', () =>
+        ctx.slots.register({ name: 'shell.overlay', id: 'model-scheme-overlay', order: 62 }, SchemeOverlay),
+      )
 
-        // ---------- 模型位方案名（ticket 08） ----------
+      // 缓存先读一次；连接重置整轮重读；其余时间只为新出现的工作区增量重读。
+      ctx.effect(() => {
+        labelRefresh(host, true)
+      }, 'model-scheme: 读取模型位方案名')
 
-        /**
-         * 只注册 `conversation.input.model.label` 这一处，且只处理 placement 'trigger'。
-         * `slots.inject` 会等父 slot `conversation.input.model` 的声明出现后再注册，
-         * 与 composer 的挂载顺序无关；注册冲突（别的插件也占了这个 single slot）时
-         * 静默让位——官方行为原样保留，比抛错好。
-         */
-        ctx.slots.inject('conversation.input.model.label', () => {
-          try {
-            return ctx.slots.register({ name: 'conversation.input.model.label' }, labelView)
-          } catch {
-            return () => {}
-          }
-        })
+      if (typeof ctx.on === 'function') {
+        ctx.effect(() => ctx.on('connection/reset', () => labelRefresh(host, true)), 'model-scheme: 模型位方案名重读')
+      }
 
-        // 会话输入框右侧的入口与它的浮层。组件引用必须稳定（apply 只跑一次），
-        // 内联箭头函数会每次渲染换新类型，导致整棵卸载重挂。
-        const SchemeOverlay = () => h(SchemeModal, { host: host })
-
-        ctx.slots.inject('conversation.input.right', () =>
-          ctx.slots.register({ name: 'conversation.input.right', id: 'model-scheme-chip', order: 43 }, SchemeChip),
-        )
-        ctx.slots.inject('shell.overlay', () =>
-          ctx.slots.register({ name: 'shell.overlay', id: 'model-scheme-overlay', order: 62 }, SchemeOverlay),
-        )
-
-        // 缓存先读一次；连接重置整轮重读；其余时间只为新出现的工作区增量重读。
-        ctx.effect(() => {
-          labelRefresh(host, true)
-        }, 'model-scheme: 读取模型位方案名')
-
-        if (typeof ctx.on === 'function') {
-          ctx.effect(() => ctx.on('connection/reset', () => labelRefresh(host, true)), 'model-scheme: 模型位方案名重读')
-        }
-
-        ctx.effect(() => {
-          if (typeof setInterval !== 'function') return undefined
-          const timer = setInterval(() => {
-            // 后台标签页不重读：用户看不见触发按钮，读到的也只是缓存。
-            if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return
-            labelRefresh(host, false)
-          }, LABEL_REFRESH_MS)
-          return () => clearInterval(timer)
-        }, 'model-scheme: 模型位方案名增量重读')
+      ctx.effect(() => {
+        if (typeof setInterval !== 'function') return undefined
+        const timer = setInterval(() => {
+          // 后台标签页不重读：用户看不见触发按钮，读到的也只是缓存。
+          if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return
+          labelRefresh(host, false)
+        }, LABEL_REFRESH_MS)
+        return () => clearInterval(timer)
+      }, 'model-scheme: 模型位方案名增量重读')
     }
   },
 })
