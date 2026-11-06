@@ -1,0 +1,135 @@
+/**
+ * 模型方案（model-scheme）：装配入口。
+ *
+ * 职责只有三件：装监听器、按运行期能力注册三条面板路由、统一释放。
+ * 业务全在纯模块里——`policy` 求值、`tools` 定义档位工具、`prompt` 生成段文本、
+ * `routes` 处理请求。编排顺序见 `hooks.ts` 与 spec §6.1。
+ */
+
+import { applyCommands, loadState, resolve, type SchemeCommand, type SchemeState } from './policy.js'
+import { installHooks, type PluginContext } from './hooks.js'
+import { BUILTIN_PROMPT, resolvePrompt } from './prompt.js'
+import type { PromptOverrides } from './scheme.js'
+import { ROUTES, handleApply, handleRead, handleSupport, wrapHandler, type Envelope, type RouteDeps } from './routes.js'
+
+/** 插件名，同时是 bundle patch 的 entry id。 */
+export const name = 'model-scheme'
+
+/**
+ * 硬依赖只有 tools。
+ *
+ * `subagents` / `connection` / `systemPrompt` / `agents` / `llm` 全部走运行期
+ * `ctx.get` 探测，缺了按 spec §6.4 降级（照 dsh-plugin-manager 的做法）：
+ * 没有子智能体插件时插件仍要能装配，否则一个面板就能拖垮整个会话创建。
+ */
+export const inject = ['tools']
+
+/** `connection.fetch.register` 的入参，只声明本插件用到的字段。 */
+interface FetchRouteSpec {
+  readonly path: string
+  readonly methods: readonly string[]
+  readonly requestBody: 'buffered' | 'streaming'
+  fetch(request: Request): Promise<Response>
+}
+
+interface FetchFace {
+  register(spec: FetchRouteSpec): () => unknown
+}
+
+/** cordis 的可选嵌套注入：服务出现时才跑回调。 */
+interface ApplyContext extends PluginContext {
+  inject(names: readonly string[], callback: () => void): unknown
+}
+
+/**
+ * 取连接服务的 `fetch.register`。
+ *
+ * 无 `connection` 服务（无 GUI 的 profile）或服务存在但没有 `fetch` 都返回 null：
+ * 那是「没有面板入口」，不是故障，只 warn。
+ */
+function readFetchFace(ctx: PluginContext): FetchFace | null {
+  let connection: unknown
+  try {
+    connection = ctx.get('connection')
+  } catch {
+    return null
+  }
+  if (typeof connection !== 'object' || connection === null) return null
+  const fetchFace = (connection as Record<string, unknown>)['fetch']
+  if (typeof fetchFace !== 'object' || fetchFace === null) return null
+  const register = (fetchFace as Record<string, unknown>)['register']
+  if (typeof register !== 'function') return null
+  return {
+    register: (spec: FetchRouteSpec) => (register as (value: FetchRouteSpec) => () => unknown).call(fetchFace, spec),
+  }
+}
+
+export function apply(ctx: unknown): void {
+  const context = ctx as ApplyContext
+  const hooks = installHooks(context)
+
+  // 重载后补一次施加：已有会话不会再收到 agent/created，不补的话它们会一直没有
+  // subagent_tier 与委派段。失败只降级，不影响插件加载。
+  void hooks.bootstrap().catch((error: unknown) => {
+    context.logger.warn(name + ': 重载后补施加失败：' + String(error))
+  })
+
+  // 统一释放：退订两个事件，并把每个 agent 上的工具、限制、段全部注销。
+  context.effect(() => hooks.stopAll)
+
+  context.inject(['connection'], () => {
+    const face = readFetchFace(context)
+    if (face === null) {
+      context.logger.warn(name + ': connection 服务在册但没有 fetch.register，路由未注册（方案仍生效）')
+      return
+    }
+
+    // 依赖在这里组装，纯模块那边只认签名：
+    // 读写与求值来自 policy，`support` / `lastError` 来自 hooks（探测结果与最近一次失败）。
+    const deps: RouteDeps = {
+      loadState: (cwd) => loadState(cwd),
+      applyCommands: (cwd, commands) => applyCommands(cwd, commands as unknown as readonly SchemeCommand[]),
+      resolve: (state, cwd) => resolve(state as SchemeState, cwd),
+      resolvePrompt: (overrides) => resolvePrompt(overrides as PromptOverrides | undefined),
+      builtinPrompt: () => BUILTIN_PROMPT,
+      support: hooks.support,
+      lastError: hooks.lastError,
+      logger: context.logger,
+    }
+
+    const disposers: Array<() => unknown> = []
+
+    /**
+     * 三条路由同形：POST + 缓冲 body。`wrapHandler` 负责解析 body 并把信封套成
+     * `toResponse`（HTTP 恒 200，错误只走 `error.code`），所以这里不再自己包一层。
+     */
+    const register = (
+      path: string,
+      handler: (body: Record<string, unknown> | null) => Promise<Envelope>,
+    ): void => {
+      try {
+        disposers.push(
+          face.register({ path, methods: ['POST'], requestBody: 'buffered', fetch: wrapHandler(handler) }),
+        )
+      } catch (error) {
+        context.logger.warn(name + ': 注册路由失败（' + path + '）：' + String(error))
+      }
+    }
+
+    register(ROUTES.read, (body) => handleRead(deps, body))
+    register(ROUTES.apply, (body) => handleApply(deps, body))
+    register(ROUTES.support, (body) => handleSupport(deps, body))
+
+    context.effect(() => () => {
+      for (const dispose of disposers.splice(0)) {
+        try {
+          dispose()
+        } catch {
+          // 释放失败只影响这次卸载，没有可回滚的状态。
+        }
+      }
+    })
+  })
+
+  context.logger.info(name + ': applied')
+}
