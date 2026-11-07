@@ -1,7 +1,7 @@
 /**
- * 面板数据路由：`POST /api/model-pack/{read,apply,support,reset}`。
+ * 面板数据路由：`POST /api/model-pack/{read,apply}`。
  *
- * 四个处理函数只依赖注入进来的 `RouteDeps`，不读宿主 ctx、不 import policy：
+ * 两个处理函数只依赖注入进来的 `RouteDeps`，不读宿主 ctx、不 import policy 的运行时：
  * 这样它们能在 `node --test` 下用真的 policy 函数加一个临时 home 完整跑通。
  * 注册动作（取 `connection.fetch.register`、生命周期 disposer）留在编排层。
  *
@@ -9,14 +9,10 @@
  * 前端只认信封；非 2xx 会让它丢掉 body，面板就只剩一句「请求失败」。
  */
 
+import type { PackCommand, PromptTierPatch } from './policy.js'
+
 /** 错误码。都短、都稳定，前端按它分支，不解析 message。 */
 export type ErrorCode = 'bad-request' | 'internal'
-
-/** 会话路由的引用：面板只比对这两项。 */
-export interface RouteRef {
-  readonly provider: string
-  readonly model: string
-}
 
 /** 统一信封：成功带 `data`，失败带 `error: { code, message }`。 */
 export type Envelope<T = unknown> =
@@ -44,7 +40,7 @@ export interface SupportView {
  */
 export interface RouteDeps {
   loadState(cwd: string | null): Promise<unknown>
-  applyCommands(cwd: string | null, commands: readonly unknown[]): Promise<unknown>
+  applyCommands(cwd: string | null, commands: readonly PackCommand[]): Promise<unknown>
   resolve(state: unknown, cwd: string | null): unknown
   /**
    * 逐键合并提示词覆盖与内置，返回生效值。
@@ -56,29 +52,13 @@ export interface RouteDeps {
   builtinPrompt(): unknown
   support(): SupportView
   lastError(): string | undefined
-  /**
-   * 把某个在线会话的模型路由恢复成它所在 pack 的值。
-   *
-   * 只作用于那一条会话（写一条 `model/selection`），不动 pack 配置，也不影响其他会话。
-   * 会话必须在线：空白会话同样有 agent，冷会话需要先打开。
-   */
-  resetSession(sessionId: string): Promise<RouteRef>
-  /**
-   * 某条在线会话当前实际用的路由。
-   *
-   * 面板拿它和 pack 里配的会话路由比对：只有不一致时才需要「恢复」这个动作，
-   * 常驻一个按钮会让人以为每次都要点一下。
-   */
-  sessionModel(sessionId: string): Promise<(RouteRef & { readonly reasoningEffort?: string }) | null>
   logger: { warn(message: string): void }
 }
 
 /** 路径。宿主按完整 pathname 匹配，`/api` 前缀不能省。 */
-export const ROUTES: { read: string; apply: string; support: string; reset: string } = {
+export const ROUTES: { read: string; apply: string } = {
   read: '/api/model-pack/read',
   apply: '/api/model-pack/apply',
-  support: '/api/model-pack/support',
-  reset: '/api/model-pack/reset',
 }
 
 /**
@@ -92,29 +72,9 @@ export const ROUTES: { read: string; apply: string; support: string; reset: stri
  * `bind` / `addExtra` / `removeExtra` / `showChip` / `defaultTab`）；另一半是本包
  * 特有的内容编辑命令：pack 本身就是内容，没有 item 与 group 那种逐项开关。
  */
-type ValidCommand =
-  | { readonly op: 'putPack'; readonly packId: string; readonly pack: Record<string, unknown> }
-  | { readonly op: 'packSession'; readonly packId: string; readonly session: Record<string, unknown> | null }
-  | {
-      readonly op: 'packTier'
-      readonly packId: string
-      readonly tierId: string
-      readonly tier: Record<string, unknown> | null
-    }
-  | { readonly op: 'createPack'; readonly name: string }
-  | { readonly op: 'renamePack'; readonly packId: string; readonly name: string }
-  | { readonly op: 'deletePack'; readonly packId: string }
-  | { readonly op: 'bind'; readonly cwd: string; readonly packId: string | null }
-  | { readonly op: 'addExtra'; readonly cwd: string }
-  | { readonly op: 'removeExtra'; readonly cwd: string }
-  | { readonly op: 'showChip'; readonly value: boolean }
-  | { readonly op: 'defaultTab'; readonly value: 'packs' | 'workspace' | 'prompts' }
-  | {
-      readonly op: 'putPrompts'
-      readonly delegation?: string | null
-      readonly tiers?: Record<string, Record<string, string | null> | null>
-    }
-  | { readonly op: 'resetPrompts'; readonly keys?: readonly string[] }
+/** 与 `policy.ts` 的 `PackCommand` 是同一份定义：校验形状与落盘共用一种类型，
+ * 新增 op 时编译器会同时提醒两边。 */
+type ValidCommand = PackCommand
 
 const OPS: ReadonlySet<string> = new Set([
   'putPack',
@@ -136,7 +96,7 @@ const OPS: ReadonlySet<string> = new Set([
 const TIER_IDS: readonly string[] = ['tier1', 'tier2', 'tier3', 'tier4']
 const PROMPT_TIER_IDS: readonly string[] = [...TIER_IDS]
 const PROMPT_KEYS: readonly string[] = ['delegation', ...PROMPT_TIER_IDS]
-const PROMPT_TIER_FIELDS: readonly string[] = ['label', 'text']
+const PROMPT_TIER_FIELDS: readonly ('label' | 'text')[] = ['label', 'text']
 
 /** 覆盖段的一个字段：`null` 删键（= 恢复内置），空串与纯空白一律拒绝。 */
 function readPromptField(
@@ -315,7 +275,7 @@ function parseCommands(raw: unknown): { ok: true; commands: ValidCommand[] } | {
         const command: {
           op: 'putPrompts'
           delegation?: string | null
-          tiers?: Record<string, Record<string, string | null> | null>
+          tiers?: Record<string, PromptTierPatch | null>
         } = { op: 'putPrompts' }
         if (hasDelegation) {
           const field = readPromptField(record['delegation'], `commands[${index}].delegation`)
@@ -325,7 +285,7 @@ function parseCommands(raw: unknown): { ok: true; commands: ValidCommand[] } | {
         if (hasTiers) {
           const tiersRaw = record['tiers']
           if (!isRecord(tiersRaw)) return badField(index, 'tiers', '必须是对象')
-          const tiers: Record<string, Record<string, string | null> | null> = {}
+          const tiers: Record<string, PromptTierPatch | null> = {}
           for (const [key, value] of Object.entries(tiersRaw)) {
             if (!PROMPT_TIER_IDS.includes(key)) {
               return badField(index, 'tiers', '有不存在的档 id「' + key + '」')
@@ -335,7 +295,7 @@ function parseCommands(raw: unknown): { ok: true; commands: ValidCommand[] } | {
               continue
             }
             if (!isRecord(value)) return badField(index, 'tiers.' + key, '必须是对象或 null')
-            const patch: Record<string, string | null> = {}
+            const patch: { label?: string | null; text?: string | null } = {}
             for (const field of PROMPT_TIER_FIELDS) {
               if (!Object.hasOwn(value, field)) continue
               const parsedField = readPromptField(value[field], `commands[${index}].tiers.${key}.${field}`)
@@ -422,18 +382,7 @@ export async function handleRead(deps: RouteDeps, body: Record<string, unknown> 
     if (!cwdResult.ok) return badRequest(cwdResult.message)
     const cwd = cwdResult.cwd
     const state = await deps.loadState(cwd)
-    const data = buildData(deps, cwd, state)
-
-    const rawSessionId = body === null ? undefined : body['sessionId']
-    if (typeof rawSessionId !== 'string' || rawSessionId.trim() === '') return { ok: true, data }
-
-    // 会话不在线属于正常情况（冷会话、别的进程），不该让整次读取失败。
-    try {
-      const sessionModel = await deps.sessionModel(rawSessionId.trim())
-      return { ok: true, data: { ...(data as unknown as Record<string, unknown>), sessionModel } }
-    } catch {
-      return { ok: true, data }
-    }
+    return { ok: true, data: buildData(deps, cwd, state) }
   } catch (error) {
     return internal(deps, '读取模型配置', error)
   }
@@ -463,36 +412,6 @@ export async function handleApply(deps: RouteDeps, body: Record<string, unknown>
   }
 }
 
-/** POST /api/model-pack/support：无入参 → 探测结果 + 上一次失败原因。 */
-export async function handleSupport(deps: RouteDeps, body: Record<string, unknown> | null): Promise<Envelope> {
-  // body 不使用：探测结果与目录无关。参数保留只为四条路由同形，注册处可以一视同仁。
-  void body
-  try {
-    return { ok: true, data: { support: deps.support(), lastError: deps.lastError() ?? null } }
-  } catch (error) {
-    return internal(deps, '探测能力', error)
-  }
-}
-
-/**
- * 把某个会话的模型恢复成 pack 里的会话路由。
- *
- * 存在的理由：手动切模型写的是会话级选择，切走再切回会保留——这是对的，
- * 但用户没有任何「回到 pack」的出口。这条路由就是那个出口。
- */
-export async function handleReset(deps: RouteDeps, body: Record<string, unknown> | null): Promise<Envelope> {
-  const sessionId = body === null ? undefined : body['sessionId']
-  if (typeof sessionId !== 'string' || sessionId.trim() === '') {
-    return badRequest('reset 需要 sessionId')
-  }
-  try {
-    const route = await deps.resetSession(sessionId.trim())
-    return { ok: true, data: { provider: route.provider, model: route.model } }
-  } catch (error) {
-    return internal(deps, '恢复 pack 路由', error)
-  }
-}
-
 /** 把信封变成 Response。HTTP 恒 200 是这里的唯一职责。 */
 export function toResponse(envelope: Envelope): Response {
   return Response.json(envelope, { headers: { 'cache-control': 'no-store' } })
@@ -501,9 +420,8 @@ export function toResponse(envelope: Envelope): Response {
 /**
  * 把 `(body) => Promise<Envelope>` 包成 `fetch` 处理器。
  *
- * 取 body 失败（空体、非 JSON、顶层不是对象）一律当 `null`：四条路由里
- * `read` 与 `support` 都不需要入参，空体必须合法。处理器自身的异常也在这里兜住，
- * 保证连接层永远只看到一个 200。
+ * 取 body 失败（空体、非 JSON、顶层不是对象）一律当 `null`：`read` 不需要入参，
+ * 空体必须合法。处理器自身的异常也在这里兜住，保证连接层永远只看到一个 200。
  */
 export function wrapHandler(
   handler: (body: Record<string, unknown> | null) => Promise<Envelope>,

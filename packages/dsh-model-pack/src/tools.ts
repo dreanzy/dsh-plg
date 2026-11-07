@@ -217,13 +217,6 @@ export function probeSupport(deps: TierToolDeps): TierSupport {
  * cwd
  * ------------------------------------------------------------------ */
 
-/** 显式 cwd 优先；缺省取调用方会话的 cwd。两者都没有时按「只有全局层」解析。 */
-function cwdOf(args: Record<string, unknown>, agent: unknown): string | null {
-  const explicit = args['cwd']
-  if (typeof explicit === 'string' && explicit.trim() !== '') return explicit.trim()
-  return callerCwd(agent)
-}
-
 const EMPTY = Symbol('empty')
 
 function readCwd(value: unknown): string | typeof EMPTY | undefined {
@@ -302,6 +295,15 @@ async function startSubagent(
   const cwd = args['cwd']
   if (typeof cwd === 'string' && cwd.trim() !== '') request['cwd'] = cwd
 
+  // 宿主默认的递归预算（maxDepth，缺省 1）必须由调用方带上：官方 subagent 工具传
+  // resolveMaxDepth 的结果，本工具不传就会绕过它——用户把 maxDepth 设成 0 时，
+  // 官方工具拒绝委派，这里照样派出深度 1 的子智能体。
+  const resolveMaxDepth = subagents['resolveMaxDepth']
+  if (typeof resolveMaxDepth === 'function') {
+    const maxDepth = (resolveMaxDepth as (configured?: unknown) => unknown).call(subagents, undefined)
+    if (typeof maxDepth === 'number') request['maxDepth'] = maxDepth
+  }
+
   const spec: Record<string, unknown> = { provider: PROVIDER_NAME, delivery: 'parent', request }
   // 标签前缀 `t1`…`t4`：委派一多，光看名字分不出哪条是深算、哪条是侦察。
   // 用户给的 label 接在后面，没有 label 就只留前缀。
@@ -341,7 +343,9 @@ async function runTool(
     const agent = exec?.agent ?? registeredAgent
     let resolved: ResolvedPack
     try {
-      resolved = await deps.resolveFor(cwdOf(args, agent))
+      // 只按调用方会话的目录求值：cwd 参数是子智能体的工作目录，不参与 pack 选择。
+      // 否则模型传一个别的目录就能换一套路由，面板上配的绑定对它不成立。
+      resolved = await deps.resolveFor(callerCwd(agent))
     } catch (error) {
       return errorResult(`Failed to resolve pack; subagent not started: ${String(error)}`, tierArg)
     }

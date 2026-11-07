@@ -10,7 +10,7 @@
  * 数据全部来自服务端：`ui.defaultTab` 与 `bindings.extra` 都落在 packs.json /
  * workspaces.json，浏览器不存任何配置。
  *
- * 数据来自本插件的三条读取路由（read / apply / support）；模型目录来自宿主的
+ * 数据来自本插件的两条路由（read / apply）；模型目录来自宿主的
  * `remote.session.modelCatalog()`，那是唯一能回答「这个模型公布了哪些思考强度」的地方
  * ——不猜、不硬编码。
  *
@@ -44,8 +44,8 @@ window.__ModuleLoader__.load({
      * 带「默认」徽章，没有改名与删除入口；但**内容可编辑**（分包页可以选它来改）。
      */
     const DEFAULT_PACK_ID = 'default'
-    /** 默认 pack 的出厂显示名。服务端会强制用它，改名命令对它无效。 */
-    const DEFAULT_PACK_NAME = '出厂方案'
+    /** 默认 pack 的固定显示名。服务端落盘时也归一到它，改名命令对它无效。 */
+    const DEFAULT_PACK_NAME = '默认'
 
     /** 档 id 固定四个，顺序即难度顺序；显示名可改，缺省用这里。 */
     const TIER_IDS = ['tier1', 'tier2', 'tier3', 'tier4']
@@ -60,8 +60,11 @@ window.__ModuleLoader__.load({
     /** 提示词覆盖的键：编排段一个，档四个（与 src/pack.ts 的 PROMPT_KEYS 一致）。 */
     const PROMPT_DELEGATION_KEY = 'delegation'
     const PROMPT_TIER_FIELDS = ['label', 'text']
-    /** 一次最多统计几个已知工作区：每个工作区要一次 read，不做无界扇出。 */
+    /** 模型位 pack 名缓存最多读几个工作区：每个工作区要一次 read，不做无界扇出。 */
     const MAX_WORKSPACES = 8
+
+    /** 工作区页每页显示几条；绑定表本身不截断，翻页拿全量。 */
+    const WORKSPACES_PAGE = 20
 
     /**
      * chip 文字隐藏的断点。
@@ -76,7 +79,7 @@ window.__ModuleLoader__.load({
     const CHIP_CSS = '@container (max-width: 560px) { .dsh-model-pack-chip-text { display: none } }'
 
     /**
-     * 设置页的三页，顺序固定：模型 → 提示词 → 分包。
+     * 设置页的三页，顺序固定：分包 → 工作区 → 提示词。
      *
      * `value` 必须与 `UiState['defaultTab']` 逐字一致：它同时是 `defaultTab` 命令的取值。
      */
@@ -105,7 +108,7 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * 三条路由共用一套信封：{ ok: true, data } 或 { ok: false, error }。
+     * 两条路由共用一套信封：{ ok: true, data } 或 { ok: false, error }。
      * HTTP 恒 200（见 src/routes.ts），所以判定只能看 ok 字段，不能看 response.ok。
      */
     async function post(path, body) {
@@ -162,14 +165,7 @@ window.__ModuleLoader__.load({
       root: { fontSize: '13px', color: T.text },
       title: { fontSize: '15px', fontWeight: 600, color: T.text },
       hero: { display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: '12px', flexWrap: 'wrap' },
-      stat: {
-        fontSize: '12px',
-        color: T.text,
-        padding: '2px 8px',
-        borderRadius: '999px',
-        border: '1px solid ' + T.border,
-        whiteSpace: 'nowrap',
-      },
+
       hint: { color: T.dim, fontSize: '12px', lineHeight: 1.6 },
       mono: { color: T.faint, fontSize: '11px', fontFamily: 'ui-monospace, monospace', wordBreak: 'break-all', whiteSpace: 'pre-wrap' },
       bar: { display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', margin: '14px 0 10px' },
@@ -471,31 +467,19 @@ window.__ModuleLoader__.load({
      */
     function bindingOf(data) {
       const id = data && data.state ? data.state.binding : null
-      return typeof id === 'string' && id !== '' ? id : null
+      if (typeof id !== 'string' || id === '') return null
+      // 绑到 default 与服务端求值同义（bind 命令会把它归一成删键）：按未绑定处理。
+      return id === DEFAULT_PACK_ID ? null : id
     }
 
-    /** 生效的 pack id：服务端已解析过求值链，这里不再算一遍。 */
-    function activeIdOf(data) {
-      const id = data && data.state ? data.state.packId : null
-      return typeof id === 'string' && id !== '' ? id : DEFAULT_PACK_ID
-    }
-
-    /** 生效内容来自哪一环：`workspace` / `default` / `builtin`。 */
-    function sourceOf(data) {
-      const source = data && data.resolved ? data.resolved.source : null
-      return source === 'workspace' || source === 'default' || source === 'builtin' ? source : 'builtin'
-    }
-
-    /** 绑定指向已删 pack：服务端已判过，面板只负责标红。 */
-    function brokenBindingOf(data) {
-      return Boolean(data && data.resolved && data.resolved.brokenBinding === true)
-    }
 
     function packNameOf(data, id) {
       if (!id) return ''
+      // default 的显示名固定：文件里可能是旧名（default / 出厂方案），界面统一成「默认」。
+      if (id === DEFAULT_PACK_ID) return DEFAULT_PACK_NAME
       const pack = packsOf(data)[id]
       if (isRecord(pack) && typeof pack.name === 'string' && pack.name !== '') return pack.name
-      return id === DEFAULT_PACK_ID ? DEFAULT_PACK_NAME : id + '（已删除）'
+      return id + '（已删除）'
     }
 
     /**
@@ -515,9 +499,10 @@ window.__ModuleLoader__.load({
       }
       return ids.map((id) => {
         const value = packs[id]
+        const fallback = isRecord(value) && typeof value.name === 'string' && value.name !== '' ? value.name : id
         return {
           id: id,
-          name: isRecord(value) && typeof value.name === 'string' && value.name !== '' ? value.name : id,
+          name: id === DEFAULT_PACK_ID ? DEFAULT_PACK_NAME : fallback,
           pack: isRecord(value) ? value : { name: id, tiers: {} },
           isDefault: id === DEFAULT_PACK_ID,
         }
@@ -701,7 +686,7 @@ window.__ModuleLoader__.load({
     /**
      * 会话路由的差异。
      *
-     * 只报「与默认配置不同」的那一面：两边都没配、或配得一样，都不算改动。
+     * 只报「与默认不同」的那一面：两边都没配、或配得一样，都不算改动。
      * 默认那一层是内置时它根本没有 session 键，显式配一条就是改动。
      */
     function sessionDelta(pack, base) {
@@ -1128,11 +1113,11 @@ window.__ModuleLoader__.load({
       }
       // 其余按最近更新排序：用户刚在哪个目录里干活，哪个就排在后面。
       roots.sort((a, b) => (Number(b.updatedAt) || 0) - (Number(a.updatedAt) || 0))
+      // 不在这里截断：工作区页要能管理全部绑定，截断只属于模型位缓存那一处。
       const cwds = []
       if (pinned !== null) cwds.push(pinned)
       for (const item of roots) {
         if (cwds.indexOf(item.cwd) < 0) cwds.push(item.cwd)
-        if (cwds.length >= MAX_WORKSPACES) break
       }
       return { currentCwd: cwds.length > 0 ? cwds[0] : null, cwds: cwds }
     }
@@ -1205,7 +1190,9 @@ window.__ModuleLoader__.load({
             setState((prev) => ({ ...prev, phase: 'ready', data: data, error: null }))
             // 绑定改了要把 chip 上的 pack 名一起更新：chip 在会话页，与设置页之间
             // 没有通道，只能在这里主动重读一次。
-            if (commands.some((command) => command.op === 'bind')) refreshChipName(host, env.sessionId)
+            if (commands.some((command) => command.op === 'bind' || command.op === 'deletePack')) {
+              refreshChipName(host, env.sessionId)
+            }
             return data
           } catch (failure) {
             setState((prev) => ({ ...prev, error: String(failure && failure.message ? failure.message : failure) }))
@@ -1621,6 +1608,8 @@ window.__ModuleLoader__.load({
       }
 
       const fallbacks = Array.isArray(tier.fallbacks) ? tier.fallbacks : []
+      // 档名会原样进系统提示词（`tier1 Scout — …`）；形如 provider/model 的串只提醒，不拦截。
+      const nameLike = routeLikeIn(String(tier.name || ''))
       const setTier = (next) => onChange({ name: next.name, primary: next.primary, fallbacks: next.fallbacks })
 
       const moveFallback = (index, delta) => {
@@ -1666,6 +1655,13 @@ window.__ModuleLoader__.load({
             onChange: (next) => setTier({ ...tier, primary: next }),
           }),
         ),
+        nameLike !== ''
+          ? h(
+              'div',
+              { style: { ...S.notice, color: T.warn, borderColor: T.warn } },
+              '档名里出现「' + nameLike + '」——形如 provider/model 的串会原样写进系统提示词，建议改成任务类型名。',
+            )
+          : null,
         // 备选：一行说明 + 添加按钮，下面每行一条路由，顺序即回退顺序。
         h(
           'div',
@@ -1751,7 +1747,7 @@ window.__ModuleLoader__.load({
           h('span', { style: S.fieldLabel }, '名称'),
           h('input', {
             style: S.input,
-            value: pack.name || '',
+            value: nameLocked ? DEFAULT_PACK_NAME : pack.name || '',
             disabled: nameLocked,
             placeholder: '比如：标准',
             onChange: (event) => setPack({ ...pack, name: event.target.value }),
@@ -1998,7 +1994,6 @@ window.__ModuleLoader__.load({
     function PackRoster(props) {
       const packs = props.packs
       const bindings = props.bindings
-      const onRename = props.onRename
       const onDelete = props.onDelete
       const editing = props.editing
       const onEdit = props.onEdit
@@ -2056,8 +2051,11 @@ window.__ModuleLoader__.load({
             h(
               'div',
               { style: { ...S.packRow, flexWrap: 'wrap' } },
-              h('span', { style: S.groupName }, entry.name),
-              entry.isDefault ? h('span', { style: S.badge, title: '未绑定的工作区按它运行' }, '默认') : null,
+              h(
+                'span',
+                { style: S.groupName, title: entry.isDefault ? '未绑定的工作区按它运行' : undefined },
+                entry.name,
+              ),
               h('span', { style: S.badge }, String(configured(entry)) + ' 处配置'),
               open && editingDirty ? h(Tag, { title: '有未保存的改动' }, '未保存') : null,
               // 行内动作统一用图标：这一行本来就窄，文字按钮会把 pack 名挤掉。
@@ -2118,6 +2116,7 @@ window.__ModuleLoader__.load({
       const bindings = props.bindings
       const run = props.run
       const [manual, setManual] = useState('')
+      const [limit, setLimit] = useState(WORKSPACES_PAGE)
 
       const addManual = () => {
         const trimmed = manual.trim()
@@ -2128,30 +2127,31 @@ window.__ModuleLoader__.load({
       }
 
       /** 绑定表按归一化键查：服务端落盘时用的就是 `normalizeCwd` 之后的键。 */
+      /** 绑到 default 与未绑定同义：下拉里只认普通 pack。 */
+      const usableBinding = (id) => (typeof id === 'string' && id !== DEFAULT_PACK_ID ? id : null)
       const boundOf = (cwd) => {
         const key = normalizeCwd(cwd)
         if (key === null) return null
         const exact = bindings[key]
-        if (typeof exact === 'string') return exact
+        if (typeof exact === 'string') return usableBinding(exact)
         const lower = key.toLowerCase()
         for (const candidate of Object.keys(bindings)) {
-          if (candidate.toLowerCase() === lower) return bindings[candidate]
+          if (candidate.toLowerCase() === lower) return usableBinding(bindings[candidate])
         }
         return null
       }
 
-      // 第一项是「跟随默认」：发 `packId: null`，服务端会删掉这条绑定键。
-      // `default` 本身也列出来——它可编辑，绑到它和「跟随」结果相同但意图不同，
-      // 所以两项都留着，由用户自己选。
-      const options = [{ value: '', label: '跟随默认' }].concat(
-        packs.map((pack) => ({ value: pack.id, label: pack.name + (pack.isDefault ? '（默认）' : '') })),
+      // 只列普通 pack：第一项「默认」发 `packId: null` 删键，而绑到 `default`
+      // 在服务端被归一成同一个动作（bind 的 packId === 'default' 也删键）。
+      const options = [{ value: '', label: '默认' }].concat(
+        packs.filter((pack) => !pack.isDefault).map((pack) => ({ value: pack.id, label: pack.name })),
       )
 
       return h(
         'div',
         { style: S.block },
         h('div', { style: S.blockTitle }, '工作区绑定'),
-        h('div', { style: { ...S.hint, marginBottom: '8px' } }, '绑定只影响该目录下新开的会话；已经开着的会话不换 pack。未绑定即跟随默认。'),
+        h('div', { style: { ...S.hint, marginBottom: '8px' } }, '绑定只影响该目录下新开的会话；已经开着的会话不换 pack。未绑定即默认。'),
         h(
           'div',
           { style: { display: 'flex', gap: '8px', marginBottom: '8px', alignItems: 'center' } },
@@ -2168,10 +2168,10 @@ window.__ModuleLoader__.load({
         ),
         paths.length === 0
           ? h('div', { style: S.empty }, '没有可绑定的工作区。用上面的输入框手动添加。')
-          : paths.map((cwd) => {
+          : paths.slice(0, limit).map((cwd) => {
               const isExtra = extra.some((item) => normalizeCwd(item) === normalizeCwd(cwd))
               const bound = boundOf(cwd)
-              // 悬空引用（pack 已删）显示成「跟随默认」，与服务端读侧的行为一致。
+              // 悬空引用（pack 已删）显示成「默认」，与服务端读侧的行为一致。
               const value = bound !== null && packs.some((pack) => pack.id === bound) ? bound : ''
               return h(
                 'div',
@@ -2208,6 +2208,17 @@ window.__ModuleLoader__.load({
                   : null,
               )
             }),
+        paths.length > limit
+          ? h(
+              'button',
+              {
+                type: 'button',
+                style: { ...S.button(false, false), marginTop: '8px' },
+                onClick: () => setLimit(limit + WORKSPACES_PAGE),
+              },
+              '显示更多（还有 ' + String(paths.length - limit) + ' 个）',
+            )
+          : null,
       )
     }
 
@@ -2216,8 +2227,8 @@ window.__ModuleLoader__.load({
     /**
      * 设置 → Model Pack。
      *
-     * 三页：模型管 pack 的内容（会话路由与四档），提示词管全局覆盖，分包管名册与
-     * 目录绑定。「当前页」与「默认页」是两件事：切页只改当前页，打开设置时落在哪一页
+     * 三页：分包管名册与 pack 内容（会话路由与四档），工作区管绑定，提示词管全局覆盖。
+     * 「当前页」与「默认页」是两件事：切页只改当前页，打开设置时落在哪一页
      * 由顶部那个下拉决定——两者混成一个状态时，「临时看一眼分包」会顺手改掉默认页。
      */
     function SettingsPanel(props) {
@@ -2269,8 +2280,15 @@ window.__ModuleLoader__.load({
           seen[key] = true
           list.push(cwd)
         }
+        // 绑定表里可能有会话已经删掉的目录：不列出来的话，这些绑定既看不见也解不开。
+        for (const cwd of Object.keys(bindings.bindings)) {
+          const key = normalizeCwd(cwd)
+          if (key === null || seen[key] === true) continue
+          seen[key] = true
+          list.push(cwd)
+        }
         return list
-      }, [state.cwds, bindings.extra])
+      }, [state.cwds, bindings.extra, bindings.bindings])
 
       if (state.phase === 'loading' && data === null) {
         return h('div', { style: S.root }, h('div', { style: S.hint }, '加载中…'))
@@ -2284,8 +2302,7 @@ window.__ModuleLoader__.load({
         )
       }
 
-      const activeId = activeIdOf(data)
-      const source = sourceOf(data)
+
       const warnings = data.state && Array.isArray(data.state.warnings) ? data.state.warnings : []
       const dirtyCount = (editingDirty ? 1 : 0) + (hasPromptPatch(draft.prompts) ? 1 : 0)
 
@@ -2307,19 +2324,6 @@ window.__ModuleLoader__.load({
 
       const cancelEdit = () => setDraft((prev) => ({ ...prev, editing: null }))
 
-      /** 名册的改名：细粒度命令，不整张重写——整张写会把并发改动一起写回。 */
-      const renamePack = async (packId, name) => {
-        setError(null)
-        setNotice(null)
-        const fresh = await view.run([{ op: 'renamePack', packId: packId, name: name }])
-        if (fresh === null) return
-        // 正在编辑的就是这张：草稿里的名字跟着换，否则下一次保存会把旧名字写回去。
-        setDraft((prev) =>
-          prev.editing && prev.editing.id === packId
-            ? { ...prev, editing: { ...prev.editing, value: { ...prev.editing.value, name: name } } }
-            : prev,
-        )
-      }
 
       const deletePack = async (packId) => {
         setError(null)
@@ -2407,29 +2411,16 @@ window.__ModuleLoader__.load({
         if (commands.length === 0) return
 
         setSaving(true)
-        try {
-          const fresh = await view.run(commands)
-          if (fresh === null) return
-          setDraft(EMPTY_DRAFT)
-          setNotice('已保存。新会话生效；已有会话不变。')
-        } catch (failure) {
-          // 失败时草稿保留：用户改完可以再存，不用从零重来。
-          setError(String(failure && failure.message ? failure.message : failure))
-        } finally {
-          setSaving(false)
-        }
+        // view.run 自己吞掉异常并返回 null；失败时草稿保留，用户改完可以再存。
+        const fresh = await view.run(commands)
+        setSaving(false)
+        if (fresh === null) return
+        setDraft(EMPTY_DRAFT)
+        setNotice('已保存。新会话生效；已有会话不变。')
       }
 
       // ---------- 渲染 ----------
 
-      /**
-       * 生效来源的措辞。
-       *
-       * `builtin` 与 `default` 必须分开：前者是「连 packs.default 都没有，用的是出厂常量」，
-       * 后者是「配了 default，内容恰好等于出厂」。混成一句会让「未配置」看起来像「配过」。
-       */
-      const sourceLabel =
-        source === 'workspace' ? '工作区绑定' : source === 'default' ? '默认 pack' : '出厂内置（未配置）'
 
       return h(
         'div',
@@ -2439,7 +2430,6 @@ window.__ModuleLoader__.load({
           'div',
           { style: S.hero },
           h('div', { style: S.title }, TITLE),
-          h('div', { style: S.stat }, '当前生效：' + packNameOf(data, activeId) + '（' + sourceLabel + '）'),
         ),
         h(
           'div',
@@ -2447,9 +2437,6 @@ window.__ModuleLoader__.load({
           '一张 pack = 一条会话路由 + 至多四档子智能体路由。工作区绑到哪张 pack，就按哪套生效；未绑定按默认。只作用于该目录里之后新建的会话，不改动已有会话，也不替代官方「设置 → 模型」。',
         ),
         data.lastError ? h('div', { style: S.probeFail }, '上一次施加失败：' + data.lastError) : null,
-        brokenBindingOf(data)
-          ? h('div', { style: S.probeWarn }, '当前工作区绑定的 pack 已不存在，已回落默认（绑定记录仍在，重建同名 pack 即可恢复）。')
-          : null,
         warnings.length > 0
           ? h('div', { style: S.probeWarn }, '配置有告警：' + warnings.slice(0, 4).join('；') + (warnings.length > 4 ? ' …' : ''))
           : null,
@@ -2481,7 +2468,6 @@ window.__ModuleLoader__.load({
               packs: packs,
               bindings: bindings.bindings,
               onCreate: createPack,
-              onRename: renamePack,
               onDelete: deletePack,
               editing: draft.editing,
               editingDirty: editingDirty,
@@ -2551,7 +2537,7 @@ window.__ModuleLoader__.load({
       running: null, // 单飞：并发重读只跑一次
     }
     /** 增量重读间隔：只为还没缓存过的工作区发 read，新会话不用等整页刷新。 */
-    const LABEL_REFRESH_MS = 15000
+    const LABEL_REFRESH_MS = 60000
     /** 标签与官方目录名同处一行时的排版；只影响宽度分配，不改变触发器的交互。 */
     const LABEL_STYLE = {
       /*
@@ -2579,13 +2565,9 @@ window.__ModuleLoader__.load({
     function labelPackNameOf(data) {
       const resolved = data && data.resolved
       if (!resolved) return ''
-      // `resolved.pack` 是求值后的完整内容；`default` 与出厂内置都带名字。
+      if (resolved.id === DEFAULT_PACK_ID) return DEFAULT_PACK_NAME
       const pack = resolved.pack
-      const name = pack && typeof pack.name === 'string' ? pack.name.trim() : ''
-      // 内置那张 pack 的 name 是数据里的 `default`，不是给人看的词：按宿主语言换成
-      // 「默认」/`Default`，与 chip 的缺省文案同一套规则。
-      if (name === DEFAULT_PACK_ID) return chipFallback.read()
-      return name
+      return pack && typeof pack.name === 'string' ? pack.name.trim() : ''
     }
 
     /** 同步取 pack 名。组件只调这一个函数；任何一步缺失都返回空串，绝不抛。 */
@@ -2749,7 +2731,7 @@ window.__ModuleLoader__.load({
           }
           api.read(cwd).then(
             (data) => {
-              // 悬空绑定（pack 已删）按「跟随默认」显示：服务端求值链已经回落，
+              // 悬空绑定（pack 已删）按「默认」显示：服务端求值链已经回落，
               // chip 上写「xxx（已删除）」只会让人以为还在用它。
               const id = bindingOf(data)
               const known = id !== null && isRecord(packsOf(data)[id])
@@ -2768,7 +2750,7 @@ window.__ModuleLoader__.load({
     /**
      * chip 的弹层：这张 pack 与默认差在哪，就地切换。
      *
-     * 选「跟随默认」发 `packId: null`（解除绑定），不是写一个 default 的 id——
+     * 选「默认」发 `packId: null`（解除绑定），不是写一个 default 的 id——
      * 未绑定与悬空引用在服务端是同一种状态。只有「关闭」：这一层不做跳转，
      * 也不做「恢复会话路由」，它只回答「这个目录现在按哪套跑」。
      */
@@ -2839,7 +2821,7 @@ window.__ModuleLoader__.load({
           h(
             'div',
             { style: { display: 'flex', alignItems: 'baseline', gap: '10px', marginTop: '2px' } },
-            h('div', { style: S.title }, data === null ? '读取中' : usingDefault ? '跟随默认' : packNameOf(data, boundId)),
+            h('div', { style: S.title }, data === null ? '读取中' : usingDefault ? '默认' : packNameOf(data, boundId)),
             h('span', { style: { ...S.hint, marginLeft: 'auto' } }, '当前工作区'),
           ),
           state.error ? h('div', { style: { ...S.error, marginTop: '8px' } }, state.error) : null,
@@ -2865,8 +2847,8 @@ window.__ModuleLoader__.load({
                 ),
                 h(Picker, {
                   value: boundId === null ? '' : boundId,
-                  options: [{ value: '', label: '跟随默认' }].concat(
-                    packs.map((pack) => ({ value: pack.id, label: pack.name + (pack.isDefault ? '（默认）' : '') })),
+                  options: [{ value: '', label: '默认' }].concat(
+                    packs.filter((pack) => !pack.isDefault).map((pack) => ({ value: pack.id, label: pack.name })),
                   ),
                   onChange: (next) => bindTo(next),
                 }),

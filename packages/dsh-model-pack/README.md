@@ -45,7 +45,7 @@
   "version": 1,
   "ui": { "showChip": true, "defaultTab": "model" },
   "packs": {
-    "default": { "name": "出厂方案", "tiers": {} },
+    "default": { "name": "默认", "tiers": {} },
     "p1": {
       "name": "标准",
       "session": { "provider": "deepseek", "model": "deepseek-chat", "reasoningEffort": "high" },
@@ -63,7 +63,7 @@
 
 ## 面板
 
-设置页三页：**模型 | 提示词 | 分包**。`ui.defaultTab` 只决定打开时落在哪一页；切换分页不写盘，只有顶部那组单选才改默认页。`分包` 页可新增、改名、删除 pack，并编辑选中 pack 的会话路由与四档；`default` 的删除与改名入口不存在。`ui.showChip === false` 时 composer 里的 chip 不注册。
+设置页三页：**分包 | 工作区 | 提示词**。`ui.defaultTab` 只决定打开时落在哪一页；切换分页不写盘，只有顶部那组单选才改默认页。`分包` 页可新增、改名、删除 pack，并编辑选中 pack 的会话路由与四档；`default` 的删除与改名入口不存在。`工作区` 页列出全部绑定（会话目录、手动添加、只剩绑定的目录），每 20 条一页。`ui.showChip === false` 时 composer 里的 chip 不注册。
 
 写命令见 `api/model-pack/apply`：`createPack` / `renamePack` / `deletePack` / `bind` / `addExtra` / `removeExtra` / `showChip` / `defaultTab`，外加本包的内容编辑命令 `putPack` / `packSession` / `packTier`。
 

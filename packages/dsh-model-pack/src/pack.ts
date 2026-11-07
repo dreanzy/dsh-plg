@@ -36,7 +36,7 @@ export const DEFAULT_PACK_ID = 'default'
  * 它不再是一个不可编辑的旁路：`packs.json` 里的 `default` 可编辑、不可删除、不可改名。
  * 文件里没有 `default` 时补这一份，所以「未配置过」与「default 为空」表现一致。
  */
-export const DEFAULT_PACK: Pack = { name: '出厂方案', tiers: {} }
+export const DEFAULT_PACK: Pack = { name: '默认', tiers: {} }
 
 /** pack 条数上限，只为防止文件被写成无界清单。 */
 const MAX_PACKS = 200
@@ -104,7 +104,7 @@ export interface Bindings {
 /**
  * 设置页的三页，顺序固定。
  *
- * model 领域没有可分组对象，也没有工作区绑定页：页签是「模型 | 提示词 | 分包」。
+ * model 领域没有可分组对象：页签是「分包 | 工作区 | 提示词」。
  */
 export type SettingsTab = 'packs' | 'workspace' | 'prompts'
 
@@ -559,7 +559,9 @@ export function serializePacks(book: PackBook, ui: UiState): string {
   for (const id of Object.keys(book.packs).sort()) {
     const pack = book.packs[id]
     if (pack === undefined) continue
-    packs[id] = packToJson(pack)
+    // default 的显示名是固定的：文件里写的是别的串（旧版是 default / 出厂方案）也归一。
+    const json = packToJson(pack)
+    packs[id] = id === DEFAULT_PACK_ID ? { ...json, name: DEFAULT_PACK.name } : json
   }
   out['packs'] = packs
   return serialize(out)
@@ -605,11 +607,3 @@ export function defaultPackOf(book: PackBook): Pack {
   return book.packs[DEFAULT_PACK_ID] ?? DEFAULT_PACK
 }
 
-/** 造一个不冲突的 pack id，与名字脱钩（改不改名都不影响 id）。 */
-export function uniquePackId(packs: Readonly<Record<string, Pack>>, base: string): string {
-  if (packs[base] === undefined) return base
-  for (let index = 2; ; index += 1) {
-    const candidate = `${base}-${String(index)}`
-    if (packs[candidate] === undefined) return candidate
-  }
-}

@@ -119,6 +119,9 @@ test('正常路径：按首选路由启动，参数逐字段相等', async () =>
   assert.equal(spec.request.cwd, 'D:/work/beta')
   assert.equal(spec.request.parent, agent)
   assert.equal('signal' in spec, false, '没有 signal 时不该塞一个 undefined 进去')
+  assert.equal('maxDepth' in spec.request, false, '宿主没给 resolveMaxDepth 时不塞一个 undefined 进去')
+  // pack 只按调用方会话目录解析：cwd 参数是子智能体的工作目录。
+  assert.equal(harness.resolvedCalls.at(-1), 'D:\\work\\alpha')
 
   // 探测收到的正是路由本身，含 reasoningEffort。
   assert.deepEqual(harness.probed, [PRIMARY])
@@ -139,6 +142,31 @@ test('正常路径：缺省 cwd 用调用方会话目录解析 pack', async () =
   assert.equal(result.kind, 'activation')
   assert.equal(harness.resolvedCalls.at(-1), 'D:\\work\\alpha')
   assert.equal('cwd' in harness.started[0].request, false, '没给 cwd 时不传，让宿主自己继承')
+})
+
+test('显式 cwd 只作用于子智能体，不换 pack', async () => {
+  const harness = makeHarness()
+  const { agent, registered } = makeAgent('D:\\work\\alpha')
+
+  registerTierTool(agent, harness.deps)
+  await settle()
+  harness.resolvedCalls.length = 0
+
+  const result = await executeOf(registered, 'tier1', { cwd: 'D:/work/beta' }, { agent })
+  assert.equal(result.kind, 'activation')
+  assert.deepEqual(harness.resolvedCalls, ['D:\\work\\alpha'], '解析 pack 只用调用方 cwd')
+  assert.equal(harness.started[0].request.cwd, 'D:/work/beta', '子智能体仍在显式 cwd 里工作')
+})
+
+test('宿主解析出的 maxDepth 原样传给 startActivation', async () => {
+  const harness = makeHarness({ subagentsReplace: { resolveMaxDepth: () => 0 } })
+  const { agent, registered } = makeAgent()
+
+  registerTierTool(agent, harness.deps)
+  await settle()
+  await executeOf(registered, 'tier1', {}, { agent })
+
+  assert.equal(harness.started[0].request.maxDepth, 0, 'maxDepth 0 必须真的挡住委派')
 })
 
 test('正常路径：tier 不在 pack 里时返回错误结果，不启动', async () => {

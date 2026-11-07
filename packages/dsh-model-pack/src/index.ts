@@ -1,12 +1,12 @@
 /**
  * Model Pack（model-pack）：装配入口。
  *
- * 职责只有三件：装监听器、按运行期能力注册三条面板路由、统一释放。
+ * 职责只有三件：装监听器、按运行期能力注册面板路由、统一释放。
  * 业务全在纯模块里——`policy` 求值、`tools` 定义档位工具、`prompt` 生成段文本、
  * `routes` 处理请求。编排顺序见 `hooks.ts` 与 spec §6.1。
  */
 
-import { applyCommands, loadState, resolve, type PackCommand, type PackState } from './policy.js'
+import { applyCommands, loadState, resolve, type PackState } from './policy.js'
 import { installHooks, type PluginContext } from './hooks.js'
 import { BUILTIN_PROMPT, resolvePrompt } from './prompt.js'
 import type { PromptOverrides, Route } from './pack.js'
@@ -14,8 +14,6 @@ import {
   ROUTES,
   handleApply,
   handleRead,
-  handleReset,
-  handleSupport,
   wrapHandler,
   type Envelope,
   type RouteDeps,
@@ -120,69 +118,6 @@ async function syncDefaultModel(context: ApplyContext): Promise<void> {
   }
 }
 
-/**
- * 把一个在线会话的模型恢复成它所在 pack 的路由。
- *
- * 会话对象从 `agents.list()` 里找：那是唯一能拿到活动 Agent 句柄的入口。
- * 找不到就是不在线（冷会话、或在别的进程里），不猜也不排队。
- */
-interface LiveAgent {
-  session?: { header?: { cwd?: unknown } }
-  model?: { current?: () => unknown; select?: (selection: unknown) => void }
-}
-
-/** 从活动 Agent 列表里找一条会话；找不到就是不在线（冷会话或别的进程）。 */
-function findAgent(context: ApplyContext, sessionId: string): LiveAgent | undefined {
-  const agents = context.get('agents') as { list?: () => unknown } | undefined
-  const list = typeof agents?.list === 'function' ? agents.list() : []
-  const entries = Array.isArray(list) ? list : []
-  return entries.find((entry) => {
-    const record = entry as { id?: unknown; session?: { id?: unknown } } | null
-    return record?.session?.id === sessionId || record?.id === sessionId
-  }) as LiveAgent | undefined
-}
-
-/** 一条在线会话当前实际用的路由；不在线或读不到返回 null。 */
-async function sessionModelRoute(
-  context: ApplyContext,
-  sessionId: string,
-): Promise<Route | null> {
-  const found = findAgent(context, sessionId)
-  const current = found?.model?.current
-  if (typeof current !== 'function') return null
-  const value = current.call(found?.model)
-  if (value === null || typeof value !== 'object') return null
-  const record = value as { provider?: unknown; model?: unknown; reasoningEffort?: unknown }
-  if (typeof record.provider !== 'string' || typeof record.model !== 'string') return null
-  return {
-    provider: record.provider,
-    model: record.model,
-    ...(typeof record.reasoningEffort === 'string' ? { reasoningEffort: record.reasoningEffort } : {}),
-  }
-}
-
-async function resetSessionRoute(
-  context: ApplyContext,
-  sessionId: string,
-): Promise<Pick<Route, 'provider' | 'model'>> {
-  const found = findAgent(context, sessionId)
-  if (found === undefined) throw new Error('会话不在线：先打开它再试')
-
-  const rawCwd = found.session?.header?.cwd
-  const cwd = typeof rawCwd === 'string' && rawCwd !== '' ? rawCwd : null
-  const session = resolve(await loadState(cwd), cwd).pack.session
-  if (session === undefined) throw new Error('当前 pack 没有会话路由，无法恢复')
-
-  const select = found.model?.select
-  if (typeof select !== 'function') throw new Error('宿主的 agent.model.select 不可用')
-  select.call(found.model, {
-    provider: session.provider,
-    model: session.model,
-    ...(session.reasoningEffort === undefined ? {} : { reasoningEffort: session.reasoningEffort }),
-  })
-  return { provider: session.provider, model: session.model }
-}
-
 export function apply(ctx: unknown): void {
   const context = ctx as ApplyContext
   const hooks = installHooks(context)
@@ -209,7 +144,7 @@ export function apply(ctx: unknown): void {
       loadState: (cwd) => loadState(cwd),
       // 每次落盘后同步一次默认模型：改了 default pack 的会话路由就可能改变「新会话该用什么」。
       applyCommands: async (cwd, commands) => {
-        const state = await applyCommands(cwd, commands as unknown as readonly PackCommand[])
+        const state = await applyCommands(cwd, commands)
         void syncDefaultModel(context)
         return state
       },
@@ -218,8 +153,6 @@ export function apply(ctx: unknown): void {
       builtinPrompt: () => BUILTIN_PROMPT,
       support: hooks.support,
       lastError: hooks.lastError,
-      resetSession: (sessionId) => resetSessionRoute(context, sessionId),
-      sessionModel: (sessionId) => sessionModelRoute(context, sessionId),
       logger: context.logger,
     }
 
@@ -244,8 +177,6 @@ export function apply(ctx: unknown): void {
 
     register(ROUTES.read, (body) => handleRead(deps, body))
     register(ROUTES.apply, (body) => handleApply(deps, body))
-    register(ROUTES.support, (body) => handleSupport(deps, body))
-    register(ROUTES.reset, (body) => handleReset(deps, body))
 
     context.effect(() => () => {
       for (const dispose of disposers.splice(0)) {

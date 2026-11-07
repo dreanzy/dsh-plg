@@ -144,7 +144,7 @@ test('求值链：什么文件都没有则用出厂内置', async () => {
   assert.equal(resolved.source, 'builtin')
   assert.deepEqual(resolved.pack.tiers, {})
   assert.equal(resolved.pack.session, undefined)
-  assert.equal(resolved.pack.name, '出厂方案')
+  assert.equal(resolved.pack.name, '默认')
   assert.deepEqual(resolved.warnings, [])
 })
 
@@ -204,7 +204,7 @@ test('求值链：default 可编辑，内容直接生效', async () => {
   const cwd = await tempRoot()
   await seedPacks(home, {
     version: 1,
-    packs: { default: { name: '出厂方案', session: ROUTE, tiers: {} } },
+    packs: { default: { name: '默认', session: ROUTE, tiers: {} } },
   })
   await seedWorkspaces(home, { version: 1, bindings: { [normalizeCwd(cwd)]: 'standard' }, extra: [] })
 
@@ -264,7 +264,7 @@ test('解析：坏 reasoningEffort 降级为跟随模型默认', () => {
 
 test('解析：缺 default 时补出厂内容并留 warning', () => {
   const parsed = parsePacks(json({ version: 1, packs: { standard: STANDARD } }))
-  assert.deepEqual(parsed.value.book.packs.default, { name: '出厂方案', tiers: {} })
+  assert.deepEqual(parsed.value.book.packs.default, { name: '默认', tiers: {} })
   assert.equal(parsed.value.defaultFromFile, false)
   assert.ok(parsed.warnings.some((warning) => warning.includes('default')))
 })
@@ -277,7 +277,7 @@ test('解析：缺 name 用 id 当显示名', () => {
 
 test('解析：default 缺 name 用出厂名', () => {
   const parsed = parsePacks(json({ version: 1, packs: { default: { tiers: {} } } }))
-  assert.equal(parsed.value.book.packs.default.name, '出厂方案')
+  assert.equal(parsed.value.book.packs.default.name, '默认')
 })
 
 test('解析：ui 缺省与未知键', () => {
@@ -295,7 +295,7 @@ test('解析：ui 缺省与未知键', () => {
 
 test('解析：空文本等价于没有这一层，不报 warning', () => {
   const parsed = parsePacks('')
-  assert.deepEqual(parsed.value.book.packs, { default: { name: '出厂方案', tiers: {} } })
+  assert.deepEqual(parsed.value.book.packs, { default: { name: '默认', tiers: {} } })
   assert.deepEqual(parsed.warnings, [])
 })
 
@@ -370,7 +370,7 @@ test('写入：default 不可删除、不可改名', async () => {
   assert.equal(await readFile(packsPath({ home }), 'utf8'), before)
   assert.ok(state.warnings.some((warning) => warning.includes('不可删除')))
   assert.ok(state.warnings.some((warning) => warning.includes('不可改名')))
-  assert.equal((await readPacks(home)).packs.default.name, '出厂方案')
+  assert.equal((await readPacks(home)).packs.default.name, '默认')
 })
 
 test('写入：deletePack 删 pack 并清掉指向它的绑定', async () => {
@@ -404,7 +404,7 @@ test('写入：putPack 写 default 时显示名仍是出厂名', async () => {
   }], { home })
 
   const packs = (await readPacks(home)).packs
-  assert.equal(packs.default.name, '出厂方案')
+  assert.equal(packs.default.name, '默认')
   assert.deepEqual(packs.default.session, ROUTE)
 })
 

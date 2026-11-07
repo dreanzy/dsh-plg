@@ -40,7 +40,7 @@ Compatibility reads for the legacy paths (`$DSH_HOME/model-scheme/` and `<cwd>/.
   "version": 1,
   "ui": { "showChip": true, "defaultTab": "model" },
   "packs": {
-    "default": { "name": "出厂方案", "tiers": {} },
+    "default": { "name": "默认", "tiers": {} },
     "p1": {
       "name": "Standard",
       "session": { "provider": "deepseek", "model": "deepseek-chat", "reasoningEffort": "high" },
@@ -58,7 +58,7 @@ Compatibility reads for the legacy paths (`$DSH_HOME/model-scheme/` and `<cwd>/.
 
 ## Panel and entry points
 
-Settings has three tabs: **model | prompts | packs**. `ui.defaultTab` only decides which tab opens first; switching tabs does not write it. The packs tab creates, renames and deletes packs and edits the selected pack's session route and tiers; `default` has no delete or rename entry. When `ui.showChip === false` the composer chip is not registered.
+Settings has three tabs: **packs | workspace | prompts**. `ui.defaultTab` only decides which tab opens first; switching tabs does not write it. The packs tab creates, renames and deletes packs and edits the selected pack's session route and tiers; `default` has no delete or rename entry. When `ui.showChip === false` the composer chip is not registered.
 
 Write commands on `api/model-pack/apply`: `createPack` / `renamePack` / `deletePack` / `bind` / `addExtra` / `removeExtra` / `showChip` / `defaultTab`, plus this package's content commands `putPack` / `packSession` / `packTier`.
 

@@ -278,10 +278,9 @@ export function installHooks(ctx: PluginContext, options: HooksOptions = {}): Ho
   ): void => {
     // 这几条失败路径都把原因写进 lastErrorText：面板上能直接看到「为什么没注入」，
     // 而不是只看到工具凭空消失。排障时最贵的一步永远是「不知道哪一步没走通」。
-    if (describeTiers(resolved) === null) {
-      lastErrorText = '档位工具未注册：pack「' + resolved.id + '」没有配置任何档位'
-      return
-    }
+    // 没有可用档位是正常状态，不是施加失败：不写 lastError，否则面板会一直挂着
+    // 一条假故障（lastError 成功后也不清空），真故障就混在里面看不出来了。
+    if (describeTiers(resolved) === null) return
     const deps = tierDeps(agent)
     const support = probeSupport(deps)
     // 面板的 support() 在根作用域上取不到 subagents，只能沿用它。
@@ -388,6 +387,10 @@ export function installHooks(ctx: PluginContext, options: HooksOptions = {}): Ho
       // 但工具和段挂在 agent 作用域上，agent 重建后旧注册随旧 agent 一起消失，
       // 不重新挂的话，恢复出来的会话只有模型、没有 subagent_tier，模型只能去调官方 subagent。
       const isStartup = record['source'] === 'startup'
+
+      // 插件重载时 bootstrap 可能已经为同一 agent 建过 state：再施加一次会撞工具重名，
+      // 第二次注册失败、disposers 为空，却把第一次登记的释放器覆盖掉。
+      if (states.has(agent.id)) return
 
       const state: AgentState = { disposers: [] }
       states.set(agent.id, state)

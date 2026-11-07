@@ -353,6 +353,22 @@ test('subagents 服务缺失：不注册、不 deny、不注入段', async (t) =
   assert.equal(hooks.support().subagents, false)
 })
 
+test('同一 agent 重复 created：第二次不再施加', async (t) => {
+  const ws = await makeWorkspace()
+  t.after(ws.cleanup)
+  const { ctx, listeners } = makeContext({ subagents: makeSubagents() })
+  const { agent, calls } = makeAgent({ cwd: ws.cwd })
+
+  install({ ctx, home: ws.home })
+  await fire(listeners, 'agent/created', { agent, source: 'startup' })
+  await fire(listeners, 'agent/created', { agent, source: 'startup' })
+  await settle()
+
+  assert.equal(calls.register.length, 1, '第二次 created 不该再注册一遍')
+  assert.equal(calls.restrict.length, 1)
+  assert.equal(calls.section.length, 1)
+})
+
 /* ------------------------------------------------------------------ *
  * 释放
  * ------------------------------------------------------------------ */

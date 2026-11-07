@@ -136,19 +136,16 @@ export function resolvePrompt(overrides?: PromptOverrides | null): PromptText {
   return { delegation: prefer(overrides?.delegation, BUILTIN_PROMPT.delegation), tiers }
 }
 
-/** 档名：用户覆盖的 label → 内置 label → pack 里的显示名。 */
-function labelOf(tierId: TierId, packName: string | undefined, prompt: PromptText): string {
-  const fromPrompt = prompt.tiers[tierId]?.label ?? ''
-  if (fromPrompt.trim() !== '') return fromPrompt.trim()
-  const fromBuiltin = BUILTIN_PROMPT.tiers[tierId].label
-  if (fromBuiltin.trim() !== '') return fromBuiltin.trim()
-  return packName ?? TIER_DEFAULT_NAMES[tierId]
+/**
+ * 档名与判据：`resolvePrompt` 已把用户覆盖与内置合并好（空串也算没覆盖），
+ * 这里直接取生效值。pack 里的档位显示名只进工具描述，不进系统提示词。
+ */
+function labelOf(tierId: TierId, prompt: PromptText): string {
+  return prompt.tiers[tierId].label
 }
 
-/** 判据同理：用户覆盖的 text → 内置 text。 */
 function textOf(tierId: TierId, prompt: PromptText): string {
-  const fromPrompt = prompt.tiers[tierId]?.text ?? ''
-  return fromPrompt.trim() !== '' ? fromPrompt.trim() : BUILTIN_PROMPT.tiers[tierId].text
+  return prompt.tiers[tierId].text
 }
 
 /** 把档位表放进编排段：有插入点就落在插入点，没有就接在末尾。 */
@@ -178,7 +175,7 @@ export function delegationSection(
 
   const text = prompt ?? resolvePrompt()
   const rows = usable.map(
-    (tierId) => `${tierId} ${labelOf(tierId, packTiers?.[tierId]?.name, text)} — ${textOf(tierId, text)}`,
+    (tierId) => `${tierId} ${labelOf(tierId, text)} — ${textOf(tierId, text)}`,
   )
   return { name: DELEGATION_SECTION_NAME, text: compose(text.delegation, rows) }
 }

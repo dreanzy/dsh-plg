@@ -245,7 +245,7 @@ export function resolve(state: PackState, cwd?: string | null): ResolvedPack {
   let brokenBinding = false
   if (bound !== null && bound !== DEFAULT_PACK_ID && state.pack === null) {
     brokenBinding = true
-    warnings.push(`${where}绑定的 pack「${bound}」已不存在，已回落默认配置`)
+    warnings.push(`${where}绑定的 pack「${bound}」已不存在，已回落默认`)
   }
 
   if (state.pack !== null) {
@@ -768,15 +768,3 @@ export async function applyCommands(
   return { ...state, warnings: [...state.warnings, ...warnings] }
 }
 
-/** 一份空状态，供不读盘的调用点（如测试替身）构造。 */
-export const EMPTY_STATE: PackState = {
-  packs: EMPTY_PACKS,
-  ui: EMPTY_UI,
-  bindings: EMPTY_BINDINGS,
-  binding: null,
-  packId: DEFAULT_PACK_ID,
-  pack: null,
-  defaultFromFile: false,
-  prompts: EMPTY_PROMPTS,
-  warnings: [],
-}

@@ -8,8 +8,6 @@ import {
   ROUTES,
   handleApply,
   handleRead,
-  handleReset,
-  handleSupport,
   toResponse,
   wrapHandler,
 } from '../lib/routes.js'
@@ -77,21 +75,11 @@ function depsFor(home, overrides = {}) {
  * 路径与信封
  * ------------------------------------------------------------------ */
 
-test('路径：四条路由都在 /api/model-pack/ 前缀下', () => {
+test('路径：两条路由都在 /api/model-pack/ 前缀下', () => {
   assert.deepEqual(ROUTES, {
     read: '/api/model-pack/read',
     apply: '/api/model-pack/apply',
-    support: '/api/model-pack/support',
-    reset: '/api/model-pack/reset',
   })
-})
-
-test('reset：缺 sessionId 返回 bad-request，不调用宿主', async () => {
-  const home = await tempRoot()
-  const { deps } = depsFor(home)
-  const result = await handleReset(deps, null)
-  assert.equal(result.ok, false)
-  assert.equal(result.error.code, 'bad-request')
 })
 
 test('信封：成功带 data，失败带 error.code 与 message', async () => {
@@ -267,7 +255,7 @@ test('apply：default 不可删除、不可改名，走 warning 而不是错误�
   assert.equal(result.ok, true)
   assert.ok(result.data.state.warnings.some((warning) => warning.includes('不可删除')))
   assert.ok(result.data.state.warnings.some((warning) => warning.includes('不可改名')))
-  assert.equal(result.data.state.packs.packs.default.name, '出厂方案')
+  assert.equal(result.data.state.packs.packs.default.name, '默认')
 })
 
 test('apply：packSession 与 packTier 编辑 pack 内容', async () => {
@@ -590,35 +578,6 @@ test('apply：applyCommands 抛错转成 internal 信封，不写坏文件', asy
   assert.match(result.error.message, /locked/)
 })
 
-test('support：探测结果与 lastError 原样透传', async () => {
-  const home = await tempRoot()
-  const { deps } = depsFor(home, {
-    support: () => ({ subagents: false, restrict: true, reason: 'subagents 服务未注册' }),
-    lastError: () => '注册 subagent_tier 失败',
-  })
-
-  const result = await handleSupport(deps, null)
-  assert.equal(result.ok, true)
-  assert.deepEqual(result.data.support, {
-    subagents: false,
-    restrict: true,
-    reason: 'subagents 服务未注册',
-  })
-  assert.equal(result.data.lastError, '注册 subagent_tier 失败')
-})
-
-test('support：探测抛错也返回 internal 信封', async () => {
-  const home = await tempRoot()
-  const { deps } = depsFor(home, {
-    support: () => {
-      throw new Error('probe failed')
-    },
-  })
-
-  const result = await handleSupport(deps, null)
-  assert.equal(result.ok, false)
-  assert.equal(result.error.code, 'internal')
-})
 
 /* ------------------------------------------------------------------ *
  * HTTP 面：恒 200
