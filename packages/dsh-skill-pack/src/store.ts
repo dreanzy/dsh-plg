@@ -52,21 +52,80 @@ async function readText(path: string): Promise<string | undefined> {
   }
 }
 
+/** 同一批命令可能读写同一份文件两次（bind 要先读 pack 名册），失败说明只留一条。 */
+function note(warnings: string[], message: string): void {
+  if (!warnings.includes(message)) warnings.push(message)
+}
+
+/**
+ * 写前读取。`null` 表示这份文件这次不能写：读失败或原文已损坏时，把解析出来的
+ * 空名册覆盖回去等于删掉用户的全部决定（坏 JSON 正是被解析成空 book 的）。
+ *
+ * 空文件仍然可写：它不是损坏，只是还没写过。
+ */
+async function readForWrite(
+  path: string,
+  label: string,
+  warnings: string[],
+): Promise<string | null | undefined> {
+  let text: string | undefined
+  try {
+    text = await readText(path)
+  } catch (error) {
+    note(warnings, `读取 ${label} 失败，本次未写入：${String(error)}`)
+    return null
+  }
+  if (text === undefined || text.trim() === '') return text
+  let raw: unknown
+  try {
+    raw = JSON.parse(text)
+  } catch {
+    note(warnings, `${label} 不是合法 JSON，已拒绝写入`)
+    return null
+  }
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
+    note(warnings, `${label} 顶层不是对象，已拒绝写入`)
+    return null
+  }
+  return text
+}
+
 /**
  * 一次写事务：建父目录 → 拿跨进程锁 → 读 → 改 → 原子覆盖写。
  *
  * 父目录必须在拿锁之前建好：`withFileLock` 用 `wx` 直接建 `<file>.lock`，
  * 它不会建父目录。`writeFileAtomic` 自己会 mkdir，但那是拿锁之后的事。
  */
-async function transact(path: string, mutate: (current: string | undefined) => string | null): Promise<void> {
+async function transact(
+  path: string,
+  label: string,
+  warnings: string[],
+  mutate: (current: string | undefined) => string | null,
+): Promise<void> {
   await mkdir(dirname(path), { recursive: true, mode: 0o700 })
   await withFileLock(path, async () => {
-    const current = await readText(path)
+    const current = await readForWrite(path, label, warnings)
+    // 没有可写的基线就跳过本次写入：不覆盖、也不凭空建一份。
+    if (current === null) return
     const next = mutate(current)
     // `null` 表示这一批命令没有实际改变：不落盘，不留下无意义的空文件。
     if (next === null) return
     await writeFileAtomic(path, next, { mode: 0o600, dirMode: 0o700 })
   })
+}
+
+/** 单个文件一次写事务。失败只记 warning：三个文件各自独立，一个坏了不该拖住另外两个。 */
+async function writeFileSafely(
+  path: string,
+  label: string,
+  warnings: string[],
+  mutate: (current: string | undefined) => string | null,
+): Promise<void> {
+  try {
+    await transact(path, label, warnings, mutate)
+  } catch (error) {
+    note(warnings, `${label} 更新失败：${String(error)}`)
+  }
 }
 
 function setKey(
@@ -397,23 +456,40 @@ function targets(commands: readonly Command[]): Targets {
  * 不比对任何版本：命令是绝对状态，幂等、可交换，写同一键即后点者赢。
  * 三个文件各自一把锁，固定顺序（pack → 组定义 → 绑定）避免交叉等待；
  * 一个命令命中两个文件时顺序写，不引入跨文件事务。
+ *
+ * **永不抛**：写失败、文件损坏都一样，说明只落进返回值的 `warnings`。
+ * 写盘失败是一次「没写成」，不该让路由把它当异常回滚成错误信封——那会连带
+ * 丢掉这次已经算出来的最新 state。
  */
 export async function applyCommands(cwd: string | null, commands: readonly Command[]): Promise<PolicyState> {
   const plan = targets(commands)
+  const warnings: string[] = []
 
   if (plan.packs) {
-    await transact(packsPath(), (current) => applyToPacks(current, commands))
+    await writeFileSafely(packsPath(), 'packs.json', warnings, (current) => applyToPacks(current, commands))
   }
   if (plan.groups) {
-    await transact(groupsPath(), (current) => applyToGroups(current, commands))
+    await writeFileSafely(groupsPath(), 'groups.json', warnings, (current) => applyToGroups(current, commands))
   }
   if (plan.bindings) {
     // bind 的合法目标要在 pack 写完之后再读：同一批命令里可能有 createPack / deletePack。
-    const known = new Set(Object.keys(parsePacks(await readText(packsPath())).value.book.packs))
-    await transact(workspacesPath(), (current) => applyToBindings(current, commands, known))
+    const packsText = await readForWrite(packsPath(), 'packs.json', warnings)
+    if (packsText !== null) {
+      const known = new Set(Object.keys(parsePacks(packsText).value.book.packs))
+      await writeFileSafely(workspacesPath(), 'workspaces.json', warnings, (current) =>
+        applyToBindings(current, commands, known),
+      )
+    }
   }
 
-  return await loadState(cwd)
+  try {
+    const state = await loadState(cwd)
+    return { ...state, warnings: [...warnings, ...state.warnings] }
+  } catch (error) {
+    // 写失败后连回读也失败时，仍要给出一个能渲染的状态：宁可面板空一轮，也不抛。
+    note(warnings, `读取最新状态失败：${String(error)}`)
+    return { ...emptyState(), warnings }
+  }
 }
 
 /** 未落盘时的空状态，供读取失败的降级路径使用。 */

@@ -234,17 +234,18 @@ test('createPack / renamePack / deletePack 走通，default 不可删、不可�
   assert.equal(renamed.ok, true)
   assert.equal((await readJson(packsFile(home))).packs[id].name, '工作二')
 
+  // 写入失败不再回 error 信封：仍是 ok: true，失败说明只出现在 warnings 里。
   const refusedRename = await handleApply(
     ctx,
     { commands: [{ op: 'renamePack', packId: 'default', name: 'x' }] },
     deps,
   )
-  assert.equal(refusedRename.ok, false)
-  assert.match(refusedRename.error.message, /默认 pack 不可改名/)
+  assert.equal(refusedRename.ok, true)
+  assert.match(refusedRename.value.warnings.join('\n'), /默认 pack 不可改名/)
 
   const refusedDelete = await handleApply(ctx, { commands: [{ op: 'deletePack', packId: 'default' }] }, deps)
-  assert.equal(refusedDelete.ok, false)
-  assert.match(refusedDelete.error.message, /默认 pack 不可删除/)
+  assert.equal(refusedDelete.ok, true)
+  assert.match(refusedDelete.value.warnings.join('\n'), /默认 pack 不可删除/)
   assert.equal(Object.keys((await readJson(packsFile(home))).packs).includes('default'), true)
 
   const deleted = await handleApply(ctx, { commands: [{ op: 'deletePack', packId: id }] }, deps)
@@ -280,8 +281,8 @@ test('bind 未知 pack 被拒，且不写 workspaces.json', async () => {
     { commands: [{ op: 'bind', cwd: 'D:/proj', packId: 'missing' }] },
     depsWith(fakeSkills()),
   )
-  assert.equal(result.ok, false)
-  assert.match(result.error.message, /未知 pack/)
+  assert.equal(result.ok, true)
+  assert.match(result.value.warnings.join('\n'), /未知 pack/)
   assert.equal(await fileExists(workspacesFile(home)), false)
 })
 
@@ -424,4 +425,19 @@ test('第三方 scoped 包的来源标签带包名', async () => {
   const skills = fakeSkills(scoped)
   const view = await handleGlobal(fakeCtx(skills), depsWith(skills))
   assert.equal(view.value.skills[0].origin, '@acme/tool')
+})
+
+test('packs.json 坏掉时 apply 仍返回 ok:true，拒写说明落在 warnings 里', async () => {
+  const home = await freshHome()
+  const broken = '{ "version": 1, '
+  await writeFile(packsFile(home), broken)
+  const result = await handleApply(
+    fakeCtx(fakeSkills()),
+    { commands: [{ op: 'packItem', packId: 'default', name: 'alpha', value: false }] },
+    depsWith(fakeSkills()),
+  )
+  // 写入失败不是请求错误：信封保持 ok，失败说明与读警告同住在 warnings。
+  assert.equal(result.ok, true)
+  assert.match(result.value.warnings.join('\n'), /packs\.json 不是合法 JSON，已拒绝写入/)
+  assert.equal(await readFile(packsFile(home), 'utf8'), broken)
 })

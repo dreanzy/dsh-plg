@@ -345,6 +345,40 @@ window.__ModuleLoader__.load({
 
     // ---------- 基础组件 ----------
 
+    /**
+     * 策略文件的告警。
+     *
+     * 写入失败不再是错误信封：它和既有的读告警一样，跟着视图的 `warnings` 回来，
+     * 所以面板得有一处能看见。默认折起只显示条数——正常情况一条都没有，出现时才
+     * 占位置；展开才列出全文。
+     */
+    function Warnings(props) {
+      const [open, setOpen] = useState(false)
+      const list = Array.isArray(props.warnings) ? props.warnings : []
+      if (list.length === 0) return null
+      return h(
+        'div',
+        { style: { marginTop: '8px' } },
+        h(
+          'button',
+          {
+            type: 'button',
+            'aria-expanded': open,
+            style: { ...S.badge, cursor: 'pointer' },
+            onClick: () => setOpen(!open),
+          },
+          (open ? '▾ ' : '▸ ') + list.length + ' 条告警',
+        ),
+        open
+          ? h(
+              'div',
+              { style: { ...S.hint, marginTop: '4px' } },
+              list.map((warning, index) => h('div', { key: index }, warning)),
+            )
+          : null,
+      )
+    }
+
     function Switch(props) {
       return h(
         'button',
@@ -959,6 +993,7 @@ window.__ModuleLoader__.load({
             h('span', { style: { ...S.hint, marginLeft: 'auto' } }, '当前工作区'),
           ),
           state.error ? h('div', { style: { ...S.error, marginTop: '8px' } }, state.error) : null,
+          h(Warnings, { warnings: data === null ? null : data.warnings }),
           data === null
             ? h('div', { style: S.empty }, state.loading ? '加载中…' : '读不到当前工作区')
             : h(
@@ -1137,6 +1172,7 @@ window.__ModuleLoader__.load({
           h(Segmented, { value: current, onChange: setTab, options: TABS }),
         ),
         state.error ? h('div', { style: { ...S.error, marginTop: '8px' } }, state.error) : null,
+        h(Warnings, { warnings: data.warnings }),
         // 「显示官方技能」只影响列表：分组页要它才看得见官方技能，分包页要靠它
         // 才能给官方技能设开关。工作区页是绑定表，与列不列官方项无关，因此不显示。
         current === 'workspace'

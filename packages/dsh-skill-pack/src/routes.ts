@@ -548,6 +548,25 @@ export function parseCommands(raw: unknown): { ok: true; commands: Command[] } |
   return { ok: true, commands }
 }
 
+/**
+ * 把这次写入产生的告警并进视图。
+ *
+ * 写失败不改信封：`ok: false` 留给命令解析失败与未知会话，写盘失败是「这次没写成」
+ * 而不是「请求无效」，它必须和读警告一起出现在同一个 `warnings` 里。
+ */
+function withWriteWarnings(
+  view: Envelope<WorkspaceView | GlobalView>,
+  warnings: readonly string[],
+): Envelope<WorkspaceView | GlobalView> {
+  if (!view.ok) return view
+  const merged = [...warnings]
+  for (const warning of view.value.warnings) {
+    if (merged.indexOf(warning) < 0) merged.push(warning)
+  }
+  const value: WorkspaceView | GlobalView = { ...view.value, warnings: merged }
+  return { ok: true, value }
+}
+
 /** `POST api/skill-pack/apply`：`{ sessionId?, commands }`。 */
 export async function handleApply(
   ctx: RouteContext,
@@ -569,7 +588,8 @@ export async function handleApply(
       }
     }
 
-    await applyCommands(target?.cwd ?? null, parsed.commands)
+    // 写入失败不抛，只把说明塞进 state.warnings；下面把它并进返回的视图。
+    const state = await applyCommands(target?.cwd ?? null, parsed.commands)
     // 保存不触碰 skill 注册表，因此不会发出 skills/change；这条显式调用是
     // 「同一会话内改策略立刻生效」的唯一来源。失败只降级，不能让写成功的保存报错。
     try {
@@ -578,9 +598,12 @@ export async function handleApply(
       ctx.logger.warn(`dsh-skill-pack: 保存后重新落地失败（策略已写入）：${String(error)}`)
     }
 
-    if (target === null) return await handleGlobal(ctx, deps)
-    return await buildWorkspaceView(ctx, target.cwd, target.agent, target.live, deps.stuck(), deps)
+    if (target === null) return withWriteWarnings(await handleGlobal(ctx, deps), state.warnings)
+    const view = await buildWorkspaceView(ctx, target.cwd, target.agent, target.live, deps.stuck(), deps)
+    return withWriteWarnings(view, state.warnings)
   } catch (error) {
-    return { ok: false, error: { code: 'internal', message: `写入策略失败：${String(error)}` } }
+    // 写入失败已经在 warnings 里，走不到这里；命令解析失败走上面的 bad-request。
+    // 这条只剩渲染最新视图时抛错，属于意外，保留一个兜底信封。
+    return { ok: false, error: { code: 'internal', message: `读取最新状态失败：${String(error)}` } }
   }
 }

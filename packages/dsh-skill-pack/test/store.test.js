@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { join } from 'node:path'
-import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { applyCommands, groupsPath, loadState, packsPath, workspacesPath } from '../lib/store.js'
 import { normalizeCwd } from '../lib/policy.js'
@@ -71,14 +71,22 @@ test('packItem / packGroup 的三态：null 删键回到跟随', async () => {
   assert.deepEqual(state.packs.packs.default.groups, {})
 })
 
+/**
+ * 被拒的意图不再抛：写失败统一降级成返回值里的 warning，调用方（路由）据此仍
+ * 返回 ok: true 与最新状态。断言从「rejects」改成「warnings 里出现该失败」。
+ */
 test('默认 pack 不可删除、不可改名；未知 pack 的写入被拒', async () => {
   await freshHome()
-  await assert.rejects(applyCommands(null, [{ op: 'deletePack', packId: 'default' }]), /默认 pack 不可删除/)
-  await assert.rejects(applyCommands(null, [{ op: 'renamePack', packId: 'default', name: 'x' }]), /默认 pack 不可改名/)
-  await assert.rejects(
-    applyCommands(null, [{ op: 'packItem', packId: 'missing', name: 'alpha', value: false }]),
-    /未知 pack/,
-  )
+  const deleted = await applyCommands(null, [{ op: 'deletePack', packId: 'default' }])
+  assert.match(deleted.warnings.join('\n'), /默认 pack 不可删除/)
+
+  const renamed = await applyCommands(null, [{ op: 'renamePack', packId: 'default', name: 'x' }])
+  assert.match(renamed.warnings.join('\n'), /默认 pack 不可改名/)
+
+  const missing = await applyCommands(null, [{ op: 'packItem', packId: 'missing', name: 'alpha', value: false }])
+  assert.match(missing.warnings.join('\n'), /未知 pack/)
+  // 三次都没写进去：文件仍然不存在。
+  assert.equal(await fileExists(packsPath()), false)
 })
 
 test('bind 与 bind null：绑定键是规范化后的 cwd', async () => {
@@ -212,4 +220,65 @@ test('删除分组会清掉所有 pack 里该组的开关', async () => {
   // 空的 groups 表不落键：序列化只在有内容时写这一层。
   assert.equal(JSON.parse(await readFile(packsPath())).packs.default.groups, undefined)
   assert.deepEqual(JSON.parse(await readFile(groupsPath())).groups, [])
+})
+
+test('packs.json 内容坏掉时拒写，原文件字节不变', async () => {
+  const home = await freshHome()
+  await mkdir(join(home, 'packs', 'skill'), { recursive: true })
+
+  // 坏 JSON：解析会得到空名册，写回去等于抹掉用户已有的全部决定。
+  const broken = '{ "version": 1, "packs": '
+  await writeFile(packsPath(), broken)
+  const state = await applyCommands(null, [{ op: 'packItem', packId: 'default', name: 'alpha', value: false }])
+  assert.equal(await readFile(packsPath(), 'utf8'), broken)
+  assert.match(state.warnings.join('\n'), /packs\.json 不是合法 JSON，已拒绝写入/)
+
+  // 顶层不是对象：同样拒写。
+  const notObject = '[]\n'
+  await writeFile(packsPath(), notObject)
+  const top = await applyCommands(null, [{ op: 'packItem', packId: 'default', name: 'alpha', value: false }])
+  assert.equal(await readFile(packsPath(), 'utf8'), notObject)
+  assert.match(top.warnings.join('\n'), /packs\.json 顶层不是对象，已拒绝写入/)
+})
+
+test('packs.json 读不出来（非 ENOENT）时跳过写入，不覆盖也不新建', async () => {
+  await freshHome()
+  // 让路径成为一个目录：readFile 抛 EISDIR，不是 ENOENT。
+  await mkdir(packsPath(), { recursive: true })
+  const state = await applyCommands(null, [{ op: 'packItem', packId: 'default', name: 'alpha', value: false }])
+  assert.match(state.warnings.join('\n'), /读取 packs\.json 失败，本次未写入/)
+  // 路径还是那个目录：既没被覆盖成文件，也没在别处凭空造一份。
+  assert.equal((await stat(packsPath())).isDirectory(), true)
+})
+
+test('成功路径的落盘字节不变：两空格、键排序、结尾换行', async () => {
+  await freshHome()
+  const state = await applyCommands(null, [
+    { op: 'packItem', packId: 'default', name: 'beta', value: false },
+    { op: 'packItem', packId: 'default', name: 'alpha', value: true },
+  ])
+  assert.deepEqual(state.warnings, [])
+  assert.equal(
+    await readFile(packsPath(), 'utf8'),
+    [
+      '{',
+      '  "version": 1,',
+      '  "ui": {',
+      '    "showOfficialSkills": false,',
+      '    "showChip": true,',
+      '    "defaultTab": "groups"',
+      '  },',
+      '  "packs": {',
+      '    "default": {',
+      '      "name": "默认",',
+      '      "items": {',
+      '        "alpha": true,',
+      '        "beta": false',
+      '      }',
+      '    }',
+      '  }',
+      '}',
+      '',
+    ].join('\n'),
+  )
 })
