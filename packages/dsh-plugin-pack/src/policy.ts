@@ -353,7 +353,11 @@ export interface ResolverInput {
   readonly packId?: string
   /** 求值链的终点：`packs.json` 里的 `default`。 */
   readonly defaultPack: Pack
-  readonly assignments: Readonly<Record<string, string>>
+  /**
+   * 组定义与归属。只有仍存在于 `groups` 里的 id 才参与组级求值：指向已删分组的
+   * 残留归属若照旧去 `pack.groups` 取值，一个早已不存在的组还能决定插件可不可见。
+   */
+  readonly groups: GroupRegistry
 }
 
 export interface Resolver {
@@ -376,11 +380,15 @@ export interface Resolver {
  * 绑定悬空时调用方传 `pack: null`，求值自然退回 `default`。
  */
 export function createResolver(input: ResolverInput): Resolver {
-  const { pack, defaultPack, assignments } = input
+  const { pack, defaultPack, groups } = input
   const packId = pack === null ? DEFAULT_PACK_ID : (input.packId ?? DEFAULT_PACK_ID)
   const groupOf = (name: string): string | undefined => {
-    const groupId = assignments[name]
-    return groupId === undefined || groupId === '' ? undefined : groupId
+    const groupId = groups.assignments[name]
+    if (groupId === undefined || groupId === '') return undefined
+    for (const group of groups.groups) {
+      if (group.id === groupId) return groupId
+    }
+    return undefined
   }
   const decide = (name: string): Decision => {
     const groupId = groupOf(name)

@@ -58,12 +58,12 @@ export interface Effective {
 export function effective(input: EffectiveInput): Effective {
   const { policy, names, scope, complete } = input
   const defaultPack = defaultPackOf(policy.packs)
-  const assignments = policy.groups.assignments
+  const groups = policy.groups
   const ownPack = policy.pack
   const resolver = createResolver(
     scope === 'workspace'
-      ? { pack: ownPack, packId: policy.packId, defaultPack, assignments }
-      : { pack: null, defaultPack, assignments },
+      ? { pack: ownPack, packId: policy.packId, defaultPack, groups }
+      : { pack: null, defaultPack, groups },
   )
 
   const rows: EffectiveRow[] = []

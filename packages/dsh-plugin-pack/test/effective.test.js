@@ -15,7 +15,8 @@ function state(pack, defaultPack, assignments = {}) {
     binding: own === null ? null : 'p1',
     packId: own === null ? 'default' : 'p1',
     pack: own,
-    groups: { groups: [], assignments },
+    // 归属必须同时注册在 groups 里：指向已删分组的 id 按未分组处理。
+    groups: { groups: [...new Set(Object.values(assignments))].map((id) => ({ id, name: id })), assignments },
     bindings: { bindings: {}, extra: [] },
     warnings: [],
   }

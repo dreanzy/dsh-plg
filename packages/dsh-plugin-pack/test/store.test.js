@@ -164,7 +164,7 @@ test('删组会清掉各 pack 里的组开关：重建的同 id 不继承旧决�
   const resolver = createResolver({
     pack: null,
     defaultPack: defaultPackOf(state.packs),
-    assignments: state.groups.assignments,
+    groups: state.groups,
   })
   // 新组里的无关插件必须是开的：旧组的 false 不许漏进来。
   assert.equal(resolver.isOpen('plug-b'), true)

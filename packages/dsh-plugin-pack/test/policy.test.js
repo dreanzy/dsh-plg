@@ -28,12 +28,18 @@ function emptyPack(name = '默认') {
   return { name, items: {}, groups: {} }
 }
 
+/** 造一份组注册表：用例只关心归属，组名就用 id 顶替。 */
+function registryOf(map) {
+  const ids = new Set(Object.values(map))
+  return { groups: [...ids].map((id) => ({ id, name: id })), assignments: map }
+}
+
 function withPolicy(pack = null, defaultPack = emptyPack(), map = assignments, packId) {
   return createResolver({
     pack,
     ...(packId === undefined ? {} : { packId }),
     defaultPack: { ...emptyPack(), ...defaultPack },
-    assignments: map,
+    groups: registryOf(map),
   })
 }
 
@@ -131,6 +137,18 @@ test('组决策也带来源 pack 与级别', () => {
 test('pack 为 null（未绑定或悬空）时求值退回 default', () => {
   const r = withPolicy(null, { items: { 'plug-a': false } }, assignments, 'p1-gone')
   assert.deepEqual(r.decide('plug-a'), { value: false, packId: 'default', via: 'item' })
+})
+
+test('悬空组 id 按未分组处理', () => {
+  // 删除分组时 store 会清归属，但手改文件或旧数据里可能留下指向已删分组的 id。
+  // 它不该再靠 `pack.groups` 里那枚遗留开关决定插件可不可见。
+  const r = createResolver({
+    pack: { name: 'p1', items: {}, groups: { 'g-gone': false } },
+    defaultPack: emptyPack(),
+    groups: { groups: [], assignments: { 'plug-a': 'g-gone' } },
+  })
+  assert.equal(r.groupOf('plug-a'), undefined)
+  assert.equal(r.isOpen('plug-a'), true)
 })
 
 test('求值链解析组归属', () => {
