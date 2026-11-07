@@ -1449,8 +1449,24 @@ window.__ModuleLoader__.load({
               '行扫描不完整：列表可能缺少条目。这里的开关只对已经发现的行生效，不会抹掉没扫到的决定。',
             )
           : null,
+        // 写入被拒的说明与读警告走同一处：写失败不再变成一条错误横幅，用户要在这里
+        // 看见原因。折起来只占一行，展开看全文——警告多时不该把正文挤下去。
         warnings.length > 0
-          ? h('div', { style: S.probeWarn }, '策略文件有告警：' + warnings.slice(0, 4).join('；'))
+          ? h(
+              'details',
+              { style: S.probeWarn },
+              h(
+                'summary',
+                { style: { ...S.hint, color: T.warn, cursor: 'pointer' } },
+                h('span', { style: S.badge }, warnings.length + ' 条'),
+                ' 策略文件与写入的告警',
+              ),
+              h(
+                'ul',
+                { style: { margin: '6px 0 0', paddingLeft: '18px' } },
+                warnings.map((line, index) => h('li', { key: String(index) }, line)),
+              ),
+            )
           : null,
 
         h(

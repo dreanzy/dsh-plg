@@ -7,7 +7,7 @@ import { createScopeSnapshot } from '../lib/snapshot.js'
 import { scanRows } from '../lib/inventory.js'
 import { normalizeCwd } from '../lib/policy.js'
 import { readOwned } from '../lib/servers.js'
-import { loadState } from '../lib/store.js'
+import { loadState, packsPath } from '../lib/store.js'
 import { handleApply, handleGlobal, handleServers, handleWorkspace, parseCommands } from '../lib/routes.js'
 
 const MCP = '@deepseek-ai/dsh-mcp-client'
@@ -387,6 +387,24 @@ test('坏命令整批拒绝，一条都不写', async () => {
     () => false,
   )
   assert.equal(exists, false)
+})
+
+test('写入被拒不再回 error.code：仍是 ok，失败说明进 warnings', async () => {
+  await freshHome()
+  const entries = [mcpEntry('a')]
+  const broken = '{ oops'
+  await mkdir(dirname(packsPath()), { recursive: true })
+  await writeFile(packsPath(), broken)
+  const result = await handleApply(
+    fakeCtx(entries),
+    { commands: [{ op: 'showChip', value: false }] },
+    deps(entries),
+  )
+  assert.equal(result.ok, true)
+  assert.equal(result.value.warnings.some((line) => /拒绝覆盖/u.test(line)), true, result.value.warnings.join('；'))
+  // 原文件不动，视图照常给出来。
+  assert.equal(await readFile(packsPath(), 'utf8'), broken)
+  assert.equal(result.value.packId, 'default')
 })
 
 test('托管定义与 Loader 行重名时拒绝新增', async () => {

@@ -488,21 +488,25 @@ export async function handleApply(
     }
   }
 
-  try {
-    await applyCommands(session?.cwd ?? null, parsed.commands)
-    // 写入后立刻失效：不依赖 mtime 精度（同毫秒的两次写在 Windows 上会撞车），
-    // 也不等任何 TTL。afterWrite 里的重算因此一定读到新值。
-    hooks.snapshot.invalidate()
-    if (hooks.afterWrite !== undefined) {
-      try {
-        await hooks.afterWrite()
-      } catch (error) {
-        ctx.logger.warn(`dsh-mcp-pack: 写入后刷新名册失败：${String(error)}`)
-      }
+  // 写失败不在这里报错：applyCommands 把它写进 warnings，随视图一起回给面板。
+  const applied = await applyCommands(session?.cwd ?? null, parsed.commands)
+  // 写入后立刻失效：不依赖 mtime 精度（同毫秒的两次写在 Windows 上会撞车），
+  // 也不等任何 TTL。afterWrite 里的重算因此一定读到新值。
+  hooks.snapshot.invalidate()
+  if (hooks.afterWrite !== undefined) {
+    try {
+      await hooks.afterWrite()
+    } catch (error) {
+      ctx.logger.warn(`dsh-mcp-pack: 写入后刷新名册失败：${String(error)}`)
     }
-    return await buildView(ctx, { snapshot: hooks.snapshot }, session?.cwd ?? null, session?.live ?? false)
+  }
+  try {
+    const view = await buildView(ctx, { snapshot: hooks.snapshot }, session?.cwd ?? null, session?.live ?? false)
+    if (!view.ok) return view
+    // 写入失败的说明排在读警告之前：它是用户刚才那一下的直接结果。
+    return { ok: true, value: { ...view.value, warnings: [...new Set([...applied.warnings, ...view.value.warnings])] } }
   } catch (error) {
-    return { ok: false, error: { code: 'internal', message: `写入策略失败：${String(error)}` } }
+    return { ok: false, error: { code: 'internal', message: `读取策略失败：${String(error)}` } }
   }
 }
 

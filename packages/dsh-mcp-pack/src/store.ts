@@ -58,6 +58,26 @@ async function readText(path: string): Promise<string | undefined> {
   }
 }
 
+/** 读失败的说明要带文件名：它最终进 warnings，用户只看得见这一串字。 */
+function readFailure(label: string, error: unknown): Error {
+  return new Error(`${label} 读取失败，已跳过本次写入：${String(error)}`)
+}
+
+/**
+ * 写入前的读。
+ *
+ * 非 ENOENT 的读失败（权限、目录占位、被别的进程独占）不能当成「文件不存在」：
+ * 那会拿一份空名册把原文件盖掉。这里让本次写入作罢，由 `applyCommands` 记进 warnings。
+ * 读侧不走这里：读侧照旧抛，降级成什么只由 `parse*` 决定。
+ */
+async function readForWrite(path: string, label: string): Promise<string | undefined> {
+  try {
+    return await readText(path)
+  } catch (error) {
+    throw readFailure(label, error)
+  }
+}
+
 /**
  * 写之前确认目标文件还能读懂。
  *
@@ -83,14 +103,22 @@ function assertWritable(current: string | undefined, label: string): void {
  * 父目录必须在拿锁之前建好：`withFileLock` 用 `wx` 直接建 `<file>.lock`，
  * 它不会建父目录。`writeFileAtomic` 自己会 mkdir，但那是拿锁之后的事。
  */
-async function transact(path: string, mutate: (current: string | undefined) => string | null): Promise<void> {
+async function transact(
+  path: string,
+  label: string,
+  mutate: (current: string | undefined) => string | null,
+): Promise<void> {
   await mkdir(dirname(path), { recursive: true, mode: 0o700 })
   await withFileLock(path, async () => {
-    const current = await readText(path)
+    const current = await readForWrite(path, label)
     const next = mutate(current)
     // `null` 表示这一批命令没有实际改变：不落盘，不凭空建空文件。
     if (next === null) return
-    await writeFileAtomic(path, next, { mode: 0o600, dirMode: 0o700 })
+    try {
+      await writeFileAtomic(path, next, { mode: 0o600, dirMode: 0o700 })
+    } catch (error) {
+      throw new Error(`写入 ${label} 失败：${String(error)}`)
+    }
   })
 }
 
@@ -456,16 +484,16 @@ function targets(commands: readonly Command[]): Targets {
   return { packs, groups, bindings }
 }
 
-/**
- * 应用一批意图并返回写入后的完整状态。
- *
- * 不比对任何版本：命令是绝对状态，幂等、可交换，写同一键即后点者赢。
- * 三个文件各自一把锁，固定顺序（pack → 组定义 → 绑定）避免交叉等待；
- * 一个命令命中两个文件时顺序写，不引入跨文件事务。
- */
-export async function applyCommands(cwd: string | null, commands: readonly Command[]): Promise<PolicyState> {
+/** 真正落盘的那一半：前置校验 + 三个文件按固定顺序写。失败照旧抛出，由调用方收成 warning。 */
+async function writeCommands(commands: readonly Command[]): Promise<void> {
   const plan = targets(commands)
-  const known = new Set(Object.keys((await loadPacks()).book.packs))
+  // 名册读不出来时无从校验 pack id：整批作罢，别写到一个看不见的名册上。
+  let known: Set<string>
+  try {
+    known = new Set(Object.keys((await loadPacks()).book.packs))
+  } catch (error) {
+    throw readFailure('packs.json', error)
+  }
 
   // 写任何文件之前先把跨文件的前置条件验一遍：packs 写成功、bindings 抛错会留下半提交。
   for (const command of commands) {
@@ -494,15 +522,60 @@ export async function applyCommands(cwd: string | null, commands: readonly Comma
   }
 
   if (plan.packs) {
-    await transact(packsPath(), (current) => applyToPacks(current, commands))
+    await transact(packsPath(), 'packs.json', (current) => applyToPacks(current, commands))
   }
   if (plan.groups) {
-    await transact(groupsPath(), (current) => applyToGroups(current, commands))
+    await transact(groupsPath(), 'groups.json', (current) => applyToGroups(current, commands))
   }
   if (plan.bindings) {
     // bind 的合法目标要在 pack 写完之后再读：同一批命令里可能有 createPack / deletePack。
-    await transact(workspacesPath(), (current) => applyToBindings(current, commands, known))
+    await transact(workspacesPath(), 'workspaces.json', (current) => applyToBindings(current, commands, known))
   }
+}
 
-  return await loadState(cwd)
+/**
+ * 写入后的状态。
+ *
+ * 写失败常常正是因为文件读不懂，这时状态同样读不出来。按缺省给一份空策略：
+ * 面板照常渲染，失败原因在 warnings 里看得见，而不是整页变成一条错误。
+ */
+async function stateAfter(cwd: string | null, warnings: string[]): Promise<PolicyState> {
+  try {
+    const state = await loadState(cwd)
+    return { ...state, warnings: [...warnings, ...state.warnings] }
+  } catch (error) {
+    warnings.push(`读取策略失败，按缺省继续：${String(error)}`)
+    const fallback = parsePacks(undefined).value
+    return {
+      packs: fallback.book,
+      ui: fallback.ui,
+      binding: null,
+      packId: DEFAULT_PACK_ID,
+      pack: null,
+      groups: EMPTY_GROUPS,
+      bindings: EMPTY_BINDINGS,
+      warnings,
+    }
+  }
+}
+
+/**
+ * 应用一批意图并返回写入后的完整状态。
+ *
+ * 永不抛：写不进去的原因（坏文件、读失败、未知 pack、落盘失败）进 `state.warnings`。
+ * 这是面板与路由唯一的失败通道——面板把它和读警告显示在同一处，路由照常回最新状态。
+ *
+ * 不比对任何版本：命令是绝对状态，幂等、可交换，写同一键即后点者赢。
+ * 三个文件各自一把锁，固定顺序（pack → 组定义 → 绑定）避免交叉等待；
+ * 一个命令命中两个文件时顺序写，不引入跨文件事务。
+ */
+export async function applyCommands(cwd: string | null, commands: readonly Command[]): Promise<PolicyState> {
+  const warnings: string[] = []
+  try {
+    await writeCommands(commands)
+  } catch (error) {
+    // 第一个失败就停：半批写下去比整批不写更难解释，也更难收拾。
+    warnings.push(error instanceof Error ? error.message : String(error))
+  }
+  return await stateAfter(cwd, warnings)
 }

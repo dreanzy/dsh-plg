@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { normalizeCwd } from '../lib/policy.js'
@@ -39,6 +39,15 @@ async function writeJson(path, value) {
 
 async function readJson(path) {
   return JSON.parse(await readFile(path, 'utf8'))
+}
+
+/** 写失败不再抛：断言那件事出现在 warnings 里。 */
+function warnedAbout(state, pattern) {
+  assert.equal(
+    state.warnings.some((line) => pattern.test(line)),
+    true,
+    'warnings 里没有 ' + String(pattern) + '：' + state.warnings.join('；'),
+  )
 }
 
 test('三个状态文件落在 $DSH_HOME/packs/mcp/ 下', async () => {
@@ -106,14 +115,14 @@ test('packGroup 的三态：null 删键回到跟随', async () => {
 
 test('默认 pack 不可删除、不可改名；未知 pack 的写入被拒；重名被拒', async () => {
   await freshHome()
-  await assert.rejects(applyCommands(null, [{ op: 'deletePack', packId: 'default' }]), /默认 pack 不可删除/u)
-  await assert.rejects(applyCommands(null, [{ op: 'renamePack', packId: 'default', name: 'x' }]), /默认 pack 不可改名/u)
-  await assert.rejects(
-    applyCommands(null, [{ op: 'packRow', packId: 'missing', rowKey: 'global:a', patch: { enabled: false } }]),
+  warnedAbout(await applyCommands(null, [{ op: 'deletePack', packId: 'default' }]), /默认 pack 不可删除/u)
+  warnedAbout(await applyCommands(null, [{ op: 'renamePack', packId: 'default', name: 'x' }]), /默认 pack 不可改名/u)
+  warnedAbout(
+    await applyCommands(null, [{ op: 'packRow', packId: 'missing', rowKey: 'global:a', patch: { enabled: false } }]),
     /未知 pack/u,
   )
   await applyCommands(null, [{ op: 'createPack', name: '一' }])
-  await assert.rejects(applyCommands(null, [{ op: 'createPack', name: '一' }]), /已存在/u)
+  warnedAbout(await applyCommands(null, [{ op: 'createPack', name: '一' }]), /已存在/u)
   await applyCommands(null, [{ op: 'renamePack', packId: 'p1', name: '二' }])
   assert.equal((await loadState(null)).packs.packs.p1.name, '二')
 })
@@ -208,8 +217,8 @@ test('组的新增、改名、指派与删除', async () => {
   // 成员回到未分组。
   assert.deepEqual(state.groups.assignments, {})
 
-  await assert.rejects(applyCommands(null, [{ op: 'assign', rowKey: 'global:a', groupId: 'g9' }]), /未知分组/u)
-  await assert.rejects(applyCommands(null, [{ op: 'deleteGroup', groupId: 'g9' }]), /未知分组/u)
+  warnedAbout(await applyCommands(null, [{ op: 'assign', rowKey: 'global:a', groupId: 'g9' }]), /未知分组/u)
+  warnedAbout(await applyCommands(null, [{ op: 'deleteGroup', groupId: 'g9' }]), /未知分组/u)
 })
 
 test('没有新绑定文件时，deletePack 不会凭空创建 workspaces.json', async () => {
@@ -239,7 +248,7 @@ test('坏 packs.json 拒绝覆盖，原文件保持', async () => {
   await mkdir(dirname(packsPath()), { recursive: true })
   const broken = '{ oops'
   await writeFile(packsPath(), broken)
-  await assert.rejects(applyCommands(null, [{ op: 'showChip', value: false }]), /拒绝覆盖/u)
+  warnedAbout(await applyCommands(null, [{ op: 'showChip', value: false }]), /拒绝覆盖/u)
   assert.equal(await readFile(packsPath(), 'utf8'), broken)
 })
 
@@ -250,8 +259,8 @@ test('一批命令里有非法 bind 时一个文件都不写', async () => {
     ui: {},
     packs: { default: { name: '默认' }, p1: { name: '一' } },
   })
-  await assert.rejects(
-    applyCommands(null, [
+  warnedAbout(
+    await applyCommands(null, [
       { op: 'packRow', packId: 'p1', rowKey: 'global:a', patch: { mode: 'lazy' } },
       { op: 'bind', cwd: 'D:/x', packId: 'nope' },
     ]),
@@ -276,4 +285,50 @@ test('addExtra / removeExtra：规范化、去重、与 bindings 互不影响', 
   await applyCommands(null, [{ op: 'removeExtra', cwd: a }])
   onDisk = await readJson(workspacesPath())
   assert.deepEqual(onDisk.extra, [b])
+})
+
+test('顶层不是对象的 packs.json 也拒写，原文件逐字节不变', async () => {
+  await freshHome()
+  await mkdir(dirname(packsPath()), { recursive: true })
+  const broken = '[1, 2]\n'
+  await writeFile(packsPath(), broken)
+  warnedAbout(await applyCommands(null, [{ op: 'showChip', value: false }]), /顶层不是对象/u)
+  assert.deepEqual(await readFile(packsPath()), Buffer.from(broken))
+})
+
+test('非 ENOENT 的读取失败跳过写入，不当成文件不存在', async () => {
+  await freshHome()
+  // 目录占位：readFile 报 EISDIR，既不是 ENOENT，也不能被当成空文件。
+  await mkdir(packsPath(), { recursive: true })
+  const state = await applyCommands(null, [{ op: 'showChip', value: false }])
+  warnedAbout(state, /读取失败/u)
+  assert.equal((await stat(packsPath())).isDirectory(), true)
+  // 状态照样给出来：按缺省继续，面板不会整页报错。
+  assert.equal(state.packs.packs.default.name, '默认')
+})
+
+test('成功路径的落盘字节与既有序列化逐字节一致', async () => {
+  await freshHome()
+  const state = await applyCommands(null, [{ op: 'createPack', name: '工作' }])
+  assert.deepEqual(state.warnings, [])
+  // 键序、两空格缩进、结尾换行都是既有序列化的输出：动它就是给每次保存制造 git 差异。
+  const expected = [
+    '{',
+    '  "version": 1,',
+    '  "ui": {',
+    '    "showChip": true,',
+    '    "defaultTab": "groups"',
+    '  },',
+    '  "packs": {',
+    '    "default": {',
+    '      "name": "默认"',
+    '    },',
+    '    "p1": {',
+    '      "name": "工作"',
+    '    }',
+    '  }',
+    '}',
+    '',
+  ].join('\n')
+  assert.equal(await readFile(packsPath(), 'utf8'), expected)
 })
