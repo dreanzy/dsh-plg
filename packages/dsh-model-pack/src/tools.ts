@@ -1,7 +1,7 @@
 /**
  * 档位委派工具 `subagent_tier`（spec §6.2 的五步执行、§6.4 的降级矩阵）。
  *
- * 这一层只做「按档位把独立任务派出去」：解析方案 → 取该档路由链 → 逐条探测
+ * 这一层只做「按档位把独立任务派出去」：解析 pack → 取该档路由链 → 逐条探测
  * `llm.resolveCallConfig` → 通过则 `subagents.startActivation`。探测失败是
  * **确定性失败**，可以前进到备选；子任务自己跑挂了不是确定性失败，不换模型重跑。
  *
@@ -14,8 +14,21 @@
  * 宿主 `tools.register()` 只读 `name` / `output` / `parameters`，形状一致即可。
  */
 
-import { TIER_DEFAULT_NAMES, TIER_IDS, isTierId, selectionOf, type Route, type TierId } from './scheme.js'
-import type { ResolvedScheme } from './policy.js'
+import { TIER_DEFAULT_NAMES, TIER_IDS, isTierId, selectionOf, type Route, type TierId } from './pack.js'
+import type { ResolvedPack } from './policy.js'
+
+/**
+ * 委派标签的前缀：`t1`…`t4`。
+ *
+ * 子智能体在会话列表里只显示 label，委派一多就分不出哪条是深算、哪条是侦察。
+ * 前缀比档名短，四个并排也不挤。
+ */
+const TIER_SHORT: Readonly<Record<TierId, string>> = {
+  tier1: 't1',
+  tier2: 't2',
+  tier3: 't3',
+  tier4: 't4',
+}
 
 /** 工具名。编排层与提示词段都按这个名字引用。 */
 export const TIER_TOOL_NAME = 'subagent_tier'
@@ -33,8 +46,8 @@ const PROVIDER_NAME = 'spawn'
 
 /** 编排层注入的依赖。签名由编排层按此调用，不得改名。 */
 export interface TierToolDeps {
-  /** 解析 cwd 当前生效的方案；由编排层注入，测试用替身 */
-  resolveFor(cwd: string | null): Promise<ResolvedScheme>
+  /** 解析 cwd 当前生效的 pack；由编排层注入，测试用替身 */
+  resolveFor(cwd: string | null): Promise<ResolvedPack>
   /** 宿主 llm 服务，只用 resolveCallConfig */
   llm: { resolveCallConfig(sel: unknown): { provider: string; model: string } } | undefined
   /** 宿主 subagents 服务，只用 startActivation 与 providerOf/能力探测 */
@@ -98,8 +111,8 @@ function warn(deps: TierToolDeps, message: string): void {
  * ------------------------------------------------------------------ */
 
 /** 有首选路由的档才进目录。缺省的档不暴露给模型（spec §5）。 */
-function catalogOf(resolved: ResolvedScheme | undefined): TierEntry[] {
-  const tiers = resolved?.scheme?.tiers
+function catalogOf(resolved: ResolvedPack | undefined): TierEntry[] {
+  const tiers = resolved?.pack?.tiers
   const entries: TierEntry[] = []
   for (const id of TIER_IDS) {
     const tier = tiers?.[id]
@@ -109,23 +122,29 @@ function catalogOf(resolved: ResolvedScheme | undefined): TierEntry[] {
   return entries
 }
 
-/** 注册那一刻还不知道方案，先用出厂显示名的四档表顶着，随后由 refreshCatalog 覆盖。 */
+/** 注册那一刻还不知道 pack，先用出厂显示名的四档表顶着，随后由 refreshCatalog 覆盖。 */
 function defaultCatalog(): TierEntry[] {
   return TIER_IDS.map((id) => ({ id, name: TIER_DEFAULT_NAMES[id] }))
 }
 
+/**
+ * 工具描述。
+ *
+ * 用英文：这段文本会进模型的工具清单，与系统提示词同属「给模型读的正文」，
+ * 不随界面语言变。档名来自 pack（出厂是英文），所以整段不会中英混排。
+ */
 function renderDescription(catalog: readonly TierEntry[]): string {
-  const table = catalog.map((entry) => `${entry.id}（${entry.name}）`).join('、')
-  return `按难度档把独立任务委派给子智能体，档内的模型与思考等级由当前方案决定。tier 只接受：${table}。参数：tier 档位 id；prompt 子任务的完整说明（子智能体看不到本对话，它需要的一切都要写进去）；label 三到五词的显示名；cwd 子智能体初始工作目录，缺省跟随调用方。独立任务一律用它；只有需要本对话上下文时才用 subagent_fork。`
+  const table = catalog.map((entry) => `${entry.id} (${entry.name})`).join(', ')
+  return `Delegate an independent task to a subagent by difficulty tier. The model and reasoning effort for each tier come from the active pack. tier accepts only: ${table}. Parameters: tier — the tier id; prompt — the complete task description (the subagent cannot see this conversation, so include everything it needs); label — a 3-5 word display name; cwd — the subagent's initial working directory, defaults to the caller's. Always use this for independent tasks; use subagent_fork only when the task needs this conversation's context.`
 }
 
 /**
- * 工具描述文本（含四档表，只列当前方案里配了首选的档）。
+ * 工具描述文本（含四档表，只列当前 pack 里配了首选的档）。
  *
  * 无可用档位时返回 `null`：编排层据此不注册工具、不注入提示词段、也不 deny 官方
  * `subagent`——留着官方工具总比让模型彻底不能委派好。
  */
-export function describeTiers(resolved: ResolvedScheme): string | null {
+export function describeTiers(resolved: ResolvedPack): string | null {
   try {
     const catalog = catalogOf(resolved)
     return catalog.length === 0 ? null : renderDescription(catalog)
@@ -139,10 +158,10 @@ function parametersFor(ids: readonly string[]): Record<string, unknown> {
   return {
     type: 'object',
     properties: {
-      tier: { type: 'string', enum: [...ids], description: '难度档位 id，见描述里的档位表。' },
-      prompt: { type: 'string', description: '子任务的完整说明；子智能体看不到本对话。' },
-      label: { type: 'string', description: '三到五词的显示名。' },
-      cwd: { type: 'string', description: '子智能体初始工作目录；缺省跟随调用方。' },
+      tier: { type: 'string', enum: [...ids], description: 'Difficulty tier id; see the tier table in the description.' },
+      prompt: { type: 'string', description: 'The complete task description; the subagent cannot see this conversation.' },
+      label: { type: 'string', description: 'A 3-5 word display name.' },
+      cwd: { type: 'string', description: "The subagent's initial working directory; defaults to the caller's." },
     },
     required: ['tier', 'prompt'],
   }
@@ -271,9 +290,9 @@ async function startSubagent(
   signal: unknown,
 ): Promise<string> {
   const subagents = deps.subagents
-  if (subagents === undefined || subagents === null) throw new Error('subagents 服务不可用')
+  if (subagents === undefined || subagents === null) throw new Error('subagents service unavailable')
   const start = subagents['startActivation']
-  if (typeof start !== 'function') throw new Error('subagents.startActivation 不是函数')
+  if (typeof start !== 'function') throw new Error('subagents.startActivation is not a function')
 
   const request: Record<string, unknown> = {
     prompt: [{ type: 'text', text: prompt }],
@@ -284,13 +303,16 @@ async function startSubagent(
   if (typeof cwd === 'string' && cwd.trim() !== '') request['cwd'] = cwd
 
   const spec: Record<string, unknown> = { provider: PROVIDER_NAME, delivery: 'parent', request }
-  const label = args['label']
-  if (typeof label === 'string' && label.trim() !== '') spec['label'] = label
+  // 标签前缀 `t1`…`t4`：委派一多，光看名字分不出哪条是深算、哪条是侦察。
+  // 用户给的 label 接在后面，没有 label 就只留前缀。
+  const given = typeof args['label'] === 'string' ? args['label'].trim() : ''
+  const prefix = TIER_SHORT[args['tier'] as TierId] ?? ''
+  if (prefix !== '') spec['label'] = given === '' ? prefix : prefix + ' ' + given
   if (signal !== undefined) spec['signal'] = signal
 
   const activation = await (start as (value: unknown) => Promise<unknown>).call(subagents, spec)
   const childId = (activation as { childId?: unknown } | null | undefined)?.childId
-  if (typeof childId !== 'string' || childId === '') throw new Error('startActivation 没有返回 childId')
+  if (typeof childId !== 'string' || childId === '') throw new Error('startActivation did not return a childId')
   return childId
 }
 
@@ -309,25 +331,25 @@ async function runTool(
 
   try {
     if (!isTierId(tierArg)) {
-      return errorResult(`tier 必须是 ${TIER_IDS.join(' / ')} 之一；收到「${tierArg}」。`)
+      return errorResult(`tier must be one of ${TIER_IDS.join(' / ')}; got "${tierArg}".`)
     }
     const prompt = typeof args['prompt'] === 'string' ? args['prompt'] : ''
-    if (prompt.trim() === '') return errorResult('prompt 不能为空：子智能体看不到本对话，需要完整说明。', tierArg)
+    if (prompt.trim() === '') return errorResult('prompt must not be empty: the subagent cannot see this conversation, so it needs a complete description.', tierArg)
 
-    if (typeof deps.resolveFor !== 'function') return errorResult('方案解析不可用（resolveFor 未注入）。', tierArg)
+    if (typeof deps.resolveFor !== 'function') return errorResult('pack resolution unavailable (resolveFor not injected).', tierArg)
 
     const agent = exec?.agent ?? registeredAgent
-    let resolved: ResolvedScheme
+    let resolved: ResolvedPack
     try {
       resolved = await deps.resolveFor(cwdOf(args, agent))
     } catch (error) {
-      return errorResult(`解析模型方案失败，未启动子智能体：${String(error)}`, tierArg)
+      return errorResult(`Failed to resolve pack; subagent not started: ${String(error)}`, tierArg)
     }
 
-    const tier = resolved?.scheme?.tiers?.[tierArg]
+    const tier = resolved?.pack?.tiers?.[tierArg]
     if (tier === undefined || tier.primary === undefined) {
-      const available = catalogOf(resolved).map((entry) => `${entry.id}（${entry.name}）`).join('、') || '（无）'
-      return errorResult(`方案「${resolved?.id ?? '?'}」没有档 ${tierArg}；可用档：${available}。`, tierArg)
+      const available = catalogOf(resolved).map((entry) => `${entry.id} (${entry.name})`).join(', ') || '(none)'
+      return errorResult(`Pack "${resolved?.id ?? '?'}" has no tier ${tierArg}; available tiers: ${available}.`, tierArg)
     }
 
     if (deps.llm === undefined || deps.llm === null) {
@@ -348,16 +370,16 @@ async function runTool(
         subagentId = await startSubagent(deps, route, prompt, args, agent, exec?.signal)
       } catch (error) {
         warn(deps, `subagent_tier：档 ${tierArg} 用 ${routeLabel(route)} 启动失败：${String(error)}`)
-        return errorResult(`档 ${tierArg} 的路由 ${routeLabel(route)} 通过探测但启动失败：${String(error)}。按规则不换路由重试。`, tierArg)
+        return errorResult(`Tier ${tierArg} route ${routeLabel(route)} passed the probe but failed to start: ${String(error)}. Per policy, no fallback retry.`, tierArg)
       }
       return { kind: 'activation', subagentId, tier: tierArg }
     }
 
     const tried = failures.length === 0 ? '（无可尝试的路由）' : failures.join('；')
-    return errorResult(`档 ${tierArg} 的 ${String(chain.length)} 条路由都不可用，未启动子智能体：${tried}`, tierArg)
+    return errorResult(`All ${String(chain.length)} routes for tier ${tierArg} are unavailable; subagent not started: ${tried}`, tierArg)
   } catch (error) {
     warn(deps, `subagent_tier 执行失败：${String(error)}`)
-    return errorResult(`执行失败：${String(error)}`, tierArg === '' ? undefined : tierArg)
+    return errorResult(`Execution failed: ${String(error)}`, tierArg === '' ? undefined : tierArg)
   }
 }
 
@@ -369,10 +391,10 @@ const OUTPUT_SCHEMA = {
   type: 'object',
   additionalProperties: false,
   properties: {
-    kind: { type: 'string', enum: ['activation', 'error'], description: 'activation = 已启动；error = 未启动，原因见 message。' },
-    subagentId: { type: 'string', description: '已启动的子智能体会话 id。' },
-    tier: { type: 'string', description: '本次使用的档位 id。' },
-    message: { type: 'string', description: '失败原因，含试过的路由。' },
+    kind: { type: 'string', enum: ['activation', 'error'], description: 'activation = started; error = not started, see message.' },
+    subagentId: { type: 'string', description: 'Session id of the started subagent.' },
+    tier: { type: 'string', description: 'The tier id used for this dispatch.' },
+    message: { type: 'string', description: 'Failure reason, including the routes that were tried.' },
   },
   required: ['kind'],
 }
@@ -401,7 +423,7 @@ async function refreshCatalog(
     if (isDisposed()) return
     const catalog = catalogOf(resolved)
     if (catalog.length === 0) {
-      warn(deps, 'subagent_tier：当前方案没有任何档位配置，工具虽已注册但调用都会返回错误')
+      warn(deps, 'subagent_tier：当前 pack 没有任何档位配置，工具虽已注册但调用都会返回错误')
       return
     }
     state.description = renderDescription(catalog)
@@ -414,8 +436,8 @@ async function refreshCatalog(
 /**
  * 注册到该 agent 作用域。返回 disposer；能力不足返回 `null`（不抛）。
  *
- * 注册是同步的，而方案解析是异步的，所以描述与 `tier` 枚举先给出厂四档表，
- * 注册后立刻异步刷新成该 agent 实际方案的档位。调用方应当先用 `describeTiers`
+ * 注册是同步的，而 pack 解析是异步的，所以描述与 `tier` 枚举先给出厂四档表，
+ * 注册后立刻异步刷新成该 agent 实际 pack 的档位。调用方应当先用 `describeTiers`
  * 判断「有没有可用档」，没有就不调用本函数——注册之后再撤销，会让已经 deny 掉
  * 官方 `subagent` 的模型两个工具都没有。
  */

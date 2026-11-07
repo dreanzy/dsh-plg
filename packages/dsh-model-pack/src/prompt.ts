@@ -1,25 +1,25 @@
 /**
  * 委派系统提示词段（spec §6.3 / §6.3.1）。
  *
- * 段名固定 `model-scheme.delegation`，只在 `subagent_tier` 注册成功后由编排层注入；
+ * 段名固定 `model-pack.delegation`，只在 `subagent_tier` 注册成功后由编排层注入；
  * 注入条件与顺序见 spec §6.1（先注册成功，再 deny 官方工具，最后注入本段）。
  *
  * 这段的唯一职责是压过官方那段「Start independent delegations with subagent_fork」的
  * 残留推荐：独立任务一律走 `subagent_tier`，`subagent_fork` 只留给需要本对话上下文的任务。
  *
  * 两条硬约束（spec §6.3.1）：
- * 1. 段内容只能来自配置与内置常量，**不拼方案名、模型名、cwd 这类随会话变化的值**——
+ * 1. 段内容只能来自配置与内置常量，**不拼 pack 名、模型名、cwd 这类随会话变化的值**——
  *    否则前缀每次会话都不一样，KV cache 复用就没了。
  * 2. 段内不出现任何 provider / model 名。用户覆盖同样受此约束，校验在写入侧。
  *
  * 内置文本与用户覆盖的关系：逐键合并，用户有则用用户，无则用内置；空串等于缺省。
  */
 
-import { TIER_DEFAULT_NAMES, TIER_IDS, type PromptOverrides, type TierId } from './scheme.js'
-import type { ResolvedScheme } from './policy.js'
+import { TIER_DEFAULT_NAMES, TIER_IDS, type PromptOverrides, type TierId } from './pack.js'
+import type { ResolvedPack } from './policy.js'
 
 /** 段名。编排层按这个名字写入系统提示词。 */
-export const DELEGATION_SECTION_NAME = 'model-scheme.delegation'
+export const DELEGATION_SECTION_NAME = 'model-pack.delegation'
 
 /** 段文本的 token 上限（spec §6.3：段 ≤350）。 */
 export const DELEGATION_MAX_TOKENS = 350
@@ -53,30 +53,32 @@ const TIER_SLOT = '\n\n'
 /**
  * 内置编排段：切轨道 + 选档纪律 + 并行与收尾。
  *
+ * 用英文，与宿主其余内置提示词一致：系统提示词是给模型读的，不随界面语言变。
  * 措辞可压缩，含义不可改；不含任何 provider / model 名（测试会断言）。
  */
 const DELEGATION = [
-  '派活之前先切轨道：依赖图定顺序，写权表定范围，互不重叠的才并行。',
-  '委派一律走 subagent_tier，按任务难度选档，不要自己猜模型：',
+  'Plan before delegating: order by the dependency graph, scope by write ownership, and parallelize only what does not overlap.',
+  'Always delegate through subagent_tier and pick the tier by task difficulty; never guess a model yourself:',
   '',
-  '拿不准取高一档；触及数据迁移、安全边界或并发，直接 tier4。',
-  '只有需要本对话上下文才用 subagent_fork，独立任务不要用它。',
-  '同一消息里并行发起互不依赖的委派；派完继续干活，不要空等或轮询；结束时列出已派轨道。',
-  '收尾逐项核对委派包，漏范围与越界都算缺陷。',
+  'When unsure, take the higher tier; anything touching data migration, security boundaries, or concurrency goes straight to tier4.',
+  'Use subagent_fork only when the task needs this conversation\'s context; independent tasks must not use it.',
+  'Start independent delegations together in one message, keep working while they run, and list the dispatched tracks at the end.',
+  'Before finishing, check every delegation package item by item; a missed scope or an out-of-bounds change is a defect.',
 ].join('\n')
 
 /**
  * 内置提示词。用户覆盖缺省时逐键回落到这里。
  *
  * 档名与 `TIER_DEFAULT_NAMES` 同源：面板上的出厂名与提示词里的档名不能是两套。
+ * 正文用英文（与宿主其余内置提示词一致），档名保留中文——它是面板上的显示名。
  */
 export const BUILTIN_PROMPT: PromptText = {
   delegation: DELEGATION,
   tiers: {
-    tier1: { label: TIER_DEFAULT_NAMES.tier1, text: '只读定位，产出是带引用的上下文' },
-    tier2: { label: TIER_DEFAULT_NAMES.tier2, text: '定义明确，1-3 个文件，验收一句话能说清' },
-    tier3: { label: TIER_DEFAULT_NAMES.tier3, text: '需先读后判改法，4 个以上文件或跨模块一致' },
-    tier4: { label: TIER_DEFAULT_NAMES.tier4, text: '根因不明，涉及架构取舍、并发、安全、数据迁移' },
+    tier1: { label: TIER_DEFAULT_NAMES.tier1, text: 'Read-only reconnaissance; the output is context with citations.' },
+    tier2: { label: TIER_DEFAULT_NAMES.tier2, text: 'Well-defined change across 1-3 files; acceptance fits in one sentence.' },
+    tier3: { label: TIER_DEFAULT_NAMES.tier3, text: 'Requires reading before deciding; 4+ files or cross-module consistency.' },
+    tier4: { label: TIER_DEFAULT_NAMES.tier4, text: 'Root cause unknown; involves architecture trade-offs, concurrency, security, or data migration.' },
   },
 }
 
@@ -134,13 +136,13 @@ export function resolvePrompt(overrides?: PromptOverrides | null): PromptText {
   return { delegation: prefer(overrides?.delegation, BUILTIN_PROMPT.delegation), tiers }
 }
 
-/** 档名：用户覆盖的 label → 内置 label → 方案里的显示名。 */
-function labelOf(tierId: TierId, schemeName: string | undefined, prompt: PromptText): string {
+/** 档名：用户覆盖的 label → 内置 label → pack 里的显示名。 */
+function labelOf(tierId: TierId, packName: string | undefined, prompt: PromptText): string {
   const fromPrompt = prompt.tiers[tierId]?.label ?? ''
   if (fromPrompt.trim() !== '') return fromPrompt.trim()
   const fromBuiltin = BUILTIN_PROMPT.tiers[tierId].label
   if (fromBuiltin.trim() !== '') return fromBuiltin.trim()
-  return schemeName ?? TIER_DEFAULT_NAMES[tierId]
+  return packName ?? TIER_DEFAULT_NAMES[tierId]
 }
 
 /** 判据同理：用户覆盖的 text → 内置 text。 */
@@ -158,25 +160,25 @@ function compose(delegation: string, rows: readonly string[]): string {
 }
 
 /**
- * 该方案有至少一个可用档位时返回段文本，否则 `null`。
+ * 该 pack 有至少一个可用档位时返回段文本，否则 `null`。
  *
  * 没有可用档就别注入：那时 `subagent_tier` 不会注册，段里提到的工具名会指向一个
  * 不存在的工具——比不注入更糟。
  *
  * `prompt` 是 `resolvePrompt` 的结果；缺省按内置算，调用点不必先合并一遍。
- * 只列 `resolved.scheme.tiers` 里**真的配了**的档，与工具描述的可选档保持一致。
+ * 只列 `resolved.pack.tiers` 里**真的配了**的档，与工具描述的可选档保持一致。
  */
 export function delegationSection(
-  resolved: ResolvedScheme | null | undefined,
+  resolved: ResolvedPack | null | undefined,
   prompt?: PromptText | null,
 ): DelegationSection | null {
-  const schemeTiers = resolved?.scheme?.tiers
-  const usable = TIER_IDS.filter((tierId) => schemeTiers?.[tierId] !== undefined)
+  const packTiers = resolved?.pack?.tiers
+  const usable = TIER_IDS.filter((tierId) => packTiers?.[tierId] !== undefined)
   if (usable.length === 0) return null
 
   const text = prompt ?? resolvePrompt()
   const rows = usable.map(
-    (tierId) => `${tierId} ${labelOf(tierId, schemeTiers?.[tierId]?.name, text)} — ${textOf(tierId, text)}`,
+    (tierId) => `${tierId} ${labelOf(tierId, packTiers?.[tierId]?.name, text)} — ${textOf(tierId, text)}`,
   )
   return { name: DELEGATION_SECTION_NAME, text: compose(text.delegation, rows) }
 }

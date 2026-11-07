@@ -1,7 +1,7 @@
 /**
  * 编排层：把三个纯模块接到宿主上（spec §6.1）。
  *
- * 这一层只做四件事：读会话身份、按 cwd 求值方案、按固定顺序落三条副作用、
+ * 这一层只做四件事：读会话身份、按 cwd 求值 pack、按固定顺序落三条副作用、
  * 登记释放器。所有判定都不在这里——档位、描述、段文本、路由由纯模块给。
  *
  * 顺序是硬约束（spec §6.1）：**先注册工具，注册成功才 deny 官方 subagent，再注入段**。
@@ -11,8 +11,8 @@
  * 监听器抛错会让会话创建失败。
  */
 
-import { loadState, resolve, type ResolvedScheme, type SchemePathOptions } from './policy.js'
-import { selectionOf } from './scheme.js'
+import { loadState, resolve, type ResolvedPack, type PackPathOptions } from './policy.js'
+import { selectionOf } from './pack.js'
 import { delegationSection, resolvePrompt, type PromptText } from './prompt.js'
 import type { SupportView } from './routes.js'
 import { describeTiers, probeSupport, registerTierTool, type TierToolDeps } from './tools.js'
@@ -145,7 +145,7 @@ export interface HooksOptions {
  * 必然早于该 agent 的首次装配，不需要 `agent/pre-step` 每步重算。
  */
 export function installHooks(ctx: PluginContext, options: HooksOptions = {}): HooksHandle {
-  const pathOptions: SchemePathOptions = options.home === undefined ? {} : { home: options.home }
+  const pathOptions: PackPathOptions = options.home === undefined ? {} : { home: options.home }
   const states = new Map<string, AgentState>()
   /** 降级提示只打一次：这些分支每次建会话都会走到，逐次刷日志没有信息量。 */
   const warned = new Set<string>()
@@ -159,12 +159,12 @@ export function installHooks(ctx: PluginContext, options: HooksOptions = {}): Ho
   const warnOnce = (key: string, message: string): void => {
     if (warned.has(key)) return
     warned.add(key)
-    ctx.logger.warn('model-scheme: ' + message)
+    ctx.logger.warn('model-pack: ' + message)
   }
 
   const recordFailure = (agentId: string, error: unknown): void => {
     lastErrorText = 'agent=' + agentId + ' 施加失败：' + String(error)
-    ctx.logger.warn('model-scheme: ' + lastErrorText)
+    ctx.logger.warn('model-pack: ' + lastErrorText)
   }
 
   /** 根 ctx 上的服务。取不到或取值抛错都按「没有」处理。 */
@@ -197,7 +197,7 @@ export function installHooks(ctx: PluginContext, options: HooksOptions = {}): Ho
     resolveFor: async (cwd) => resolve(await loadState(cwd, pathOptions), cwd),
     llm: (scopedService(agent, 'llm') ?? serviceOf('llm')) as unknown as TierToolDeps['llm'],
     subagents: scopedService(agent, 'subagents') as unknown as TierToolDeps['subagents'],
-    logger: { warn: (message: string) => ctx.logger.warn('model-scheme: ' + message) },
+    logger: { warn: (message: string) => ctx.logger.warn('model-pack: ' + message) },
   })
 
   /* ---------------------------------------------------------------- *
@@ -210,11 +210,11 @@ export function installHooks(ctx: PluginContext, options: HooksOptions = {}): Ho
    * 不能用 `model/selection` 当判据：宿主在**创建会话时**就写了一条初始选择
    * （实测事件序列 `session → permission/preset → sandbox/mode → approval/policy →
    * model/selection → subagent/model-selection-policy`）。把它当成「用户已经选过」，
-   * 会让方案对每一个新建会话都不生效，而老会话因为已有 selection 或手动切换，
+   * 会让 pack 对每一个新建会话都不生效，而老会话因为已有 selection 或手动切换，
    * 看起来反而是好的——这是最难从表面现象反推的一类 bug。
    *
    * `request/header` 只在真正发出请求时出现，才是可靠判据。读不到事件接口时返回
-   * false：新建会话本来就没有请求，放行才能让方案生效；兜底交给 select 自身的
+   * false：新建会话本来就没有请求，放行才能让 pack 生效；兜底交给 select 自身的
    * 幂等短路（同一路由不会被重复记录）。
    */
   const hasRecordedRequest = (agent: AgentLike): boolean => {
@@ -248,8 +248,8 @@ export function installHooks(ctx: PluginContext, options: HooksOptions = {}): Ho
     return false
   }
 
-  const applySessionRoute = (agent: AgentLike, resolved: ResolvedScheme): void => {
-    const route = resolved.scheme.session
+  const applySessionRoute = (agent: AgentLike, resolved: ResolvedPack): void => {
+    const route = resolved.pack.session
     if (route === undefined) return
     if (hasRecordedRequest(agent)) return
     const select = agent.model?.select
@@ -272,14 +272,14 @@ export function installHooks(ctx: PluginContext, options: HooksOptions = {}): Ho
    */
   const applyTierAndSection = (
     agent: AgentLike,
-    resolved: ResolvedScheme,
+    resolved: ResolvedPack,
     prompt: PromptText,
     state: AgentState,
   ): void => {
     // 这几条失败路径都把原因写进 lastErrorText：面板上能直接看到「为什么没注入」，
     // 而不是只看到工具凭空消失。排障时最贵的一步永远是「不知道哪一步没走通」。
     if (describeTiers(resolved) === null) {
-      lastErrorText = '档位工具未注册：方案「' + resolved.id + '」没有配置任何档位'
+      lastErrorText = '档位工具未注册：pack「' + resolved.id + '」没有配置任何档位'
       return
     }
     const deps = tierDeps(agent)
@@ -353,7 +353,7 @@ export function installHooks(ctx: PluginContext, options: HooksOptions = {}): Ho
   ): Promise<void> => {
     const cwd = cwdOf(agent)
     if (cwd === null) {
-      warnOnce('no-cwd', 'agent 缺少 cwd，按空方案运行')
+      warnOnce('no-cwd', 'agent 缺少 cwd，按空 pack 运行')
       return
     }
     const loaded = await loadState(cwd, pathOptions)
@@ -384,7 +384,7 @@ export function installHooks(ctx: PluginContext, options: HooksOptions = {}): Ho
       if (agent.session.header?.origin === 'subagent') return
 
       // 新会话：模型、工具、段三样都做。
-      // 恢复的会话：只做工具与段——模型选择已经写在它自己的日志里，不该被工作区方案改写，
+      // 恢复的会话：只做工具与段——模型选择已经写在它自己的日志里，不该被工作区绑定改写，
       // 但工具和段挂在 agent 作用域上，agent 重建后旧注册随旧 agent 一起消失，
       // 不重新挂的话，恢复出来的会话只有模型、没有 subagent_tier，模型只能去调官方 subagent。
       const isStartup = record['source'] === 'startup'
@@ -425,7 +425,7 @@ export function installHooks(ctx: PluginContext, options: HooksOptions = {}): Ho
     offs.push(ctx.on('agent/created', onCreated))
     offs.push(ctx.on('agent/disposed', onDisposed))
   } catch (error) {
-    ctx.logger.warn('model-scheme: 订阅会话事件失败，方案不会在新建会话时生效：' + String(error))
+    ctx.logger.warn('model-pack: 订阅会话事件失败，pack 绑定不会在新建会话时生效：' + String(error))
   }
 
   const stopAll = (): void => {
@@ -477,7 +477,7 @@ export function installHooks(ctx: PluginContext, options: HooksOptions = {}): Ho
         states.set(agent.id, state)
         await applyOne(agent, state, { applySessionRoute: false })
       } catch (error) {
-        ctx.logger.warn('model-scheme: 补施加失败（agent=' + (agent?.id ?? '?') + '）：' + String(error))
+        ctx.logger.warn('model-pack: 补施加失败（agent=' + (agent?.id ?? '?') + '）：' + String(error))
       }
     }
   }
@@ -491,7 +491,7 @@ export function installHooks(ctx: PluginContext, options: HooksOptions = {}): Ho
     // support() 在根作用域上，拿不到 subagents；沿用最近一次按 agent 作用域做的探测。
     //
     // 没有历史探测时按「可用」放行，而不是「不可用」：面板拿这一格决定是否禁用
-    // 档位编辑，判成 false 会让用户「没开会话就配不了方案」。真正的可用性在
+    // 档位编辑，判成 false 会让用户「没开会话就配不了 pack」。真正的可用性在
     // agent/created 时按会话判断，那时才是唯一有意义的时点。
     const probe = lastProbe ?? { subagents: true, agentOptions: true }
     return {

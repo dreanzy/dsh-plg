@@ -14,10 +14,10 @@ import { describeTiers, probeSupport, registerTierTool } from '../lib/tools.js'
 const PRIMARY = { provider: 'deepseek', model: 'deepseek-chat', reasoningEffort: 'low' }
 const FALLBACK = { provider: 'deepseek', model: 'deepseek-reasoner', reasoningEffort: 'high' }
 
-const TIER1 = { name: '侦察', primary: PRIMARY, fallbacks: [FALLBACK] }
+const TIER1 = { name: 'Scout', primary: PRIMARY, fallbacks: [FALLBACK] }
 
 function resolvedWith(tiers, id = 'standard') {
-  return { id, scheme: { name: '标准', tiers }, source: 'global', brokenBinding: false, warnings: [] }
+  return { id, pack: { name: '标准', tiers }, source: 'default', brokenBinding: false, warnings: [] }
 }
 
 /** 假的 agent：`ctx.get('tools')` 返回会记录 `register` 的对象，`session.header.cwd` 供刷新用。 */
@@ -47,7 +47,6 @@ function makeHarness({
   const probed = []
   const resolvedCalls = []
   const warnings = []
-  const scheme = resolvedWith(tiers)
 
   const subagents = {
     startActivation: async (spec) => {
@@ -62,7 +61,7 @@ function makeHarness({
   const deps = {
     resolveFor: async (cwd) => {
       resolvedCalls.push(cwd)
-      return scheme
+      return resolvedWith(tiers)
     },
     llm: {
       resolveCallConfig: (selection) => {
@@ -74,7 +73,7 @@ function makeHarness({
     logger: { warn: (message) => warnings.push(message) },
   }
 
-  return { deps, started, probed, resolvedCalls, warnings, scheme }
+  return { deps, started, probed, resolvedCalls, warnings }
 }
 
 /** 让注册后的异步刷新跑完。 */
@@ -113,7 +112,8 @@ test('正常路径：按首选路由启动，参数逐字段相等', async () =>
   const spec = harness.started[0]
   assert.equal(spec.provider, 'spawn')
   assert.equal(spec.delivery, 'parent')
-  assert.equal(spec.label, '改 X')
+  // 标签带档位前缀：委派一多，光看名字分不出哪条是深算、哪条是侦察。
+  assert.equal(spec.label, 't1 改 X')
   assert.deepEqual(spec.request.prompt, [{ type: 'text', text: '把 X 改掉' }])
   assert.deepEqual(spec.request.agentOptions, PRIMARY)
   assert.equal(spec.request.cwd, 'D:/work/beta')
@@ -127,7 +127,7 @@ test('正常路径：按首选路由启动，参数逐字段相等', async () =>
   assert.equal(registered.length, 0)
 })
 
-test('正常路径：缺省 cwd 用调用方会话目录解析方案', async () => {
+test('正常路径：缺省 cwd 用调用方会话目录解析 pack', async () => {
   const harness = makeHarness()
   const { agent, registered } = makeAgent('D:\\work\\alpha')
 
@@ -141,7 +141,7 @@ test('正常路径：缺省 cwd 用调用方会话目录解析方案', async () 
   assert.equal('cwd' in harness.started[0].request, false, '没给 cwd 时不传，让宿主自己继承')
 })
 
-test('正常路径：tier 不在方案里时返回错误结果，不启动', async () => {
+test('正常路径：tier 不在 pack 里时返回错误结果，不启动', async () => {
   const harness = makeHarness()
   const { agent, registered } = makeAgent()
 
@@ -203,7 +203,7 @@ test('全部探测失败：返回错误结果不抛，文本点名试过的每�
   assert.equal(harness.started.length, 0)
   assert.match(result.message, /deepseek\/deepseek-chat/)
   assert.match(result.message, /deepseek\/deepseek-reasoner/)
-  assert.match(result.message, /2 条路由/)
+  assert.match(result.message, /All 2 routes/)
   assert.ok(harness.warnings.length > 0)
 })
 
@@ -215,7 +215,7 @@ test('启动失败：不换备选重试，直接返回错误结果', async () =>
   const result = await executeOf(registered, 'tier1', {}, { agent })
 
   assert.equal(result.kind, 'error')
-  assert.match(result.message, /启动失败/)
+  assert.match(result.message, /failed to start/)
   assert.equal(harness.started.length, 1, '子任务失败不重跑，也不换模型')
 })
 
@@ -321,10 +321,10 @@ test('注册抛错：返回 null 而不是半个工具', () => {
  * 描述与枚举（spec §6.3）
  * ------------------------------------------------------------------ */
 
-test('describeTiers：只列配了首选的档，档名取方案里的显示名', () => {
-  const text = describeTiers(resolvedWith({ tier2: { name: '速办', primary: PRIMARY, fallbacks: [] } }))
+test('describeTiers：只列配了首选的档，档名取 pack 里的显示名', () => {
+  const text = describeTiers(resolvedWith({ tier2: { name: 'Quick', primary: PRIMARY, fallbacks: [] } }))
   assert.equal(typeof text, 'string')
-  assert.match(text, /tier2（速办）/)
+  assert.match(text, /tier2 \(Quick\)/)
   assert.doesNotMatch(text, /tier1/)
   assert.match(text, /subagent_fork/)
 })
@@ -332,14 +332,14 @@ test('describeTiers：只列配了首选的档，档名取方案里的显示名'
 test('describeTiers：没有可用档时返回 null', () => {
   assert.equal(describeTiers(resolvedWith({})), null)
   assert.equal(describeTiers(undefined), null)
-  assert.equal(describeTiers({ id: 'broken', scheme: {}, source: 'builtin', brokenBinding: false, warnings: [] }), null)
+  assert.equal(describeTiers({ id: 'broken', pack: {}, source: 'builtin', brokenBinding: false, warnings: [] }), null)
 })
 
-test('注册后刷新：tier 枚举与描述收敛到该 agent 的实际方案', async () => {
+test('注册后刷新：tier 枚举与描述收敛到该 agent 的实际 pack', async () => {
   const harness = makeHarness({
     tiers: {
       tier1: TIER1,
-      tier3: { name: '攻坚', primary: { provider: 'deepseek', model: 'deepseek-chat' }, fallbacks: [] },
+      tier3: { name: 'Deep', primary: { provider: 'deepseek', model: 'deepseek-chat' }, fallbacks: [] },
     },
   })
   const { agent, registered } = makeAgent('D:\\work\\alpha')
@@ -351,7 +351,7 @@ test('注册后刷新：tier 枚举与描述收敛到该 agent 的实际方案',
   await settle()
 
   assert.deepEqual(definition.parameters.properties.tier.enum, ['tier1', 'tier3'])
-  assert.match(definition.description, /tier3（攻坚）/)
+  assert.match(definition.description, /tier3 \(Deep\)/)
   assert.equal(harness.resolvedCalls.at(-1), 'D:\\work\\alpha')
 })
 

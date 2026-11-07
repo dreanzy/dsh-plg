@@ -15,14 +15,14 @@ import {
 } from '../lib/routes.js'
 import {
   applyCommands,
-  globalPromptsPath,
-  globalSchemePath,
   loadState,
+  packsPath,
+  promptsPath,
   resolve,
-  workspaceSchemePath,
+  workspacesPath,
 } from '../lib/policy.js'
 import { BUILTIN_PROMPT, resolvePrompt } from '../lib/prompt.js'
-import { BUILTIN_SCHEME_ID } from '../lib/scheme.js'
+import { DEFAULT_PACK_ID, normalizeCwd } from '../lib/pack.js'
 
 /**
  * 路由测试走**真的 policy 函数**：注入的 deps 只是把临时 home 绑进闭包。
@@ -35,8 +35,8 @@ import { BUILTIN_SCHEME_ID } from '../lib/scheme.js'
  */
 
 /** 真实 home 下的落点，只用来证明整轮测试没有创建它。 */
-const realSchemeFile = join(homedir(), '.dsh', 'model-scheme', 'schemes.json')
-const realSchemeFileExisted = existsSync(realSchemeFile)
+const realPacksFile = join(homedir(), '.dsh', 'packs', 'model', 'packs.json')
+const realPacksFileExisted = existsSync(realPacksFile)
 
 const ROUTE = { provider: 'deepseek', model: 'deepseek-chat' }
 
@@ -52,7 +52,7 @@ const STANDARD = {
   },
 }
 
-async function tempRoot(prefix = 'model-scheme-routes-') {
+async function tempRoot(prefix = 'model-pack-routes-') {
   return await mkdtemp(join(tmpdir(), prefix))
 }
 
@@ -77,12 +77,12 @@ function depsFor(home, overrides = {}) {
  * 路径与信封
  * ------------------------------------------------------------------ */
 
-test('路径：四条路由都在 /api/model-scheme/ 前缀下', () => {
+test('路径：四条路由都在 /api/model-pack/ 前缀下', () => {
   assert.deepEqual(ROUTES, {
-    read: '/api/model-scheme/read',
-    apply: '/api/model-scheme/apply',
-    support: '/api/model-scheme/support',
-    reset: '/api/model-scheme/reset',
+    read: '/api/model-pack/read',
+    apply: '/api/model-pack/apply',
+    support: '/api/model-pack/support',
+    reset: '/api/model-pack/reset',
   })
 })
 
@@ -112,32 +112,32 @@ test('信封：成功带 data，失败带 error.code 与 message', async () => {
  * read
  * ------------------------------------------------------------------ */
 
-test('read：无文件时返回出厂方案，空 body 合法', async () => {
+test('read：无文件时返回出厂内置，空 body 合法', async () => {
   const home = await tempRoot()
   const { deps } = depsFor(home)
 
   const result = await handleRead(deps, null)
   assert.equal(result.ok, true)
-  assert.equal(result.data.resolved.id, BUILTIN_SCHEME_ID)
+  assert.equal(result.data.resolved.id, DEFAULT_PACK_ID)
   assert.equal(result.data.resolved.source, 'builtin')
-  assert.deepEqual(result.data.state.global.schemes, {})
-  assert.deepEqual(result.data.state.workspace, {})
+  assert.deepEqual(Object.keys(result.data.state.packs.packs), [DEFAULT_PACK_ID])
+  assert.deepEqual(result.data.state.bindings, { bindings: {}, extra: [] })
   assert.deepEqual(result.data.support, { subagents: true, restrict: true })
   assert.equal(result.data.lastError, null)
 
-  // 空对象 body 与 null 等价（都只看全局层）。
+  // 空对象 body 与 null 等价（都不回读任何工作区绑定）。
   const emptyBody = await handleRead(deps, {})
   assert.equal(emptyBody.ok, true)
-  assert.deepEqual(emptyBody.data.state.workspace, {})
+  assert.equal(emptyBody.data.state.binding, null)
 })
 
-test('read：cwd 缺省与空白串都只看全局层', async () => {
+test('read：cwd 缺省与空白串都不回读绑定', async () => {
   const home = await tempRoot()
   const { deps } = depsFor(home)
 
   const blank = await handleRead(deps, { cwd: '   ' })
   assert.equal(blank.ok, true)
-  assert.deepEqual(blank.data.state.workspace, {})
+  assert.equal(blank.data.state.binding, null)
 })
 
 test('read：cwd 不是字符串返回 bad-request', async () => {
@@ -150,39 +150,7 @@ test('read：cwd 不是字符串返回 bad-request', async () => {
   assert.match(result.error.message, /cwd/)
 })
 
-/* ------------------------------------------------------------------ *
- * apply / 读回
- * ------------------------------------------------------------------ */
-
-test('apply：写入方案后 read 能读回', async () => {
-  const home = await tempRoot()
-  const cwd = await tempRoot()
-  const { deps } = depsFor(home)
-
-  const written = await handleApply(deps, {
-    cwd,
-    commands: [
-      { op: 'putScheme', schemeId: 'standard', scheme: STANDARD },
-      { op: 'setDefaultScheme', schemeId: 'standard' },
-      { op: 'bindWorkspace', schemeId: 'standard' },
-    ],
-  })
-  assert.equal(written.ok, true)
-  assert.equal(written.data.resolved.id, 'standard')
-  assert.equal(written.data.resolved.source, 'workspace')
-  assert.deepEqual(written.data.state.global.schemes.standard, STANDARD)
-
-  // 落盘了才算数：read 重新读文件。
-  const read = await handleRead(deps, { cwd })
-  assert.equal(read.ok, true)
-  assert.equal(read.data.resolved.id, 'standard')
-  assert.equal(read.data.resolved.source, 'workspace')
-  assert.equal(read.data.resolved.brokenBinding, false)
-  assert.deepEqual(read.data.state.workspace, { schemeId: 'standard' })
-  assert.deepEqual(read.data.state.global.schemes.standard, STANDARD)
-})
-
-test('apply：解绑后 read 回落全局默认', async () => {
+test('read：兼容投影把 packs 与绑定映射成旧面板认的形状', async () => {
   const home = await tempRoot()
   const cwd = await tempRoot()
   const { deps } = depsFor(home)
@@ -190,40 +158,195 @@ test('apply：解绑后 read 回落全局默认', async () => {
   await handleApply(deps, {
     cwd,
     commands: [
-      { op: 'putScheme', schemeId: 'standard', scheme: STANDARD },
-      { op: 'setDefaultScheme', schemeId: 'standard' },
-      { op: 'bindWorkspace', schemeId: 'standard' },
+      { op: 'putPack', packId: 'standard', pack: STANDARD },
+      { op: 'bind', cwd, packId: 'standard' },
     ],
   })
-  const unbound = await handleApply(deps, { cwd, commands: [{ op: 'bindWorkspace', schemeId: null }] })
-  assert.equal(unbound.ok, true)
-  assert.equal(unbound.data.resolved.source, 'global')
-  assert.deepEqual(unbound.data.state.workspace, {})
+
+  const read = await handleRead(deps, { cwd })
+  assert.equal(read.ok, true)
+  assert.equal(read.data.state.global.defaultSchemeId, DEFAULT_PACK_ID)
+  assert.deepEqual(read.data.state.global.schemes.standard, STANDARD)
+  assert.deepEqual(read.data.state.workspace, { schemeId: 'standard' })
 })
 
 /* ------------------------------------------------------------------ *
- * missing-cwd / bad-request：拒绝整批，不部分写入
+ * apply / 读回
  * ------------------------------------------------------------------ */
 
-test('apply：缺 cwd 的工作区命令返回 missing-cwd，且不写任何文件', async () => {
+test('apply：写入 pack 并绑定后 read 能读回', async () => {
   const home = await tempRoot()
   const cwd = await tempRoot()
   const { deps } = depsFor(home)
 
-  const result = await handleApply(deps, {
+  const written = await handleApply(deps, {
+    cwd,
     commands: [
-      { op: 'putScheme', schemeId: 'standard', scheme: STANDARD },
-      { op: 'bindWorkspace', schemeId: 'standard' },
+      { op: 'putPack', packId: 'standard', pack: STANDARD },
+      { op: 'bind', cwd, packId: 'standard' },
     ],
   })
-  assert.equal(result.ok, false)
-  assert.equal(result.error.code, 'missing-cwd')
-  assert.match(result.error.message, /cwd/)
+  assert.equal(written.ok, true)
+  assert.equal(written.data.resolved.id, 'standard')
+  assert.equal(written.data.resolved.source, 'workspace')
+  assert.deepEqual(written.data.state.packs.packs.standard, STANDARD)
 
-  // 整批拒绝：全局方案也没有落盘。
-  assert.equal(existsSync(globalSchemePath({ home })), false)
-  assert.equal(existsSync(workspaceSchemePath(cwd)), false)
+  // 落盘了才算数：read 重新读文件。
+  const read = await handleRead(deps, { cwd })
+  assert.equal(read.ok, true)
+  assert.equal(read.data.resolved.id, 'standard')
+  assert.equal(read.data.resolved.source, 'workspace')
+  assert.equal(read.data.resolved.brokenBinding, false)
+  assert.deepEqual(read.data.state.bindings.bindings, { [normalizeCwd(cwd)]: 'standard' })
 })
+
+test('apply：bind 自带 cwd，body 不带 cwd 也能写入', async () => {
+  const home = await tempRoot()
+  const cwd = await tempRoot()
+  const { deps } = depsFor(home)
+
+  const written = await handleApply(deps, {
+    commands: [
+      { op: 'putPack', packId: 'standard', pack: STANDARD },
+      { op: 'bind', cwd, packId: 'standard' },
+    ],
+  })
+  assert.equal(written.ok, true)
+  // 回读上下文是全局视图，但绑定确实落盘了。
+  assert.equal(written.data.state.binding, null)
+  assert.deepEqual(written.data.state.bindings.bindings, { [normalizeCwd(cwd)]: 'standard' })
+
+  const read = await handleRead(deps, { cwd })
+  assert.equal(read.data.resolved.id, 'standard')
+})
+
+test('apply：bind 传 null 解除绑定，回落到 default', async () => {
+  const home = await tempRoot()
+  const cwd = await tempRoot()
+  const { deps } = depsFor(home)
+
+  await handleApply(deps, {
+    cwd,
+    commands: [
+      { op: 'putPack', packId: 'standard', pack: STANDARD },
+      { op: 'bind', cwd, packId: 'standard' },
+    ],
+  })
+  const unbound = await handleApply(deps, { cwd, commands: [{ op: 'bind', cwd, packId: null }] })
+  assert.equal(unbound.ok, true)
+  // packs.json 里已经写了 default，所以来源是 default 而不是内置。
+  assert.equal(unbound.data.resolved.source, 'default')
+  assert.deepEqual(unbound.data.state.bindings.bindings, {})
+})
+
+test('apply：悬空绑定降级到 default 并留 warning', async () => {
+  const home = await tempRoot()
+  const cwd = await tempRoot()
+  const { deps } = depsFor(home)
+
+  await handleApply(deps, {
+    cwd,
+    commands: [
+      { op: 'putPack', packId: 'standard', pack: STANDARD },
+      { op: 'bind', cwd, packId: 'standard' },
+      { op: 'deletePack', packId: 'standard' },
+    ],
+  })
+  const read = await handleRead(deps, { cwd })
+  assert.equal(read.ok, true)
+  assert.equal(read.data.resolved.id, DEFAULT_PACK_ID)
+  assert.equal(read.data.resolved.brokenBinding, false, '删除时顺手清了绑定，不该再报悬空')
+})
+
+test('apply：createPack / renamePack / deletePack 走通', async () => {
+  const home = await tempRoot()
+  const { deps } = depsFor(home)
+
+  const created = await handleApply(deps, { commands: [{ op: 'createPack', name: '前端' }] })
+  assert.equal(created.ok, true)
+  assert.equal(created.data.state.packs.packs.p1.name, '前端')
+
+  const renamed = await handleApply(deps, { commands: [{ op: 'renamePack', packId: 'p1', name: '前端组' }] })
+  assert.equal(renamed.data.state.packs.packs.p1.name, '前端组')
+
+  const deleted = await handleApply(deps, { commands: [{ op: 'deletePack', packId: 'p1' }] })
+  assert.equal(deleted.data.state.packs.packs.p1, undefined)
+})
+
+test('apply：default 不可删除、不可改名，走 warning 而不是错误信封', async () => {
+  const home = await tempRoot()
+  const { deps } = depsFor(home)
+
+  const result = await handleApply(deps, {
+    commands: [
+      { op: 'deletePack', packId: DEFAULT_PACK_ID },
+      { op: 'renamePack', packId: DEFAULT_PACK_ID, name: '顶替' },
+    ],
+  })
+  // 形状合法、语义被 policy 拒绝：路由不把它当错误，面板靠 warnings 显示。
+  assert.equal(result.ok, true)
+  assert.ok(result.data.state.warnings.some((warning) => warning.includes('不可删除')))
+  assert.ok(result.data.state.warnings.some((warning) => warning.includes('不可改名')))
+  assert.equal(result.data.state.packs.packs.default.name, '出厂方案')
+})
+
+test('apply：packSession 与 packTier 编辑 pack 内容', async () => {
+  const home = await tempRoot()
+  const { deps } = depsFor(home)
+
+  await handleApply(deps, { commands: [{ op: 'createPack', name: '前端' }] })
+  const written = await handleApply(deps, {
+    commands: [
+      { op: 'packSession', packId: 'p1', session: ROUTE },
+      { op: 'packTier', packId: 'p1', tierId: 'tier2', tier: { name: '速办', primary: ROUTE, fallbacks: [] } },
+    ],
+  })
+  assert.equal(written.ok, true)
+  assert.deepEqual(written.data.state.packs.packs.p1.session, ROUTE)
+  assert.deepEqual(written.data.state.packs.packs.p1.tiers.tier2, {
+    name: '速办',
+    primary: ROUTE,
+    fallbacks: [],
+  })
+
+  const cleared = await handleApply(deps, {
+    commands: [
+      { op: 'packSession', packId: 'p1', session: null },
+      { op: 'packTier', packId: 'p1', tierId: 'tier2', tier: null },
+    ],
+  })
+  assert.equal(cleared.data.state.packs.packs.p1.session, undefined)
+  assert.deepEqual(cleared.data.state.packs.packs.p1.tiers, {})
+})
+
+test('apply：addExtra 与 removeExtra 维护手动添加的路径', async () => {
+  const home = await tempRoot()
+  const cwd = await tempRoot()
+  const { deps } = depsFor(home)
+
+  const added = await handleApply(deps, { commands: [{ op: 'addExtra', cwd }] })
+  assert.deepEqual(added.data.state.bindings.extra, [normalizeCwd(cwd)])
+
+  const removed = await handleApply(deps, { commands: [{ op: 'removeExtra', cwd }] })
+  assert.deepEqual(removed.data.state.bindings.extra, [])
+})
+
+test('apply：showChip 与 defaultTab 落在 ui 段', async () => {
+  const home = await tempRoot()
+  const { deps } = depsFor(home)
+
+  const written = await handleApply(deps, {
+    commands: [
+      { op: 'showChip', value: false },
+      { op: 'defaultTab', value: 'packs' },
+    ],
+  })
+  assert.deepEqual(written.data.state.ui, { showChip: false, defaultTab: 'packs' })
+})
+
+/* ------------------------------------------------------------------ *
+ * bad-request：拒绝整批，不部分写入
+ * ------------------------------------------------------------------ */
 
 test('apply：未知命令返回 bad-request 并指出第几条，不写入', async () => {
   const home = await tempRoot()
@@ -231,8 +354,8 @@ test('apply：未知命令返回 bad-request 并指出第几条，不写入', as
 
   const result = await handleApply(deps, {
     commands: [
-      { op: 'putScheme', schemeId: 'standard', scheme: STANDARD },
-      { op: 'launchMissiles', schemeId: 'standard' },
+      { op: 'putPack', packId: 'standard', pack: STANDARD },
+      { op: 'launchMissiles', packId: 'standard' },
     ],
   })
   assert.equal(result.ok, false)
@@ -240,7 +363,7 @@ test('apply：未知命令返回 bad-request 并指出第几条，不写入', as
   assert.match(result.error.message, /commands\[1\]/)
 
   // 第一条合法但整批拒绝：不做部分写入。
-  assert.equal(existsSync(globalSchemePath({ home })), false)
+  assert.equal(existsSync(packsPath({ home })), false)
 })
 
 test('apply：拦截整批时连合法项也没生效', async () => {
@@ -249,13 +372,13 @@ test('apply：拦截整批时连合法项也没生效', async () => {
 
   await handleApply(deps, {
     commands: [
-      { op: 'setDefaultScheme', schemeId: 'standard' },
-      { op: 'deleteScheme', schemeId: 7 },
+      { op: 'showChip', value: false },
+      { op: 'deletePack', packId: 7 },
     ],
   })
   const read = await handleRead(deps, null)
   assert.equal(read.ok, true)
-  assert.equal(read.data.state.global.defaultSchemeId, undefined)
+  assert.equal(read.data.state.ui.showChip, true)
 })
 
 test('apply：坏形状逐条指出下标', async () => {
@@ -263,10 +386,18 @@ test('apply：坏形状逐条指出下标', async () => {
   const { deps } = depsFor(home)
 
   const cases = [
-    { commands: [{ op: 'putScheme', schemeId: 'standard' }], match: /commands\[0\]\.scheme/ },
-    { commands: [{ op: 'putScheme', schemeId: '', scheme: STANDARD }], match: /commands\[0\]\.schemeId/ },
-    { commands: [{ op: 'deleteScheme' }], match: /commands\[0\]\.schemeId/ },
-    { commands: [{ op: 'bindWorkspace', schemeId: 1 }], match: /commands\[0\]\.schemeId/ },
+    { commands: [{ op: 'putPack', packId: 'standard' }], match: /commands\[0\]\.pack 必须是对象/ },
+    { commands: [{ op: 'putPack', packId: '', pack: STANDARD }], match: /commands\[0\]\.packId/ },
+    { commands: [{ op: 'deletePack' }], match: /commands\[0\]\.packId/ },
+    { commands: [{ op: 'createPack', name: '  ' }], match: /commands\[0\]\.name/ },
+    { commands: [{ op: 'packTier', packId: 'p1', tierId: 'tier9', tier: null }], match: /tierId/ },
+    { commands: [{ op: 'packTier', packId: 'p1', tierId: 'tier1', tier: 'x' }], match: /tier 必须是对象或 null/ },
+    { commands: [{ op: 'packSession', packId: 'p1', session: 'x' }], match: /session 必须是对象或 null/ },
+    { commands: [{ op: 'bind', cwd: '', packId: null }], match: /commands\[0\]\.cwd/ },
+    { commands: [{ op: 'bind', cwd: 'C:\\work', packId: 1 }], match: /packId/ },
+    { commands: [{ op: 'addExtra' }], match: /commands\[0\]\.cwd/ },
+    { commands: [{ op: 'showChip', value: 'yes' }], match: /value 必须是布尔/ },
+    { commands: [{ op: 'defaultTab', value: 'groups' }], match: /packs、workspace 或 prompts/ },
     { commands: ['nope'], match: /commands\[0\] 不是对象/ },
     { commands: 'nope', match: /必须是数组/ },
     { commands: [], match: /不能为空/ },
@@ -278,20 +409,7 @@ test('apply：坏形状逐条指出下标', async () => {
     assert.equal(result.error.code, 'bad-request')
     assert.match(result.error.message, entry.match)
   }
-  assert.equal(existsSync(globalSchemePath({ home })), false)
-})
-
-test('apply：坏配置走 warning 而不是错误信封', async () => {
-  const home = await tempRoot()
-  const { deps } = depsFor(home)
-
-  const result = await handleApply(deps, {
-    commands: [{ op: 'deleteScheme', schemeId: BUILTIN_SCHEME_ID }],
-  })
-  // 形状合法、语义被 policy 拒绝：路由不把它当错误，面板靠 warnings 显示。
-  assert.equal(result.ok, true)
-  assert.ok(result.data.state.warnings.some((warning) => warning.includes('不可删除')))
-  assert.equal(result.data.state.global.schemes[BUILTIN_SCHEME_ID], undefined)
+  assert.equal(existsSync(packsPath({ home })), false)
 })
 
 /* ------------------------------------------------------------------ *
@@ -334,9 +452,9 @@ test('apply：putPrompts 写入后 read 的生效值变化，内置值不动', a
   assert.equal(read.data.prompts.effective.delegation, '自定义编排段')
   assert.equal(read.data.prompts.effective.tiers.tier1.label, BUILTIN_PROMPT.tiers.tier1.label)
 
-  // 落盘在提示词文件，不是方案文件。
-  assert.equal(existsSync(globalPromptsPath({ home })), true)
-  assert.equal(existsSync(globalSchemePath({ home })), false)
+  // 落盘在提示词文件，不是 pack 文件。
+  assert.equal(existsSync(promptsPath({ home })), true)
+  assert.equal(existsSync(packsPath({ home })), false)
 })
 
 test('apply：putPrompts 只改一档，其余走内置', async () => {
@@ -413,7 +531,7 @@ test('apply：提示词空串被拒，返回 bad-request 且不写文件', async
     assert.equal(result.error.code, 'bad-request')
     assert.match(result.error.message, entry.match)
   }
-  assert.equal(existsSync(globalPromptsPath({ home })), false)
+  assert.equal(existsSync(promptsPath({ home })), false)
 })
 
 test('apply：提示词命令的坏形状逐条拒绝', async () => {
@@ -438,7 +556,7 @@ test('apply：提示词命令的坏形状逐条拒绝', async () => {
     assert.equal(result.error.code, 'bad-request')
     assert.match(result.error.message, entry.match)
   }
-  assert.equal(existsSync(globalPromptsPath({ home })), false)
+  assert.equal(existsSync(promptsPath({ home })), false)
 })
 
 test('apply：putPrompts 传 null 等于删键，恢复内置', async () => {
@@ -485,7 +603,7 @@ test('apply：applyCommands 抛错转成 internal 信封，不写坏文件', asy
   })
 
   const result = await handleApply(deps, {
-    commands: [{ op: 'putScheme', schemeId: 'standard', scheme: STANDARD }],
+    commands: [{ op: 'putPack', packId: 'standard', pack: STANDARD }],
   })
   assert.equal(result.ok, false)
   assert.equal(result.error.code, 'internal')
@@ -531,12 +649,12 @@ test('wrapHandler：空体按 null 处理，状态码 200', async () => {
   const { deps } = depsFor(home)
   const fetch = wrapHandler((body) => handleRead(deps, body))
 
-  const response = await fetch(new Request('http://127.0.0.1/api/model-scheme/read', { method: 'POST' }))
+  const response = await fetch(new Request('http://127.0.0.1/api/model-pack/read', { method: 'POST' }))
   assert.equal(response.status, 200)
   assert.equal(response.headers.get('cache-control'), 'no-store')
   const body = await response.json()
   assert.equal(body.ok, true)
-  assert.equal(body.data.resolved.id, BUILTIN_SCHEME_ID)
+  assert.equal(body.data.resolved.id, DEFAULT_PACK_ID)
 })
 
 test('wrapHandler：非 JSON body 与处理器异常都返回 200 + 信封', async () => {
@@ -568,11 +686,12 @@ test('toResponse：错误信封同样是 200', () => {
  * 隔离
  * ------------------------------------------------------------------ */
 
-test('隔离：整轮测试没有在真实 home 下创建方案文件', async () => {
+test('隔离：整轮测试没有在真实 home 下创建 pack 文件', async () => {
   const home = await tempRoot()
   const { deps } = depsFor(home)
   await handleRead(deps, null)
-  await handleApply(deps, { commands: [{ op: 'putScheme', schemeId: 'standard', scheme: STANDARD }] })
+  await handleApply(deps, { commands: [{ op: 'putPack', packId: 'standard', pack: STANDARD }] })
 
-  assert.equal(existsSync(realSchemeFile), realSchemeFileExisted)
+  assert.equal(existsSync(realPacksFile), realPacksFileExisted)
+  assert.equal(existsSync(workspacesPath({ home })), false)
 })

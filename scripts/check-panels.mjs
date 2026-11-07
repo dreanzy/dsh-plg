@@ -46,6 +46,23 @@ const RULES = {
     // 就是又有人把面板挂回侧栏，或把预计算改回每次渲染重做。
     mustNot: ['sidebar.panellist', 'showSidebarEntry', '}, JSON.stringify(diag'],
   },
+  'dsh-model-pack': {
+    // 三页（分包 | 工作区 | 提示词）、分包页两块（名册 / 内容）、chip 摘要与容器查询、
+    // 以及模型位的 pack 名标签：少了任何一个，都是这套结构被拆掉了一半。
+    must: { 'TABS': 2, 'PackRoster': 2, 'WorkspaceBoard': 2, 'ChipModal': 2, 'CHIP_CSS': 2, 'labelView': 2 },
+    // 侧栏入口与单机侧栏开关已废弃：这两个字符串一旦回潮，就是又有人把面板挂回侧栏。
+    // 后三条是旧命令契约（服务端只认 putPack / packSession / packTier / bind / …）：
+    // 它们一旦回潮，所有保存都会拿到 bad-request。localStorage 同理——默认页与
+    // 手动添加的路径已经搬到服务端，浏览器不该再存配置。
+    mustNot: [
+      'sidebar.panellist',
+      'showSidebarEntry',
+      'putScheme',
+      'deleteScheme',
+      'bindWorkspace',
+      'localStorage',
+    ],
+  },
 }
 
 function loadFactory(path) {

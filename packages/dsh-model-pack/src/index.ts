@@ -1,15 +1,15 @@
 /**
- * 模型方案（model-scheme）：装配入口。
+ * Model Pack（model-pack）：装配入口。
  *
  * 职责只有三件：装监听器、按运行期能力注册三条面板路由、统一释放。
  * 业务全在纯模块里——`policy` 求值、`tools` 定义档位工具、`prompt` 生成段文本、
  * `routes` 处理请求。编排顺序见 `hooks.ts` 与 spec §6.1。
  */
 
-import { applyCommands, loadState, resolve, type SchemeCommand, type SchemeState } from './policy.js'
+import { applyCommands, loadState, resolve, type PackCommand, type PackState } from './policy.js'
 import { installHooks, type PluginContext } from './hooks.js'
 import { BUILTIN_PROMPT, resolvePrompt } from './prompt.js'
-import type { PromptOverrides, Route } from './scheme.js'
+import type { PromptOverrides, Route } from './pack.js'
 import {
   ROUTES,
   handleApply,
@@ -22,7 +22,7 @@ import {
 } from './routes.js'
 
 /** 插件名，同时是 bundle patch 的 entry id。 */
-export const name = 'model-scheme'
+export const name = 'model-pack'
 
 /**
  * 硬依赖只有 tools。
@@ -80,13 +80,13 @@ interface DefaultModelFace {
 }
 
 /**
- * 把「全局方案的会话路由」同步成进程级默认模型。
+ * 把「default pack 的会话路由」同步成进程级默认模型。
  *
  * 为什么需要这一步：新建会话的模型位在**第一条消息之前**读的是
  * `agentDefaultModel`，那时 agent 还没创建，插件的 select 还没机会生效。
- * 不同步的话，空白会话会显示上一次手动切换留下的模型，与方案对不上。
+ * 不同步的话，空白会话会显示上一次手动切换留下的模型，与 pack 对不上。
  *
- * 只在全局方案**自带 session 路由**时接管：没配就说明用户想把默认交给官方设置页。
+ * 只在 default pack**自带 session 路由**时接管：没配就说明用户想把默认交给官方设置页。
  * 值相同则跳过，避免每次保存都去写 profile。
  */
 async function syncDefaultModel(context: ApplyContext): Promise<void> {
@@ -95,7 +95,7 @@ async function syncDefaultModel(context: ApplyContext): Promise<void> {
     if (service === undefined || typeof service.saveSelection !== 'function') return
 
     const resolved = resolve(await loadState(null), null)
-    const session = resolved.scheme.session
+    const session = resolved.pack.session
     if (session === undefined) return
 
     const current = typeof service.currentSelection === 'function' ? service.currentSelection() : undefined
@@ -113,7 +113,7 @@ async function syncDefaultModel(context: ApplyContext): Promise<void> {
       model: session.model,
       ...(session.reasoningEffort === undefined ? {} : { reasoningEffort: session.reasoningEffort }),
     })
-    context.logger.info(name + ': 已把全局方案的会话路由同步为默认模型')
+    context.logger.info(name + ': 已把 default pack 的会话路由同步为默认模型')
   } catch (error) {
     // 同步失败只影响「空白会话显示什么」，不影响任何已生效的会话，所以只 warn。
     context.logger.warn(name + ': 同步默认模型失败：' + String(error))
@@ -121,7 +121,7 @@ async function syncDefaultModel(context: ApplyContext): Promise<void> {
 }
 
 /**
- * 把一个在线会话的模型恢复成它所在方案的路由。
+ * 把一个在线会话的模型恢复成它所在 pack 的路由。
  *
  * 会话对象从 `agents.list()` 里找：那是唯一能拿到活动 Agent 句柄的入口。
  * 找不到就是不在线（冷会话、或在别的进程里），不猜也不排队。
@@ -170,8 +170,8 @@ async function resetSessionRoute(
 
   const rawCwd = found.session?.header?.cwd
   const cwd = typeof rawCwd === 'string' && rawCwd !== '' ? rawCwd : null
-  const session = resolve(await loadState(cwd), cwd).scheme.session
-  if (session === undefined) throw new Error('当前方案没有会话路由，无法恢复')
+  const session = resolve(await loadState(cwd), cwd).pack.session
+  if (session === undefined) throw new Error('当前 pack 没有会话路由，无法恢复')
 
   const select = found.model?.select
   if (typeof select !== 'function') throw new Error('宿主的 agent.model.select 不可用')
@@ -199,7 +199,7 @@ export function apply(ctx: unknown): void {
   context.inject(['connection'], () => {
     const face = readFetchFace(context)
     if (face === null) {
-      context.logger.warn(name + ': connection 服务在册但没有 fetch.register，路由未注册（方案仍生效）')
+      context.logger.warn(name + ': connection 服务在册但没有 fetch.register，路由未注册（pack 仍生效）')
       return
     }
 
@@ -207,13 +207,13 @@ export function apply(ctx: unknown): void {
     // 读写与求值来自 policy，`support` / `lastError` 来自 hooks（探测结果与最近一次失败）。
     const deps: RouteDeps = {
       loadState: (cwd) => loadState(cwd),
-      // 每次落盘后同步一次默认模型：改了全局方案或全局默认都可能改变「新会话该用什么」。
+      // 每次落盘后同步一次默认模型：改了 default pack 的会话路由就可能改变「新会话该用什么」。
       applyCommands: async (cwd, commands) => {
-        const state = await applyCommands(cwd, commands as unknown as readonly SchemeCommand[])
+        const state = await applyCommands(cwd, commands as unknown as readonly PackCommand[])
         void syncDefaultModel(context)
         return state
       },
-      resolve: (state, cwd) => resolve(state as SchemeState, cwd),
+      resolve: (state, cwd) => resolve(state as PackState, cwd),
       resolvePrompt: (overrides) => resolvePrompt(overrides as PromptOverrides | undefined),
       builtinPrompt: () => BUILTIN_PROMPT,
       support: hooks.support,

@@ -188,7 +188,7 @@ importers:
         specifier: 4.6.7
         version: 4.6.7
 
-  packages/dsh-model-scheme:
+  packages/dsh-model-pack:
     dependencies:
       '@deepseek-ai/dsh-atomic-write':
         specifier: ^0.2.0-rc.2 || ^0.2.1-0

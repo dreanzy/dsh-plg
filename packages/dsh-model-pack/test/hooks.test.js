@@ -14,44 +14,37 @@ import { installHooks } from '../lib/hooks.js'
  *   外加 dispose 的调用顺序。
  */
 
+/** 一张带会话路由与 tier1 的 pack：hooks 的默认 fixture。 */
 const STANDARD = {
-  version: 1,
-  defaultSchemeId: 'standard',
-  schemes: {
-    standard: {
-      name: '标准',
-      session: { provider: 'deepseek', model: 'deepseek-chat', reasoningEffort: 'high' },
-      tiers: {
-        tier1: {
-          name: '侦察',
-          primary: { provider: 'deepseek', model: 'deepseek-chat' },
-          fallbacks: [],
-        },
-      },
+  name: '标准',
+  session: { provider: 'deepseek', model: 'deepseek-chat', reasoningEffort: 'high' },
+  tiers: {
+    tier1: {
+      name: '侦察',
+      primary: { provider: 'deepseek', model: 'deepseek-chat' },
+      fallbacks: [],
     },
   },
 }
 
-/** 有会话路由但没有档位的方案：`subagent_tier` 不该出现。 */
+/** 有会话路由但没有档位的 pack：`subagent_tier` 不该出现。 */
 const SESSION_ONLY = {
-  version: 1,
-  defaultSchemeId: 'session-only',
-  schemes: {
-    'session-only': {
-      name: '只有会话路由',
-      session: { provider: 'deepseek', model: 'deepseek-reasoner' },
-      tiers: {},
-    },
-  },
+  name: '只有会话路由',
+  session: { provider: 'deepseek', model: 'deepseek-reasoner' },
+  tiers: {},
 }
 
-async function makeWorkspace(store = STANDARD) {
-  const root = await mkdtemp(join(tmpdir(), 'model-scheme-hooks-'))
+/** 出厂内容放在 packs.default：未绑定工作区时它就是生效值。 */
+async function makeWorkspace(pack = STANDARD) {
+  const root = await mkdtemp(join(tmpdir(), 'model-pack-hooks-'))
   const home = join(root, 'home')
   const cwd = join(root, 'ws')
-  await mkdir(join(home, 'model-scheme'), { recursive: true })
+  await mkdir(join(home, 'packs', 'model'), { recursive: true })
   await mkdir(cwd, { recursive: true })
-  await writeFile(join(home, 'model-scheme', 'schemes.json'), JSON.stringify(store, null, 2))
+  await writeFile(
+    join(home, 'packs', 'model', 'packs.json'),
+    JSON.stringify({ version: 1, packs: { default: pack } }, null, 2),
+  )
   return { root, home, cwd, cleanup: () => rm(root, { recursive: true, force: true }) }
 }
 
@@ -175,7 +168,7 @@ test('source 不是 startup：恢复的会话不改模型，但工具与段要�
   install({ ctx, home: ws.home })
   await fire(listeners, 'agent/created', { agent, source: 'resume' })
 
-  assert.deepEqual(calls.select, [], '恢复的会话不该被工作区方案改写模型')
+  assert.deepEqual(calls.select, [], '恢复的会话不该被工作区绑定改写模型')
   assert.equal(calls.register.length, 1, '工具必须重新注册')
   assert.equal(calls.restrict.length, 1, '官方 subagent 要重新屏蔽')
   assert.equal(calls.section.length, 1, '委派段要重新注入')
@@ -196,7 +189,7 @@ test('origin 为 subagent：零动作，不与父级捕获打架', async (t) => 
   assert.deepEqual(calls.section, [])
 })
 
-test('没有 cwd：零动作，连方案都不读', async (t) => {
+test('没有 cwd：零动作，连 pack 都不读', async (t) => {
   const ws = await makeWorkspace()
   t.after(ws.cleanup)
   const { ctx, listeners } = makeContext({ subagents: makeSubagents() })
@@ -215,7 +208,7 @@ test('没有 cwd：零动作，连方案都不读', async (t) => {
  * 会话路由（spec §6.1 第 1 步）
  * ------------------------------------------------------------------ */
 
-test('正常路径：select 参数与方案里的会话路由逐字段相等', async (t) => {
+test('正常路径：select 参数与 pack 里的会话路由逐字段相等', async (t) => {
   const ws = await makeWorkspace()
   t.after(ws.cleanup)
   const { ctx, listeners } = makeContext({ subagents: makeSubagents() })
@@ -242,7 +235,7 @@ test('已跑过请求：不再 select，但工具与段照常', async (t) => {
   await fire(listeners, 'agent/created', { agent, source: 'startup' })
   await settle()
 
-  assert.deepEqual(calls.select, [], '已经发过请求的会话不能被工作区方案覆盖')
+  assert.deepEqual(calls.select, [], '已经发过请求的会话不能被工作区绑定覆盖')
   assert.equal(calls.register.length, 1)
   assert.equal(calls.restrict.length, 1)
   assert.equal(calls.section.length, 1)
@@ -251,7 +244,7 @@ test('已跑过请求：不再 select，但工具与段照常', async (t) => {
 test('创建期写入的初始 model/selection 不阻止 select', async (t) => {
   // 宿主的真实创建序列：session → permission/preset → sandbox/mode → approval/policy
   // → model/selection → subagent/model-selection-policy。把这条 initial selection
-  // 当成「用户已选」会让方案对每个新会话都不生效，而老会话看起来正常。
+  // 当成「用户已选」会让 pack 对每个新会话都不生效，而老会话看起来正常。
   const ws = await makeWorkspace()
   t.after(ws.cleanup)
   const { ctx, listeners } = makeContext({ subagents: makeSubagents() })
@@ -269,10 +262,10 @@ test('创建期写入的初始 model/selection 不阻止 select', async (t) => {
   await fire(listeners, 'agent/created', { agent, source: 'startup' })
   await settle()
 
-  assert.equal(calls.select.length, 1, '创建期的初始选择不是用户选择，方案必须生效')
+  assert.equal(calls.select.length, 1, '创建期的初始选择不是用户选择，pack 必须生效')
 })
 
-test('会话里只有别的类型事件：仍按方案 select', async (t) => {
+test('会话里只有别的类型事件：仍按 pack select', async (t) => {
   const ws = await makeWorkspace()
   t.after(ws.cleanup)
   const { ctx, listeners } = makeContext({ subagents: makeSubagents() })
@@ -306,7 +299,7 @@ test('注册成功：restrict 与 section 各一次，deny 只含 subagent', asy
   assert.deepEqual(calls.restrict[0], { deny: ['subagent'] })
 
   assert.equal(calls.section.length, 1)
-  assert.equal(calls.section[0].name, 'model-scheme.delegation')
+  assert.equal(calls.section[0].name, 'model-pack.delegation')
   assert.match(calls.section[0].text, /subagent_tier/)
   assert.equal(typeof calls.section[0].order, 'number')
 })
@@ -328,7 +321,7 @@ test('registerTierTool 返回 null：restrict 未调用、section 未注入', as
   assert.equal(calls.select.length, 1, '会话路由不受档位注册影响')
 })
 
-test('方案没有可用档位：不注册、不 deny、不注入段', async (t) => {
+test('pack 没有可用档位：不注册、不 deny、不注入段', async (t) => {
   const ws = await makeWorkspace(SESSION_ONLY)
   t.after(ws.cleanup)
   const { ctx, listeners } = makeContext({ subagents: makeSubagents() })

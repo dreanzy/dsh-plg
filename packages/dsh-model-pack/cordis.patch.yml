@@ -1,0 +1,3 @@
+- insert:
+    - id: model-pack
+      name: '@dreanzy/dsh-model-pack'
