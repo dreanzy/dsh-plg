@@ -55,7 +55,6 @@ export interface ToolsFace {
   definitions(scope?: unknown, toolSet?: unknown): readonly ToolDefinitionLike[]
   schemas(scope?: unknown, toolSet?: unknown): readonly ToolSchemaLike[]
   restrict?(filter: RestrictFilter): () => unknown
-  get(name: string, scope?: unknown, toolSet?: unknown): ToolDefinitionLike | undefined
 }
 
 /** 宿主是否提供两条通道的能力，供面板标红。 */

@@ -2,7 +2,7 @@
  * 一张具名策略表：项级与组级两条决定。
  *
  * 只含覆盖决定、不含成员清单。键不存在即跟随下一层，`false` 是有效取值，
- * 不是「跟随」——这与旧的 `LayerPolicy` 语义完全一致。
+ * 不是「跟随」。
  */
 export interface Pack {
   readonly name: string
@@ -39,17 +39,6 @@ export interface UiState {
 
 /** 设置页的三页，顺序固定。 */
 export type SettingsTab = 'groups' | 'packs' | 'workspace'
-
-/**
- * 旧策略层的形状。
- *
- * 仍然保留，但用途只剩一个：给旧面板提供只读投影（`policy` / `workspace`
- * 字段）。本插件不再往这个形状落盘。
- */
-export interface LayerPolicy {
-  readonly items: Record<string, boolean>
-  readonly groups: Record<string, boolean>
-}
 
 /** 分组身份。id 稳定，name 可改。 */
 export interface GroupDef {
@@ -99,7 +88,6 @@ export interface ParseResult<T> {
 export const DEFAULT_PACK_ID = 'default'
 
 export const EMPTY_PACK: Pack = { name: DEFAULT_PACK_ID, items: {}, groups: {} }
-export const EMPTY_PACK_BOOK: PackBook = { packs: { [DEFAULT_PACK_ID]: EMPTY_PACK } }
 export const EMPTY_BINDINGS: Bindings = { bindings: {}, extra: [] }
 export const EMPTY_UI: UiState = {
   showOfficialPlugins: false,
@@ -107,13 +95,6 @@ export const EMPTY_UI: UiState = {
   defaultTab: 'groups',
 }
 export const EMPTY_GROUPS: GroupRegistry = { groups: [], assignments: {} }
-
-/**
- * 受保护工具：关闭前需要二次确认。名单固定，不由任何一层策略改写。
- *
- * 判据是「关掉之后没法自救」——没有读写文件的能力，用户只能重装整套环境。
- */
-export const PROTECTED_TOOLS: ReadonlySet<string> = new Set(['read', 'edit', 'write'])
 
 /**
  * 锁定工具：**不能关闭**，UI 不提供开关。

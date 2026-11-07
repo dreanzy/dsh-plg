@@ -5,7 +5,7 @@ import {
   type ToolSchemaLike,
   type ToolsFace,
 } from './hooks.js'
-import { createResolver, defaultPackOf } from './policy.js'
+import { defaultPackOf } from './policy.js'
 import { applyCommands, loadState, type PolicyState } from './store.js'
 import {
   DEFAULT_PACK_ID,
@@ -58,18 +58,6 @@ export interface PluginRow {
   readonly sectionChars: number
   /** 段归属是否完整。不完整的部分留在孤儿里，面板标注「提示词占用未知」。 */
   readonly sectionKnown: boolean
-  /** 该工作区绑定 pack 求值出的最终状态。全局面板只看 default。 */
-  readonly open: boolean
-  /** 只按 default pack 求值的状态。全局面板用它渲染开关。 */
-  readonly openGlobal: boolean
-  /** 行内是否带 default pack 的项级覆盖。 */
-  readonly itemGlobal: boolean | null
-  /** 行内是否带绑定 pack 的项级覆盖。 */
-  readonly itemWorkspace: boolean | null
-  /** 生效值来自哪个 pack；取内置缺省时是 `default`。 */
-  readonly decidedBy: string
-  /** 生效值来自 pack 的哪一级；两层都没记录时是 `builtin`。 */
-  readonly decidedVia: 'item' | 'group' | 'builtin'
   /** 关闭前需要二次确认：关掉它，模型基本失去工作能力，或本插件自己失效。 */
   readonly protected: boolean
 }
@@ -298,8 +286,6 @@ interface BuildInput {
   readonly tools: ToolsFace | null
   readonly scope: unknown
   readonly deps: RouteDeps
-  /** `true` 走「绑定 pack → default」，`false` 只按 default 求值。 */
-  readonly workspaceScoped: boolean
 }
 
 /**
@@ -310,13 +296,9 @@ interface BuildInput {
  * 实测读不到时退回目录记录，并在 warnings 里说明——比显示 0 诚实。
  */
 function buildPluginView(input: BuildInput): PluginView {
-  const { loaded, catalog, pending, tools, scope, deps, workspaceScoped } = input
+  const { loaded, catalog, pending, tools, scope, deps } = input
   const defaultPack = defaultPackOf(loaded.packs)
   const assignments = loaded.groups.assignments
-  const resolver = workspaceScoped
-    ? createResolver({ pack: loaded.pack, packId: loaded.packId, defaultPack, assignments })
-    : createResolver({ pack: null, defaultPack, assignments })
-  const defaultResolver = createResolver({ pack: null, defaultPack, assignments })
 
   const names = tryNames(tools, scope)
   const volumes = tryVolumes(tools, scope)
@@ -343,7 +325,6 @@ function buildPluginView(input: BuildInput): PluginView {
       toolVolume = 0
       for (const name of present) toolVolume += volumes.get(name) ?? 0
     }
-    const decision = resolver.decide(plugin.pkg)
     rows.push({
       pkg: plugin.pkg,
       origin: plugin.pkg.startsWith(OFFICIAL_SCOPE) ? 'official' : 'profile',
@@ -352,12 +333,6 @@ function buildPluginView(input: BuildInput): PluginView {
       toolVolume,
       sectionChars: plugin.sectionChars,
       sectionKnown: plugin.sectionsKnown,
-      open: decision.value,
-      openGlobal: defaultResolver.isOpen(plugin.pkg),
-      itemGlobal: defaultPack.items[plugin.pkg] ?? null,
-      itemWorkspace: loaded.pack === null ? null : (loaded.pack.items[plugin.pkg] ?? null),
-      decidedBy: decision.packId,
-      decidedVia: decision.via,
       protected: PROTECTED_PACKAGES.has(plugin.pkg),
     })
   }
@@ -472,9 +447,20 @@ function releaseObservation(ctx: RouteContext, observation: unknown, sessionId: 
   }
 }
 
-/** POST api/plugin-pack/global：全部 pack + 组注册表 + 绑定表 + 全量插件行。 */
-export async function handleGlobal(ctx: RouteContext, deps: RouteDeps): Promise<Envelope<PluginView>> {
+/**
+ * POST api/plugin-pack/global：{ sessionId? }。
+ *
+ * 带 sessionId 时用它那个 Agent 的 scope 读清单；解析不出来再退回「恰好排第一的
+ * 那个会话」。全局面板也必须带 scope：agent preset 挂载的工具不在全局视图里。
+ */
+export async function handleGlobal(
+  ctx: RouteContext,
+  body: Record<string, unknown> | null,
+  deps: RouteDeps,
+): Promise<Envelope<PluginView>> {
   try {
+    const sessionId = readString(body, 'sessionId')
+    const target = sessionId === null ? null : await resolveSession(ctx, sessionId).catch(() => null)
     const loaded = await loadState(null)
     const found = await currentCatalog(ctx, deps)
     return {
@@ -484,9 +470,8 @@ export async function handleGlobal(ctx: RouteContext, deps: RouteDeps): Promise<
         catalog: found.catalog,
         pending: found.pending,
         tools: rootTools(ctx),
-        scope: pickAgent(ctx),
+        scope: target?.agent ?? pickAgent(ctx),
         deps,
-        workspaceScoped: false,
       }),
     }
   } catch (error) {
@@ -510,7 +495,6 @@ async function buildWorkspaceView(
     tools: rootTools(ctx),
     scope: agent,
     deps,
-    workspaceScoped: true,
   })
   const defaultPack = defaultPackOf(loaded.packs)
   return {
@@ -729,7 +713,7 @@ export async function handleApply(
       ctx.logger.warn('dsh-plugin-pack: 保存后重新施加失败（策略已写入）：' + String(error))
     }
 
-    if (target === null) return await handleGlobal(ctx, deps)
+    if (target === null) return await handleGlobal(ctx, body, deps)
     return await buildWorkspaceView(ctx, target.cwd, target.agent, target.live, deps)
   } catch (error) {
     return { ok: false, error: { code: 'internal', message: '写入策略失败：' + String(error) } }

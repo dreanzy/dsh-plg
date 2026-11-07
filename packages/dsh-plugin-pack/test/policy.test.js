@@ -3,7 +3,6 @@ import assert from 'node:assert/strict'
 import {
   createResolver,
   defaultPackOf,
-  hiddenNames,
   normalizeCwd,
   parseBindings,
   parseGroups,
@@ -132,11 +131,6 @@ test('组决策也带来源 pack 与级别', () => {
 test('pack 为 null（未绑定或悬空）时求值退回 default', () => {
   const r = withPolicy(null, { items: { 'plug-a': false } }, assignments, 'p1-gone')
   assert.deepEqual(r.decide('plug-a'), { value: false, packId: 'default', via: 'item' })
-})
-
-test('hiddenNames 只返回关掉的并排序', () => {
-  const r = withPolicy(null, { items: { b: false, a: false } })
-  assert.deepEqual(hiddenNames(['a', 'b', 'c'], r), ['a', 'b'])
 })
 
 test('求值链解析组归属', () => {

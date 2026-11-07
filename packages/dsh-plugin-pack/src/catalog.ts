@@ -65,8 +65,11 @@ const MAX_LIB_DEPTH = 6
 /** 名字字面量的窗口：够长以容纳多行对象字面量，够短以避开同文件的无关 name。 */
 const NAME_WINDOW = 240
 
-/** 取 `text:` 字面量时的窗口，只为算一个上界，不要求精确。 */
-const TEXT_WINDOW = 512
+/** 取 `text:` 字面量时的窗口。覆盖常见段的整段，超出只记上界，不要求精确。 */
+const TEXT_WINDOW = 4096
+
+/** 找配对括号的跨度上限。段体可以很长，卡在 4 K 会让长段的体积直接记 0。 */
+const MAX_SECTION_SPAN = 64 * 1024
 
 /**
  * 工具名判定。`{0,240}` 是刻意的收紧：不限距离会把注释里的示例、类型声明、
@@ -652,7 +655,7 @@ function matchBrace(text: string, start: number): number {
   let depth = 0
   let quote: string | null = null
   let lineComment = false
-  const limit = Math.min(text.length, start + TEXT_WINDOW * 8)
+  const limit = Math.min(text.length, start + MAX_SECTION_SPAN)
   for (let index = start; index < limit; index += 1) {
     const char = text[index]
     if (lineComment) {
@@ -866,7 +869,11 @@ export async function loadCatalog(options?: { force?: boolean }): Promise<Catalo
   const candidates = await collectCandidates(deadline)
   const key = fingerprint(candidates)
 
-  if (options?.force !== true && cached !== null && cached.key === key) return toCatalog(cached)
+  // 残缺缓存（complete: false）不短路：它有东西可用，但结果不可信，必须重扫。
+  // 否则一次超时或 IO 失败会把「少识别几个包」固化成永久的缓存。
+  if (options?.force !== true && cached !== null && cached.complete !== false && cached.key === key) {
+    return toCatalog(cached)
+  }
 
   scanStats.scans += 1
   const plugins: PluginContribution[] = []

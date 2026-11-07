@@ -115,7 +115,9 @@ export function apply(ctx: unknown): void {
       }
     }
 
-    register(ROUTES.global, (body) => handleGlobal(routeCtx, deps).then((result) => result as Envelope<unknown>))
+    register(ROUTES.global, (body) =>
+      handleGlobal(routeCtx, body, deps).then((result) => result as Envelope<unknown>),
+    )
     register(ROUTES.workspace, (body) =>
       handleWorkspace(routeCtx, body, deps).then((result) => result as Envelope<unknown>),
     )

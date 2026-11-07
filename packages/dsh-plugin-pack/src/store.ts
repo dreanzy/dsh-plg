@@ -213,6 +213,15 @@ function applyToPacks(current: string | undefined, commands: readonly Command[])
         packs[command.packId] = { ...pack, groups: setKey(pack.groups, command.groupId, command.value) }
         break
       }
+      case 'deleteGroup': {
+        // 组删掉后各 pack 里针对它的开关必须一起清：分组 id 会复用（见 nextGroupId），
+        // 留着就等于让重建的新组继承旧组的决定。
+        for (const [id, pack] of Object.entries(packs)) {
+          if (pack.groups[command.groupId] === undefined) continue
+          packs[id] = { ...pack, groups: setKey(pack.groups, command.groupId, null) }
+        }
+        break
+      }
       case 'showOfficialPlugins':
         ui.showOfficialPlugins = command.value
         break
@@ -388,6 +397,8 @@ function targets(commands: readonly Command[]): Targets {
     }
     // deletePack 还要清绑定，所以同时命中两个文件。
     if (command.op === 'deletePack') bindings = true
+    // deleteGroup 还要清各 pack 里的组开关，理由见 applyToPacks。
+    if (command.op === 'deleteGroup') packs = true
   }
   return { packs, groups, bindings }
 }

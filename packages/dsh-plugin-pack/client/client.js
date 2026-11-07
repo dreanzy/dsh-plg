@@ -421,7 +421,6 @@ window.__ModuleLoader__.load({
       const listeners = new Set()
       return {
         read: () => value,
-        get: () => value,
         set: (next) => {
           if (value === next) return
           value = next
@@ -437,11 +436,10 @@ window.__ModuleLoader__.load({
     /**
      * 跨组件共享的界面状态。
      *
-     * `showChip` 由 `apply` 订阅：设置页拨动后立刻挂上或摘下槽位。
+     * `onChipChange` 由 `apply` 注册：设置页拨动后立刻挂上或摘下槽位。
      * `chipName` 是 chip 上显示的 pack 名。
      */
     const env = {
-      showChip: true,
       onChipChange: null,
       sessionId: undefined,
     }
@@ -868,25 +866,14 @@ window.__ModuleLoader__.load({
       return typeof value === 'boolean' ? value : null
     }
 
-    /**
-     * 一行的开关键：插件包名。
-     *
-     * 服务端把包名放在 `pkg` 上；这里同时认 `name`，因为 skill 那边的行用 `name`，
-     * 两个领域迟早会对齐成一种写法。读哪一个都不改变发出去的命令——命令里用的
-     * 就是这个字符串本身。
-     */
+    /** 一行的开关键：插件包名。服务端把它放在 `pkg` 上，命令里用的也是它。 */
     function itemKey(row) {
-      if (row && typeof row.name === 'string' && row.name !== '') return row.name
       return row && typeof row.pkg === 'string' ? row.pkg : ''
-    }
-
-    function rowDescription(row) {
-      return row && typeof row.description === 'string' ? row.description : ''
     }
 
     /** 官方包：服务端按发布作用域判定，前端只用来上徽章。 */
     function isOfficial(row) {
-      return Boolean(row) && (row.official === true || row.origin === 'official')
+      return Boolean(row) && row.origin === 'official'
     }
 
     function sectionTitleOf(row) {
@@ -894,18 +881,14 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * 这一项属于哪个组。
+     * 这一项属于哪个组：只读组注册表的 `assignments`。
      *
-     * 优先用行上的 `groupId`；行上没带时退回组注册表的 `assignments`——两处都读
-     * 才不会因为服务端少投影一个字段就把整页显示成「未分组」。指向未知组时按
-     * 未分组处理（那是悬空引用，不是分组）。
+     * 指向未知组时按未分组处理（那是悬空引用，不是分组）。
      */
     function groupOfRow(groups, row) {
-      const own = row && typeof row.groupId === 'string' && row.groupId !== '' ? row.groupId : null
       const registry = (groups && groups.groups) || []
       const assignments = (groups && groups.assignments) || {}
-      const fromMap = assignments[itemKey(row)] || null
-      const gid = own !== null ? own : fromMap
+      const gid = assignments[itemKey(row)] || null
       if (gid === null) return null
       for (const group of registry) {
         if (group.id === gid) return gid
@@ -1462,7 +1445,6 @@ window.__ModuleLoader__.load({
                   onChange: (value) =>
                     run([{ op: 'showChip', value: value }]).then((ok) => {
                       if (!ok) return
-                      env.showChip = value
                       if (env.onChipChange) env.onChipChange(value)
                     }),
                 }),
@@ -1501,8 +1483,7 @@ window.__ModuleLoader__.load({
       const needle = query.trim().toLowerCase()
 
       const buckets = useMemo(() => {
-        const matchRow = (row) =>
-          needle === '' ? true : (itemKey(row) + ' ' + rowDescription(row)).toLowerCase().indexOf(needle) >= 0
+        const matchRow = (row) => needle === '' || itemKey(row).toLowerCase().indexOf(needle) >= 0
         const byId = new Map()
         const loose = []
         for (const row of plugins) {
@@ -1562,7 +1543,7 @@ window.__ModuleLoader__.load({
           { style: S.bar },
           h('input', {
             style: S.input,
-            placeholder: '搜索包名、描述或分组名',
+            placeholder: '搜索包名或分组名',
             value: query,
             onChange: (event) => setQuery(event.target.value),
           }),
@@ -1684,8 +1665,8 @@ window.__ModuleLoader__.load({
                         ),
                         h(
                           'div',
-                          { style: S.rowDesc, title: rowDescription(row) },
-                          rowDescription(row) || metaOf(row),
+                          { style: S.rowDesc, title: metaOf(row) },
+                          metaOf(row),
                         ),
                       ),
                       h(
@@ -1738,7 +1719,7 @@ window.__ModuleLoader__.load({
           needle === ''
             ? [...plugins]
             : plugins.filter((row) => {
-                if ((itemKey(row) + ' ' + rowDescription(row)).toLowerCase().indexOf(needle) >= 0) return true
+                if (itemKey(row).toLowerCase().indexOf(needle) >= 0) return true
                 const gid = groupOfRow(groups, row)
                 return gid !== null && hitGroups.has(gid)
               })
@@ -1974,7 +1955,7 @@ window.__ModuleLoader__.load({
             { style: { ...S.bar, marginTop: '10px' } },
             h('input', {
               style: S.input,
-              placeholder: '搜索包名或描述',
+              placeholder: '搜索包名',
               value: query,
               onChange: (event) => setQuery(event.target.value),
             }),
@@ -2326,12 +2307,9 @@ window.__ModuleLoader__.load({
           // 读一次 UI 开关决定挂不挂 chip。失败按缺省（显示）处理，不让入口整体缺失。
           api.global(env.sessionId).then(
             (view) => {
-              const ui = uiOf(view)
-              env.showChip = ui.showChip
-              env.onChipChange(ui.showChip)
+              env.onChipChange(uiOf(view).showChip)
             },
             () => {
-              env.showChip = true
               env.onChipChange(true)
             },
           )

@@ -288,6 +288,37 @@ test('模板段名不算残缺：仍然写盘，第二次命中缓存', async ()
   assert.equal(scanStats.scans, scanned)
 })
 
+test('complete: false 的缓存不短路扫描：残缺不会被固化', async () => {
+  const home = await freshHome('partial')
+  await standardProfile(home)
+
+  const first = await loadCatalog()
+  const raw = JSON.parse(await readFile(catalogPath(), 'utf8'))
+  raw.complete = false
+  await writeFile(catalogPath(), JSON.stringify(raw, null, 2) + '\n')
+  const scanned = scanStats.scans
+
+  const second = await loadCatalog()
+  // 残缺缓存必须触发重扫，否则一次超时就把「少几个包」永久固定下来。
+  assert.equal(scanStats.scans, scanned + 1)
+  assert.equal(second.complete, true)
+  assert.equal(second.plugins.length, first.plugins.length)
+})
+
+test('超过 4 KB 的段体积不再记 0', async () => {
+  const home = await freshHome('long-section')
+  await makeProfile(join(home, 'profile'), {
+    '@fake/long': { files: { 'lib/index.js': section('long:part', 'x'.repeat(6000)) } },
+  })
+  process.env['DSH_PROFILE_DIR'] = join(home, 'profile')
+
+  const catalog = await loadCatalog({ force: true })
+  const plugin = catalog.plugins[0]
+  assert.deepEqual(plugin.sections, ['long:part'])
+  // 旧上限 4 K 会让配对括号找不到，体积直接记 0。
+  assert.ok(plugin.sectionChars > 1000, '长段体积应被计入，实际 ' + plugin.sectionChars)
+})
+
 function candidateOf(overrides = {}) {
   const file = (path, size, mtime) => ({ path, size, mtime, read: async () => '' })
   return {

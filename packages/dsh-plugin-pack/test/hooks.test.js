@@ -356,6 +356,84 @@ test('scope 身份未命中时按 session id 回退命中', async () => {
   )
 })
 
+test('宿主拒绝未知工具名时剔除后重试，并把它报成 stuck', async () => {
+  const { cwd } = await makeWorkspace()
+  await applyCommands(null, [{ op: 'packItem', packId: 'default', name: 'plug-a', value: false }])
+
+  const visible = [...rows, { name: 'gamma', description: 'g', parameters: { type: 'object' } }]
+  const denied = new Set()
+  let calls = 0
+  const tools = {
+    definitions() {
+      return visible.filter((row) => !denied.has(row.name))
+    },
+    schemas() {
+      return visible.map((row) => ({ name: row.name, description: row.description, parameters: row.parameters }))
+    },
+    restrict(filter) {
+      calls += 1
+      if (calls === 1) {
+        // 宿主的真实形状：整批拒绝，只把不认识的名字放在引号里。
+        throw new Error('tools.restrict() names unknown global tool "alpha"; known global tools: beta')
+      }
+      for (const name of filter.deny) denied.add(name)
+      return () => {
+        for (const name of filter.deny) denied.delete(name)
+      }
+    },
+  }
+  const plugins = [
+    {
+      pkg: 'plug-a',
+      tools: ['alpha', 'gamma'],
+      sections: [],
+      toolVolume: 1,
+      sectionChars: 0,
+      toolsKnown: true,
+      sectionsKnown: true,
+    },
+  ]
+  const ctx = fakeCtx()
+  const hooks = installHooks(ctx, { catalog: feedFor(catalogFor(plugins)) })
+
+  await ctx.emit('agent/created', { agent: agentFor(cwd, tools) })
+
+  // 第一次整批失败，剔掉 alpha 后第二次成功：其余工具照样关闭。
+  assert.equal(calls, 2)
+  assert.deepEqual([...denied], ['gamma'])
+  // alpha 关不掉，必须进 stuck 让面板标红，而不是静默失效。
+  assert.deepEqual(hooks.stuck(), ['alpha'])
+})
+
+test('waterfall 下游返回新数组时，剔除仍然生效', async () => {
+  const { cwd } = await makeWorkspace()
+  await applyCommands(null, [{ op: 'packItem', packId: 'default', name: 'plug-a', value: false }])
+  const tools = fakeTools()
+  const ctx = fakeCtx()
+  installHooks(ctx, { catalog: feedFor(catalogFor(defaultPlugins)) })
+
+  const agent = agentFor(cwd, tools)
+  await ctx.emit('agent/created', { agent })
+
+  const assemble = ctx.listener('system-prompt/assemble')
+  const payload = {
+    sections: [{ name: 'alpha-section', text: 'A' }, { name: 'beta-section', text: 'B' }],
+    contexts: [],
+    variables: {},
+  }
+  // 有的下游监听器会返回一份新的 assembly：只改 payload 的那次过滤会被丢掉。
+  const result = await assemble(payload, { scope: agent }, async () => ({
+    sections: [{ name: 'alpha-section', text: 'A' }, { name: 'beta-section', text: 'B' }],
+    contexts: [],
+    variables: {},
+  }))
+
+  assert.deepEqual(
+    result.sections.map((section) => section.name),
+    ['beta-section'],
+  )
+})
+
 test('宿主没有 restrict 时不施加也不抛错，只 warn 一次', async () => {
   const { cwd } = await makeWorkspace()
   await applyCommands(null, [{ op: 'packItem', packId: 'default', name: 'plug-a', value: false }])

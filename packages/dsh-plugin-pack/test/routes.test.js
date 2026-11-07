@@ -152,14 +152,14 @@ test('parseCommands 接受每种合法命令', () => {
 
 test('全局面板默认不列官方插件，打开开关后才列', async () => {
   await freshHome()
-  const off = await handleGlobal(fakeCtx(), deps({ catalog: feedFor(catalogFor(defaultPlugins)) }))
+  const off = await handleGlobal(fakeCtx(), null, deps({ catalog: feedFor(catalogFor(defaultPlugins)) }))
   assert.equal(off.ok, true)
   const hidden = off.value.plugins.map((row) => row.pkg)
   assert.ok(hidden.indexOf('plug-a') >= 0)
   assert.equal(hidden.indexOf('@deepseek-ai/dsh-thing'), -1)
 
   await writeJson(packsFile(process.env['DSH_HOME']), { version: 1, ui: { showOfficialPlugins: true }, packs: {} })
-  const on = await handleGlobal(fakeCtx(), deps({ catalog: feedFor(catalogFor(defaultPlugins)) }))
+  const on = await handleGlobal(fakeCtx(), null, deps({ catalog: feedFor(catalogFor(defaultPlugins)) }))
   assert.equal(on.ok, true)
 
   const byName = new Map(on.value.plugins.map((row) => [row.pkg, row]))
@@ -188,26 +188,41 @@ test('全局面板默认不列官方插件，打开开关后才列', async () =>
   assert.deepEqual(on.value.ui, { showOfficialPlugins: true, showChip: true, defaultTab: 'groups' })
 })
 
-test('default pack 项级停用反映到 open、openGlobal 与来源', async () => {
+test('全局面板带 sessionId 时用该会话的 scope 读工具清单', async () => {
   const home = await freshHome()
-  await writeJson(packsFile(home), {
-    version: 1,
-    ui: { showOfficialPlugins: true },
-    packs: { default: { name: 'default', items: { 'plug-a': false } } },
+  // 打开官方开关，两行都在，才分得清 scope 用的是哪一个。
+  await writeJson(packsFile(home), { version: 1, ui: { showOfficialPlugins: true }, packs: {} })
+  // 两个 scope 看到不同的工具集：并行安全地证明服务端用的是哪一个。
+  const sessionAgent = {
+    id: 'agent-live',
+    session: { id: 'session-live', header: { cwd: '/w' } },
+  }
+  const firstAgent = { id: 'agent-first', session: { id: 'session-first', header: { cwd: '/w2' } } }
+  const alphaOnly = [{ name: 'alpha', description: 'a', parameters: { type: 'object' } }]
+  const betaOnly = [{ name: 'beta', description: 'b', parameters: { type: 'object' } }]
+  const scoped = {
+    definitions: (scope) => (scope === sessionAgent ? alphaOnly : betaOnly),
+    schemas: (scope) => (scope === sessionAgent ? alphaOnly : betaOnly),
+    get: () => undefined,
+    restrict: () => () => {},
+  }
+  const ctx = fakeCtx(scoped, {
+    agents: {
+      get: (id) => (id === 'session-live' ? sessionAgent : undefined),
+      list: () => [firstAgent],
+    },
   })
-  const view = await handleGlobal(fakeCtx(), deps({ catalog: feedFor(catalogFor(defaultPlugins)) }))
+
+  const view = await handleGlobal(
+    ctx,
+    { sessionId: 'session-live' },
+    deps({ catalog: feedFor(catalogFor(defaultPlugins)) }),
+  )
   assert.equal(view.ok, true)
-
-  const row = view.value.plugins.find((entry) => entry.pkg === 'plug-a')
-  assert.equal(row.open, false)
-  assert.equal(row.openGlobal, false)
-  assert.equal(row.itemGlobal, false)
-  assert.equal(row.itemWorkspace, null)
-  assert.equal(row.decidedBy, 'default')
-  assert.equal(row.decidedVia, 'item')
-
-  const other = view.value.plugins.find((entry) => entry.pkg === '@deepseek-ai/dsh-thing')
-  assert.equal(other.open, true)
+  const byName = new Map(view.value.plugins.map((row) => [row.pkg, row]))
+  // plug-a 声明 alpha：用的是 sessionId 那个 agent 的 scope，不是 list()[0]。
+  assert.equal(byName.get('plug-a').tools, 1)
+  assert.equal(byName.get('@deepseek-ai/dsh-thing').tools, 0)
 })
 
 test('范围外包名保留不删，且不出现在插件行里', async () => {
@@ -217,7 +232,7 @@ test('范围外包名保留不删，且不出现在插件行里', async () => {
     ui: { showOfficialPlugins: true },
     packs: { default: { name: 'default', items: { 'ghost-pkg': false, 'plug-a': false } } },
   })
-  const view = await handleGlobal(fakeCtx(), deps({ catalog: feedFor(catalogFor(defaultPlugins)) }))
+  const view = await handleGlobal(fakeCtx(), null, deps({ catalog: feedFor(catalogFor(defaultPlugins)) }))
   assert.equal(view.ok, true)
 
   assert.deepEqual(view.value.outOfScope, ['ghost-pkg'])
@@ -248,21 +263,21 @@ test('目录未就绪时请求不等扫描：返回 pending 并挂后台，期�
   }
 
   // 若请求路径里 await 了扫描，这个调用会一直挂住（settle 还没被调用）。
-  const first = await handleGlobal(fakeCtx(), deps({ catalog: feed }))
+  const first = await handleGlobal(fakeCtx(), null, deps({ catalog: feed }))
   assert.equal(first.ok, true)
   assert.equal(first.value.pending, true)
   assert.equal(started, 1)
   assert.deepEqual(first.value.plugins, [])
 
   // 扫描仍在进行：第二个请求复用同一个后台任务，不再扫一遍。
-  const second = await handleGlobal(fakeCtx(), deps({ catalog: feed }))
+  const second = await handleGlobal(fakeCtx(), null, deps({ catalog: feed }))
   assert.equal(second.value.pending, true)
   assert.equal(started, 1)
 
   settle()
   await new Promise((resolve) => setImmediate(resolve))
 
-  const third = await handleGlobal(fakeCtx(), deps({ catalog: feed }))
+  const third = await handleGlobal(fakeCtx(), null, deps({ catalog: feed }))
   assert.equal(third.value.pending, false)
   assert.equal(third.value.plugins.length, 2)
 })
@@ -441,20 +456,11 @@ test('工作区视图带 cwd、绑定、生效 pack 名与 stuck', async () => {
   assert.equal(view.value.packName, '工作')
   assert.equal(view.value.live, true)
   assert.deepEqual(view.value.stuck, ['alpha'])
-
-  const row = view.value.plugins.find((entry) => entry.pkg === 'plug-a')
-  assert.equal(row.open, false)
-  assert.equal(row.itemWorkspace, false)
-  assert.equal(row.itemGlobal, null)
-  // default 里没有这条决定，所以「全局」视图字段仍是开。
-  assert.equal(row.openGlobal, true)
-  assert.equal(row.decidedBy, 'p1')
-  assert.equal(row.decidedVia, 'item')
-
-  const beta = view.value.plugins.find((entry) => entry.pkg === '@deepseek-ai/dsh-thing')
-  assert.equal(beta.open, true)
-  assert.equal(beta.decidedBy, 'default')
-  assert.equal(beta.decidedVia, 'builtin')
+  // 行的求值字段已移除：视图只负责绑定与清单，开关由客户端按 pack 自己算。
+  assert.deepEqual(
+    view.value.plugins.map((entry) => entry.pkg),
+    ['@deepseek-ai/dsh-thing', 'plug-a'],
+  )
 })
 
 test('悬空绑定在工作区视图里退回 default，binding 仍保留原始 id', async () => {
@@ -479,7 +485,8 @@ test('悬空绑定在工作区视图里退回 default，binding 仍保留原始 
   assert.equal(view.value.binding, 'p1-gone')
   assert.equal(view.value.packId, 'default')
   assert.equal(view.value.packName, 'default')
-  const row = view.value.plugins.find((entry) => entry.pkg === 'plug-a')
-  assert.equal(row.open, false)
-  assert.equal(row.decidedBy, 'default')
+  assert.deepEqual(
+    view.value.plugins.map((entry) => entry.pkg),
+    ['@deepseek-ai/dsh-thing', 'plug-a'],
+  )
 })

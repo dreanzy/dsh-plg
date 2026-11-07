@@ -10,7 +10,7 @@ import {
   packsPath,
   workspacesPath,
 } from '../lib/store.js'
-import { normalizeCwd } from '../lib/policy.js'
+import { createResolver, defaultPackOf, normalizeCwd } from '../lib/policy.js'
 
 /**
  * 落盘用例。
@@ -142,6 +142,32 @@ test('删除 pack 会清掉指向它的绑定', async () => {
   await applyCommands(cwd, [{ op: 'deletePack', packId: 'p1' }])
   assert.deepEqual((await readJson(workspacesPath())).bindings, {})
   assert.deepEqual(Object.keys((await readJson(packsPath())).packs), ['default'])
+})
+
+test('删组会清掉各 pack 里的组开关：重建的同 id 不继承旧决定', async () => {
+  await freshHome()
+  await applyCommands(null, [{ op: 'createGroup', name: '旧组' }])
+  await applyCommands(null, [{ op: 'assign', name: 'plug-a', groupId: 'g1' }])
+  await applyCommands(null, [{ op: 'packGroup', packId: 'default', groupId: 'g1', value: false }])
+
+  await applyCommands(null, [{ op: 'deleteGroup', groupId: 'g1' }])
+  // 组开关是残留在 packs.json 里的，删组必须连带清掉。
+  assert.deepEqual((await readJson(packsPath())).packs.default.groups ?? {}, {})
+
+  // 分组 id 从 length + 1 起算，删掉编号最大的组后会被复用；正因如此，残留必须清。
+  await applyCommands(null, [{ op: 'createGroup', name: '新组' }])
+  let state = await loadState(null)
+  assert.equal(state.groups.groups[0].id, 'g1')
+  await applyCommands(null, [{ op: 'assign', name: 'plug-b', groupId: 'g1' }])
+
+  state = await loadState(null)
+  const resolver = createResolver({
+    pack: null,
+    defaultPack: defaultPackOf(state.packs),
+    assignments: state.groups.assignments,
+  })
+  // 新组里的无关插件必须是开的：旧组的 false 不许漏进来。
+  assert.equal(resolver.isOpen('plug-b'), true)
 })
 
 test('ui 命令写入 packs.json', async () => {
