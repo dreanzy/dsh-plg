@@ -546,6 +546,45 @@ window.__ModuleLoader__.load({
       )
     }
 
+    /**
+     * 删除的二次确认：第一次点变成「删除」（警告色），再点一次才执行。
+     *
+     * 不用弹窗：这类删除都发生在列表行里，弹窗要额外一次「关闭」动作；
+     * 行内二次确认把成本压到一次点击，误点的代价只是多看一眼。
+     * 进入确认态后 4 秒自动撤销，避免一直停在危险状态。
+     */
+    function ConfirmButton(props) {
+      const [armed, setArmed] = useState(false)
+      const disabled = props.disabled === true
+      useEffect(() => {
+        if (!armed) return undefined
+        const timer = setTimeout(() => setArmed(false), 4000)
+        return () => clearTimeout(timer)
+      }, [armed])
+      return h(
+        'button',
+        {
+          type: 'button',
+          disabled: disabled,
+          style: armed
+            ? { ...S.reset, color: T.error, fontWeight: 600, whiteSpace: 'nowrap' }
+            : props.style || S.reset,
+          title: armed ? '再点一次确认删除' : props.title || '',
+          onClick: (event) => {
+            event.stopPropagation()
+            if (disabled) return
+            if (!armed) {
+              setArmed(true)
+              return
+            }
+            setArmed(false)
+            props.onConfirm()
+          },
+        },
+        armed ? props.confirmLabel || '删除' : props.label || '✕',
+      )
+    }
+
     function Chevron() {
       return h(
         'svg',
@@ -1619,19 +1658,10 @@ window.__ModuleLoader__.load({
                   )
                 : null,
               bucket.id !== null
-                ? h(
-                    'button',
-                    {
-                      type: 'button',
-                      style: S.reset,
-                      title: '删除分组（成员回到未分组）',
-                      onClick: (event) => {
-                        event.stopPropagation()
-                        run([{ op: 'deleteGroup', groupId: bucket.id }])
-                      },
-                    },
-                    '✕',
-                  )
+                ? h(ConfirmButton, {
+                    title: '删除分组（成员回到未分组）',
+                    onConfirm: () => run([{ op: 'deleteGroup', groupId: bucket.id }]),
+                  })
                 : null,
             ),
             isCollapsed
@@ -1862,20 +1892,13 @@ window.__ModuleLoader__.load({
                   ),
               entry.builtin
                 ? null
-                : h(
-                    'button',
-                    {
-                      type: 'button',
-                      style: S.reset,
-                      title: '删除 pack（指向它的绑定会变成悬空引用，按 default 求值）',
-                      onClick: (event) => {
-                        event.stopPropagation()
-                        run([{ op: 'deletePack', packId: entry.id }])
-                        if (entry.id === selected) setSelected(DEFAULT_PACK_ID)
-                      },
+                : h(ConfirmButton, {
+                    title: '删除 pack（指向它的绑定会变成悬空引用，按 default 求值）',
+                    onConfirm: () => {
+                      run([{ op: 'deletePack', packId: entry.id }])
+                      if (entry.id === selected) setSelected(DEFAULT_PACK_ID)
                     },
-                    '✕',
-                  ),
+                  }),
             ),
           ),
           h(
@@ -2140,16 +2163,10 @@ window.__ModuleLoader__.load({
                     }),
                   ),
                   isExtra
-                    ? h(
-                        'button',
-                        {
-                          type: 'button',
-                          style: S.reset,
-                          title: '从手动清单移除（不影响已有绑定）',
-                          onClick: () => run([{ op: 'removeExtra', cwd: cwd }]),
-                        },
-                        '✕',
-                      )
+                    ? h(ConfirmButton, {
+                        title: '从手动清单移除（不影响已有绑定）',
+                        onConfirm: () => run([{ op: 'removeExtra', cwd: cwd }]),
+                      })
                     : null,
                 )
               }),

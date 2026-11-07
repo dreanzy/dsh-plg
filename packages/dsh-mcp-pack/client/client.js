@@ -203,6 +203,20 @@ window.__ModuleLoader__.load({
         color: T.dim,
         whiteSpace: 'nowrap',
       },
+      reset: {
+        padding: 0,
+        margin: 0,
+        border: 'none',
+        background: 'transparent',
+        font: 'inherit',
+        color: 'inherit',
+        cursor: 'pointer',
+        textAlign: 'left',
+        display: 'inline-flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        boxSizing: 'border-box',
+      },
       stat: {
         fontSize: '12px',
         color: T.text,
@@ -405,6 +419,52 @@ window.__ModuleLoader__.load({
         color: T.text,
         fontSize: '12px',
       },
+      reset: {
+        padding: 0,
+        margin: 0,
+        border: 'none',
+        background: 'transparent',
+        font: 'inherit',
+        color: 'inherit',
+        cursor: 'pointer',
+        textAlign: 'left',
+        display: 'inline-flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        boxSizing: 'border-box',
+      },
+    }
+
+    function ConfirmButton(props) {
+      const [armed, setArmed] = useState(false)
+      const disabled = props.disabled === true
+      useEffect(() => {
+        if (!armed) return undefined
+        const timer = setTimeout(() => setArmed(false), 4000)
+        return () => clearTimeout(timer)
+      }, [armed])
+      return h(
+        'button',
+        {
+          type: 'button',
+          disabled: disabled,
+          style: armed
+            ? { ...S.reset, color: T.error, fontWeight: 600, whiteSpace: 'nowrap' }
+            : props.style || S.reset,
+          title: armed ? '再点一次确认删除' : props.title || '',
+          onClick: (event) => {
+            event.stopPropagation()
+            if (disabled) return
+            if (!armed) {
+              setArmed(true)
+              return
+            }
+            setArmed(false)
+            props.onConfirm()
+          },
+        },
+        armed ? props.confirmLabel || '删除' : props.label || '✕',
+      )
     }
 
     /**
@@ -1703,19 +1763,10 @@ window.__ModuleLoader__.load({
                   )
                 : null,
               bucket.id !== null
-                ? h(
-                    'button',
-                    {
-                      type: 'button',
-                      style: S.reset,
-                      title: '删除分组（成员回到未分组）',
-                      onClick: (event) => {
-                        event.stopPropagation()
-                        run([{ op: 'deleteGroup', groupId: bucket.id }])
-                      },
-                    },
-                    '✕',
-                  )
+                ? h(ConfirmButton, {
+                    title: '删除分组（成员回到未分组）',
+                    onConfirm: () => run([{ op: 'deleteGroup', groupId: bucket.id }]),
+                  })
                 : null,
             ),
             isCollapsed
@@ -1872,16 +1923,12 @@ window.__ModuleLoader__.load({
             '当前生效：' + MODE_LABELS[resolved.mode] + (toolCount === 0 ? ' · 工具不限' : ' · 工具 ' + toolCount + ' 条'),
           ),
           isOwned(row)
-            ? h(
-                'button',
-                {
-                  type: 'button',
-                  style: { ...S.reset, color: T.error, flex: '0 0 auto' },
-                  title: '删除这台托管 server 的定义（所有工作区都不再发现它）',
-                  onClick: removeOwned,
-                },
-                '删除',
-              )
+            ? h(ConfirmButton, {
+                // 未确认态用 ✕，与其余三包的删除入口一致；红色只在确认态出现。
+                title: '删除这台托管 server 的定义（所有工作区都不再发现它）',
+                onConfirm: removeOwned,
+                style: { ...S.reset, flex: '0 0 auto' },
+              })
             : null,
         ),
         open
@@ -2316,20 +2363,13 @@ window.__ModuleLoader__.load({
                   ),
               entry.builtin
                 ? null
-                : h(
-                    'button',
-                    {
-                      type: 'button',
-                      style: S.reset,
-                      title: '删除 pack（指向它的绑定会变成悬空引用，按 default 求值）',
-                      onClick: (event) => {
-                        event.stopPropagation()
-                        run([{ op: 'deletePack', packId: entry.id }])
-                        if (entry.id === selected) setSelected(DEFAULT_PACK_ID)
-                      },
+                : h(ConfirmButton, {
+                    title: '删除 pack（指向它的绑定会变成悬空引用，按 default 求值）',
+                    onConfirm: () => {
+                      run([{ op: 'deletePack', packId: entry.id }])
+                      if (entry.id === selected) setSelected(DEFAULT_PACK_ID)
                     },
-                    '✕',
-                  ),
+                  }),
             ),
           ),
           h(
@@ -2536,16 +2576,10 @@ window.__ModuleLoader__.load({
                     }),
                   ),
                   isExtra
-                    ? h(
-                        'button',
-                        {
-                          type: 'button',
-                          style: S.reset,
-                          title: '从手动清单移除（不影响已有绑定）',
-                          onClick: () => run([{ op: 'removeExtra', cwd: cwd }]),
-                        },
-                        '✕',
-                      )
+                    ? h(ConfirmButton, {
+                        title: '从手动清单移除（不影响已有绑定）',
+                        onConfirm: () => run([{ op: 'removeExtra', cwd: cwd }]),
+                      })
                     : null,
                 )
               }),
