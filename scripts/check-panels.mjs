@@ -31,17 +31,18 @@ const fakeReact = {
 /** 每个面板的断言。count 表示出现次数，未写表示「至少一次」。 */
 const RULES = {
   'dsh-skill-pack': {
-    must: { 'TABS': 1, 'GroupsPage': 1, 'PackSettings': 1, 'WorkspacePage': 1 },
+    // 后一条：绑定下拉必须把内置 default 过滤掉，否则「默认」会出现两次。
+    must: { 'TABS': 1, 'GroupsPage': 1, 'PackSettings': 1, 'WorkspacePage': 1, 'pack.id !== DEFAULT_PACK_ID': 2 },
     // 侧栏入口与单机开关已废弃：这两个字符串一旦回潮，就是又有人把面板挂回侧栏。
     mustNot: ['sidebar.panellist', 'showSidebarEntry'],
   },
   'dsh-plugin-pack': {
-    must: { 'TABS': 1, 'GroupsPage': 1, 'PackSettings': 1, 'WorkspacePage': 1, 'CHIP_CSS': 1 },
+    must: { 'TABS': 1, 'GroupsPage': 1, 'PackSettings': 1, 'WorkspacePage': 1, 'CHIP_CSS': 1, 'pack.id !== DEFAULT_PACK_ID': 2 },
     // 侧栏入口与工作区层已废弃：这两个字符串一旦回潮，就是又有人把面板挂回侧栏。
     mustNot: ['sidebar.panellist', 'showSidebarEntry'],
   },
   'dsh-mcp-pack': {
-    must: { 'TABS': 1, 'GroupsPage': 1, 'PackSettings': 1, 'WorkspacePage': 1, 'CHIP_CSS': 1, 'diagText': 2 },
+    must: { 'TABS': 1, 'GroupsPage': 1, 'PackSettings': 1, 'WorkspacePage': 1, 'CHIP_CSS': 1, 'diagText': 2, 'pack.id !== DEFAULT_PACK_ID': 2 },
     // 侧栏入口已废弃、diag 的渲染表达式不再就地序列化：这两组字符串一旦回潮，
     // 就是又有人把面板挂回侧栏，或把预计算改回每次渲染重做。
     mustNot: ['sidebar.panellist', 'showSidebarEntry', '}, JSON.stringify(diag'],
@@ -49,7 +50,7 @@ const RULES = {
   'dsh-model-pack': {
     // 三页（分包 | 工作区 | 提示词）、分包页两块（名册 / 内容）、chip 摘要与容器查询、
     // 以及模型位的 pack 名标签：少了任何一个，都是这套结构被拆掉了一半。
-    must: { 'TABS': 2, 'PackRoster': 2, 'WorkspaceBoard': 2, 'ChipModal': 2, 'CHIP_CSS': 2, 'labelView': 2 },
+    must: { 'TABS': 2, 'PackRoster': 2, 'WorkspaceBoard': 2, 'ChipModal': 2, 'CHIP_CSS': 2, 'labelView': 2, '!pack.isDefault': 2 },
     // 侧栏入口与单机侧栏开关已废弃：这两个字符串一旦回潮，就是又有人把面板挂回侧栏。
     // 后三条是旧命令契约（服务端只认 putPack / packSession / packTier / bind / …）：
     // 它们一旦回潮，所有保存都会拿到 bad-request。localStorage 同理——默认页与

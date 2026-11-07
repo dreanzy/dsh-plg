@@ -2119,8 +2119,9 @@ window.__ModuleLoader__.load({
             : paths.map((cwd) => {
                 const isExtra = extras.indexOf(cwd) >= 0
                 const bound = bindingOf(bindings, cwd)
-                // 悬空引用（pack 已删）显示成「跟随 default」，与服务端读侧的行为一致。
-                const value = bound !== null && hasPack(packs, bound) ? bound : ''
+                // 内置 default 与「未绑定」等价（服务端把 bind default 当解绑），悬空引用也
+                // 走这里：两者都显示成「默认」，否则下拉里会出现两个同名的默认项。
+                const value = bound === null || bound === DEFAULT_PACK_ID || !hasPack(packs, bound) ? '' : bound
                 return h(
                   'div',
                   {
@@ -2146,7 +2147,10 @@ window.__ModuleLoader__.load({
                       value: value,
                       options: [
                         { value: '', label: '默认' },
-                        ...packs.map((pack) => ({ value: pack.id, label: pack.name })),
+                        // 内置 default 就是「默认」那一项，再列一次等于给同一个意思两个选项。
+                        ...packs
+                          .filter((pack) => pack.id !== DEFAULT_PACK_ID)
+                          .map((pack) => ({ value: pack.id, label: pack.name })),
                       ],
                       onChange: (next) => run([{ op: 'bind', cwd: cwd, packId: next === '' ? null : next }]),
                     }),

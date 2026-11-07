@@ -1769,8 +1769,10 @@ window.__ModuleLoader__.load({
             : paths.map((cwd) => {
                 const isExtra = extras.indexOf(cwd) >= 0
                 const bound = bindingOf(data.bindings, cwd)
-                // 悬空引用（pack 已删）显示成「默认」，与服务端读侧的行为一致。
-                const value = bound !== null && hasPack(data.packs, bound) ? bound : ''
+                // 内置 default 与「未绑定」等价（服务端把 bind default 当解绑）：两者都显示成
+                // 「默认」，否则下拉里会出现两个同名的默认项。悬空引用同样落到「默认」。
+                const value =
+                  bound === null || bound === DEFAULT_PACK_ID || !hasPack(data.packs, bound) ? '' : bound
                 return h(
                   'div',
                   {
