@@ -1,6 +1,7 @@
 import {
   DEFAULT_MODE,
   DEFAULT_PACK_ID,
+  DEFAULT_PACK_NAME,
   EMPTY_BINDINGS,
   EMPTY_GROUPS,
   EMPTY_PACK,
@@ -224,7 +225,9 @@ export function parsePacks(text: string | undefined): ParseResult<ParsedPacks> {
           warnings.push('packs 里有空 id 的条目，已忽略')
           continue
         }
-        packs[id] = parsePack(id, rawPacks[id], warnings)
+        const pack = parsePack(id, rawPacks[id], warnings)
+        // 内置 pack 的显示名固定「默认」：文件里可能是旧名（default 等），读侧一并归一。
+        packs[id] = id === DEFAULT_PACK_ID ? { ...pack, name: DEFAULT_PACK_NAME } : pack
       }
     }
   }
@@ -369,7 +372,7 @@ export function serializePacks(packs: Readonly<Record<string, McpPack>>, ui: UiS
   for (const id of Object.keys(packs).sort()) {
     const pack = packs[id]
     if (pack === undefined) continue
-    const entry: Record<string, unknown> = { name: pack.name }
+    const entry: Record<string, unknown> = { name: id === DEFAULT_PACK_ID ? DEFAULT_PACK_NAME : pack.name }
     if (Object.keys(pack.rows).length > 0) {
       const rows: Record<string, RowPolicy> = {}
       for (const rowKey of Object.keys(pack.rows).sort()) {

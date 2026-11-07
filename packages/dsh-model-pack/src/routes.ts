@@ -404,7 +404,7 @@ export async function handleApply(deps: RouteDeps, body: Record<string, unknown>
     const cwd = cwdResult.cwd
 
     // applyCommands 的返回值是落盘后重读的完整状态（含本次写入产生的 warning），
-    // 不再单独 loadState：那样会丢掉「default pack 不可删除，已忽略」这类说明。
+    // 不再单独 loadState：那样会丢掉「默认 pack 不可删除，已忽略」这类说明。
     const state = await deps.applyCommands(cwd, parsed.commands)
     return { ok: true, data: buildData(deps, cwd, state) }
   } catch (error) {

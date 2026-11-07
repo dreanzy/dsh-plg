@@ -222,11 +222,11 @@ test('createPack / renamePack / deletePack 走通，default 不可删、不可�
     deps,
   )
   assert.equal(refusedRename.ok, false)
-  assert.match(refusedRename.error.message, /default pack 不可改名/)
+  assert.match(refusedRename.error.message, /默认 pack 不可改名/)
 
   const refusedDelete = await handleApply(ctx, { commands: [{ op: 'deletePack', packId: 'default' }] }, deps)
   assert.equal(refusedDelete.ok, false)
-  assert.match(refusedDelete.error.message, /default pack 不可删除/)
+  assert.match(refusedDelete.error.message, /默认 pack 不可删除/)
   assert.equal(Object.keys((await readJson(packsFile(home))).packs).includes('default'), true)
 
   const deleted = await handleApply(ctx, { commands: [{ op: 'deletePack', packId: id }] }, deps)

@@ -179,7 +179,7 @@ function applyToPacks(current: string | undefined, commands: readonly Command[])
         break
       }
       case 'renamePack': {
-        if (command.packId === DEFAULT_PACK_ID) throw new Error('default pack 不可改名')
+        if (command.packId === DEFAULT_PACK_ID) throw new Error('默认 pack 不可改名')
         const pack = findPack(packs, command.packId)
         const name = requireName(command.name)
         assertNameFree(packs, name, command.packId)
@@ -187,7 +187,7 @@ function applyToPacks(current: string | undefined, commands: readonly Command[])
         break
       }
       case 'deletePack': {
-        if (command.packId === DEFAULT_PACK_ID) throw new Error('default pack 不可删除')
+        if (command.packId === DEFAULT_PACK_ID) throw new Error('默认 pack 不可删除')
         findPack(packs, command.packId)
         delete packs[command.packId]
         break

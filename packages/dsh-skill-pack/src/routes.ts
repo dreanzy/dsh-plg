@@ -4,6 +4,7 @@ import { applyCommands, type PolicyState } from './store.js'
 import type { ScopeSnapshot, SnapshotValue } from './snapshot.js'
 import {
   DEFAULT_PACK_ID,
+  DEFAULT_PACK_NAME,
   type Bindings,
   type Command,
   type GroupRegistry,
@@ -215,7 +216,7 @@ function packViews(book: PackBook): PackView[] {
     if (pack === undefined) continue
     out.push({
       id,
-      name: pack.name,
+      name: id === DEFAULT_PACK_ID ? DEFAULT_PACK_NAME : pack.name,
       items: pack.items,
       groups: pack.groups,
       builtin: id === DEFAULT_PACK_ID,

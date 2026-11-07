@@ -5,6 +5,7 @@ import { type ScopeSnapshot } from './snapshot.js'
 import { applyCommands, groupsPath, loadState, packsPath, workspacesPath } from './store.js'
 import {
   DEFAULT_PACK_ID,
+  DEFAULT_PACK_NAME,
   type Bindings,
   type Command,
   type GroupRegistry,
@@ -168,7 +169,7 @@ function packViews(book: PackBook): PackView[] {
   for (const id of ids) {
     const pack = book.packs[id]
     if (pack === undefined) continue
-    out.push({ id, name: pack.name, groups: pack.groups, rows: pack.rows, builtin: id === DEFAULT_PACK_ID })
+    out.push({ id, name: id === DEFAULT_PACK_ID ? DEFAULT_PACK_NAME : pack.name, groups: pack.groups, rows: pack.rows, builtin: id === DEFAULT_PACK_ID })
   }
   return out
 }

@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "Model Pack",
-    "description": "用 pack 给新会话指定模型与四档子智能体路由：工作区只绑一个 pack，未绑定按 default。"
+    "description": "用 pack 给新会话指定模型与四档子智能体路由：工作区只绑一个 pack，未绑定按默认。"
   }
 }

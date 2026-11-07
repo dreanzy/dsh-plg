@@ -24,7 +24,7 @@ import {
 
 const assignments = { 'plug-a': 'g-tools', 'plug-b': 'g-tools', 'plug-c': 'g-other' }
 
-function emptyPack(name = 'default') {
+function emptyPack(name = '默认') {
   return { name, items: {}, groups: {} }
 }
 
@@ -148,10 +148,10 @@ test('坏 JSON 降级成空策略且不抛错', () => {
 
 test('packs.json 缺少 default 时补一个空 default 并留 warning', () => {
   const parsed = parsePacks(JSON.stringify({ packs: { p1: { name: '一', items: { 'plug-a': false } } } }))
-  assert.equal(parsed.value.book.packs['default'].name, 'default')
+  assert.equal(parsed.value.book.packs['default'].name, '默认')
   assert.deepEqual(parsed.value.book.packs['p1'].items, { 'plug-a': false })
   assert.equal(parsed.warnings.some((line) => line.includes('缺少 default')), true)
-  assert.equal(defaultPackOf(parsed.value.book).name, 'default')
+  assert.equal(defaultPackOf(parsed.value.book).name, '默认')
 })
 
 test('非布尔取值被忽略，其余项保留', () => {
@@ -223,7 +223,7 @@ test('packs 序列化稳定：键排序、固定缩进、结尾换行', () => {
       '  },\n' +
       '  "packs": {\n' +
       '    "default": {\n' +
-      '      "name": "default",\n' +
+      '      "name": "默认",\n' +
       '      "items": {\n' +
       '        "a": true,\n' +
       '        "b": false\n' +
@@ -240,7 +240,7 @@ test('packs 序列化稳定：键排序、固定缩进、结尾换行', () => {
 test('往返：序列化后再解析得到同一份 pack 名册与 ui', () => {
   const ui = { showOfficialPlugins: false, showChip: false, defaultTab: 'packs' }
   const packs = {
-    default: { name: 'default', items: { x: false, y: true }, groups: { g: false } },
+    default: { name: '默认', items: { x: false, y: true }, groups: { g: false } },
     p1: { name: '二', items: { z: false }, groups: {} },
   }
   const round = parsePacks(serializePacks(packs, ui))

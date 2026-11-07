@@ -1,7 +1,7 @@
 {
   "meta": {
     "title": "Skill Pack",
-    "description": "用 pack 控制模型可以自动调用哪些 skill：工作区只绑一个 pack，未绑定按 default 求值。"
+    "description": "用 pack 控制模型可以自动调用哪些 skill：工作区只绑一个 pack，未绑定按默认求值。"
   },
   "ui": {
     "tabs": {
@@ -29,7 +29,7 @@
     },
     "workspaces": {
       "title": "工作区绑定",
-      "followDefault": "跟随 default",
+      "followDefault": "默认",
       "addPlaceholder": "手动添加路径，例如 D:/work/repo",
       "add": "添加",
       "fromSession": "来自会话",

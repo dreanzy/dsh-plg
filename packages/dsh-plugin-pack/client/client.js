@@ -1136,9 +1136,9 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * chip 的弹层：这张 pack 与默认配置差在哪，就地切换。
+     * chip 的弹层：这张 pack 与默认差在哪，就地切换。
      *
-     * 选「默认配置」发 `packId: null`（解除绑定），不是写一个 default 的 id——
+     * 选「默认」发 `packId: null`（解除绑定），不是写一个 default 的 id——
      * 未绑定与悬空引用在服务端是同一种状态。
      */
     function ChipModal(props) {
@@ -1198,7 +1198,7 @@ window.__ModuleLoader__.load({
           h(
             'div',
             { style: { display: 'flex', alignItems: 'baseline', gap: '10px', marginTop: '2px' } },
-            h('div', { style: S.title }, data === null ? '读取中' : usingDefault ? '默认配置' : data.packName),
+            h('div', { style: S.title }, data === null ? '读取中' : usingDefault ? '默认' : data.packName),
             h('span', { style: { ...S.hint, marginLeft: 'auto' } }, '当前工作区'),
           ),
           state.error ? h('div', { style: { ...S.error, marginTop: '8px' } }, state.error) : null,
@@ -1208,11 +1208,11 @@ window.__ModuleLoader__.load({
                 'div',
                 { style: { marginTop: '10px' } },
                 usingDefault
-                  ? h('div', { style: S.hint }, '这个目录没有指定 pack，按默认配置运行。')
+                  ? h('div', { style: S.hint }, '这个目录没有指定 pack，按默认运行。')
                   : h(
                       'div',
                       null,
-                      h('div', { style: { ...S.hint, marginBottom: '4px' } }, '与默认配置相比'),
+                      h('div', { style: { ...S.hint, marginBottom: '4px' } }, '与默认相比'),
                       rows.length === 0
                         ? h('div', { style: S.hint }, '没有任何改动。')
                         : rows.map((row) =>
@@ -1247,7 +1247,7 @@ window.__ModuleLoader__.load({
                 h(Picker, {
                   value: bound,
                   options: [
-                    { value: DEFAULT_PACK_ID, label: '默认配置' },
+                    { value: DEFAULT_PACK_ID, label: '默认' },
                     ...packs
                       .filter((pack) => pack.id !== DEFAULT_PACK_ID)
                       .map((pack) => ({ value: pack.id, label: pack.name })),
@@ -1382,7 +1382,7 @@ window.__ModuleLoader__.load({
         h(
           'div',
           { style: { ...S.hint, marginTop: '4px' } },
-          '一张 pack 是一套具名策略：工作区绑到哪个 pack，就按哪套开关生效；未绑定按 default。关掉一个插件是「摘掉它注册的工具 + 从装配里剔除它注入的提示词段」，插件进程不会被卸载。',
+          '一张 pack 是一套具名策略：工作区绑到哪个 pack，就按哪套开关生效；未绑定按默认。关掉一个插件是「摘掉它注册的工具 + 从装配里剔除它注入的提示词段」，插件进程不会被卸载。',
         ),
         support.restrict === false
           ? h('div', { style: S.probeFail }, '当前宿主不支持工具限制：关掉插件只影响提示词段，它的工具仍然对模型可见。')
@@ -1851,11 +1851,14 @@ window.__ModuleLoader__.load({
                       }
                     },
                   })
-                : h('span', { style: S.groupName }, entry.name),
-              entry.builtin ? h('span', { style: S.badge }, '默认') : null,
+                : h(
+                  'span',
+                  { style: S.groupName, title: entry.builtin ? '未绑定的工作区按它运行' : undefined },
+                  entry.name,
+                ),
               h('span', { style: S.badge }, overrides(entry) + ' 条覆盖'),
               // `default` 没有改名与删除入口：它是求值链终点，删掉或改个名都会让
-              // 「未绑定即 default」失去指代。
+              // 「未绑定即默认」失去指代。
               entry.builtin
                 ? null
                 : h(
@@ -1874,7 +1877,7 @@ window.__ModuleLoader__.load({
               entry.builtin
                 ? null
                 : h(ConfirmButton, {
-                    title: '删除 pack（指向它的绑定会变成悬空引用，按 default 求值）',
+                    title: '删除 pack（指向它的绑定会变成悬空引用，按默认 求值）',
                     onConfirm: () => {
                       run([{ op: 'deletePack', packId: entry.id }])
                       if (entry.id === selected) setSelected(DEFAULT_PACK_ID)
@@ -2088,7 +2091,7 @@ window.__ModuleLoader__.load({
         h(
           'div',
           { style: { ...S.hint, marginBottom: '8px' } },
-          '绑定只影响该目录下新开的会话；已经开着的会话不换 pack。未绑定即跟随 default。',
+          '绑定只影响该目录下新开的会话；已经开着的会话不换 pack。未绑定即默认。',
         ),
         h(
           'div',
@@ -2137,7 +2140,7 @@ window.__ModuleLoader__.load({
                     h(Picker, {
                       value: value,
                       options: [
-                        { value: '', label: '默认配置' },
+                        { value: '', label: '默认' },
                         ...packs.map((pack) => ({ value: pack.id, label: pack.name })),
                       ],
                       onChange: (next) => run([{ op: 'bind', cwd: cwd, packId: next === '' ? null : next }]),

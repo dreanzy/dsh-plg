@@ -170,7 +170,7 @@ test('悬空绑定按 default 求值并原样报出绑定 id', async () => {
   assert.equal(view.ok, true)
   assert.equal(view.value.binding, 'p1-gone')
   assert.equal(view.value.packId, 'default')
-  assert.equal(view.value.packName, 'default')
+  assert.equal(view.value.packName, '默认')
   assert.equal(view.value.rows[0].packEntry, null)
 })
 

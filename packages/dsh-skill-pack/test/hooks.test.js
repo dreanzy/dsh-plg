@@ -73,7 +73,7 @@ function fakeSkills(rows, options = {}) {
   return skills
 }
 
-function emptyPack(name = 'default') {
+function emptyPack(name = '默认') {
   return { name, items: {}, groups: {} }
 }
 

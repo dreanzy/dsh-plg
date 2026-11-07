@@ -9,6 +9,7 @@ import { defaultPackOf } from './policy.js'
 import { applyCommands, loadState, type PolicyState } from './store.js'
 import {
   DEFAULT_PACK_ID,
+  DEFAULT_PACK_NAME,
   type Bindings,
   type Catalog,
   type Command,
@@ -269,7 +270,7 @@ function packViews(book: PackBook): PackView[] {
     if (pack === undefined) continue
     out.push({
       id,
-      name: pack.name,
+      name: id === DEFAULT_PACK_ID ? DEFAULT_PACK_NAME : pack.name,
       items: pack.items,
       groups: pack.groups,
       builtin: id === DEFAULT_PACK_ID,

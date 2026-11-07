@@ -27,7 +27,7 @@ import {
 
 const assignments = { 'global:a': 'g-a', 'global:b': 'g-a', 'global:c': 'g-c' }
 
-function emptyPack(name = 'default') {
+function emptyPack(name = '默认') {
   return { name, groups: {}, rows: {} }
 }
 
@@ -169,10 +169,10 @@ test('坏 JSON 降级成空策略且不抛错', () => {
 
 test('packs.json 缺少 default 时补一个空 default 并留 warning', () => {
   const parsed = parsePacks(JSON.stringify({ packs: { p1: { name: '一', rows: { 'global:a': { enabled: false } } } } }))
-  assert.equal(parsed.value.book.packs['default'].name, 'default')
+  assert.equal(parsed.value.book.packs['default'].name, '默认')
   assert.deepEqual(parsed.value.book.packs['p1'].rows, { 'global:a': { enabled: false } })
   assert.equal(parsed.warnings.some((line) => line.includes('缺少 default')), true)
-  assert.equal(defaultPackOf(parsed.value.book).name, 'default')
+  assert.equal(defaultPackOf(parsed.value.book).name, '默认')
 })
 
 test('坏字段被丢弃，好字段保留；行对象坏掉则整条丢', () => {
@@ -242,7 +242,7 @@ test('组定义解析：成员表与孤儿引用都保留', () => {
 test('packs 序列化稳定：键排序、固定缩进、结尾换行', () => {
   const ui = { showChip: true, defaultTab: 'groups' }
   const packs = {
-    default: packOf({ 'global:b': { mode: 'eager' }, 'global:a': { enabled: false } }, {}, 'default'),
+    default: packOf({ 'global:b': { mode: 'eager' }, 'global:a': { enabled: false } }, {}, '默认'),
     p1: { name: '一', groups: {}, rows: {} },
   }
   const text = serializePacks(packs, ui)
@@ -256,7 +256,7 @@ test('packs 序列化稳定：键排序、固定缩进、结尾换行', () => {
       '  },\n' +
       '  "packs": {\n' +
       '    "default": {\n' +
-      '      "name": "default",\n' +
+      '      "name": "默认",\n' +
       '      "rows": {\n' +
       '        "global:a": {\n' +
       '          "enabled": false\n' +
@@ -277,7 +277,7 @@ test('packs 序列化稳定：键排序、固定缩进、结尾换行', () => {
 test('往返：序列化后再解析得到同一份 pack 名册与 ui', () => {
   const ui = { showChip: false, defaultTab: 'packs' }
   const packs = {
-    default: packOf({ 'global:a': { enabled: false, mode: 'lazy' } }, { g1: false }, 'default'),
+    default: packOf({ 'global:a': { enabled: false, mode: 'lazy' } }, { g1: false }, '默认'),
     p1: { name: '二', groups: { g2: true }, rows: { 'own:x': { tools: ['read_*'], description: 'x' } } },
   }
   const round = parsePacks(serializePacks(packs, ui))

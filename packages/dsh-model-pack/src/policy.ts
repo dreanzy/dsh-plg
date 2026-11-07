@@ -420,7 +420,7 @@ function applyToPacks(
       }
       case 'renamePack': {
         if (command.packId === DEFAULT_PACK_ID) {
-          warnings.push('default pack 不可改名，已忽略')
+          warnings.push('默认 pack 不可改名，已忽略')
           break
         }
         const pack = packs[command.packId]
@@ -442,7 +442,7 @@ function applyToPacks(
       }
       case 'deletePack': {
         if (command.packId === DEFAULT_PACK_ID) {
-          warnings.push('default pack 不可删除，已忽略')
+          warnings.push('默认 pack 不可删除，已忽略')
           break
         }
         if (!Object.hasOwn(packs, command.packId)) {

@@ -148,7 +148,10 @@ export interface ParseResult<T> {
 /** 内置 pack 的 id。它同时是求值链的终点，也是未绑定工作区的取值来源。 */
 export const DEFAULT_PACK_ID = 'default'
 
-export const EMPTY_PACK: McpPack = { name: DEFAULT_PACK_ID, groups: {}, rows: {} }
+/** 内置 pack 的固定显示名：界面与落盘都只用这一个，旧名在读写两侧都会归一。 */
+export const DEFAULT_PACK_NAME = '默认'
+
+export const EMPTY_PACK: McpPack = { name: DEFAULT_PACK_NAME, groups: {}, rows: {} }
 export const EMPTY_PACK_BOOK: PackBook = { packs: { [DEFAULT_PACK_ID]: EMPTY_PACK } }
 export const EMPTY_BINDINGS: Bindings = { bindings: {}, extra: [] }
 export const EMPTY_UI: UiState = { showChip: true, defaultTab: 'groups' }

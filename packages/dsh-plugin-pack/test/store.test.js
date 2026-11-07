@@ -53,7 +53,7 @@ test('createPack 写盘时永远保留 default，并按 id 排序', async () => 
   await applyCommands(null, [{ op: 'createPack', name: '工作' }])
   const onDisk = await readJson(packsPath())
   assert.deepEqual(Object.keys(onDisk.packs), ['default', 'p1'])
-  assert.equal(onDisk.packs.default.name, 'default')
+  assert.equal(onDisk.packs.default.name, '默认')
   assert.equal(onDisk.packs.p1.name, '工作')
   assert.deepEqual(onDisk.ui, { showOfficialPlugins: false, showChip: true, defaultTab: 'groups' })
 })
@@ -77,10 +77,10 @@ test('packItem / packGroup 的三态：null 删键回到跟随', async () => {
   assert.deepEqual(state.packs.packs.default.groups, {})
 })
 
-test('default pack 不可删除、不可改名；未知 pack 的写入被拒', async () => {
+test('默认 pack 不可删除、不可改名；未知 pack 的写入被拒', async () => {
   await freshHome()
-  await assert.rejects(applyCommands(null, [{ op: 'deletePack', packId: 'default' }]), /default pack 不可删除/)
-  await assert.rejects(applyCommands(null, [{ op: 'renamePack', packId: 'default', name: 'x' }]), /default pack 不可改名/)
+  await assert.rejects(applyCommands(null, [{ op: 'deletePack', packId: 'default' }]), /默认 pack 不可删除/)
+  await assert.rejects(applyCommands(null, [{ op: 'renamePack', packId: 'default', name: 'x' }]), /默认 pack 不可改名/)
   await assert.rejects(
     applyCommands(null, [{ op: 'packItem', packId: 'missing', name: 'plug-a', value: false }]),
     /未知 pack/,

@@ -1552,7 +1552,7 @@ window.__ModuleLoader__.load({
                 : h('span', { style: S.groupName }, packLabel(entry)),
               h('span', { style: S.badge }, overrides(entry) + ' 条覆盖'),
               // `default` 没有改名与删除入口：它是求值链终点，删掉或改个名都会让
-              // 「未绑定即 default」失去指代。
+              // 「未绑定即默认」失去指代。
               entry.builtin
                 ? null
                 : h(
@@ -1761,7 +1761,7 @@ window.__ModuleLoader__.load({
         h(
           'div',
           { style: { ...S.hint, marginBottom: '8px' } },
-          '保存后立即生效：该目录下已开着的会话也在下一个回合边界重新求值。未绑定即跟随默认。',
+          '保存后立即生效：该目录下已开着的会话也在下一个回合边界重新求值。未绑定即默认。',
         ),
         h(
           'div',
@@ -1792,7 +1792,7 @@ window.__ModuleLoader__.load({
             : paths.map((cwd) => {
                 const isExtra = extras.indexOf(cwd) >= 0
                 const bound = bindingOf(data.bindings, cwd)
-                // 悬空引用（pack 已删）显示成「跟随默认」，与服务端读侧的行为一致。
+                // 悬空引用（pack 已删）显示成「默认」，与服务端读侧的行为一致。
                 const value = bound !== null && hasPack(data.packs, bound) ? bound : ''
                 return h(
                   'div',
