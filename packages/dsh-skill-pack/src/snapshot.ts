@@ -1,6 +1,7 @@
 import { stat } from 'node:fs/promises'
 import type { Inventory, SkillSummaryLike } from './inventory.js'
-import { createResolver, defaultPackOf, hiddenNames, normalizeCwd } from './policy.js'
+import { normalizeCwd } from './policy.js'
+import { effective } from './effective.js'
 import {
   groupsPath,
   packsPath,
@@ -138,22 +139,16 @@ export function createScopeSnapshot(deps: SnapshotDeps): ScopeSnapshot {
 
     // 两件事互不依赖：并行读，串行等会白付一次往返。
     const [policy, inventory] = await Promise.all([deps.loadPolicy(cwd), deps.readInventory(cwd, scope)])
-    const resolver = createResolver({
-      pack: policy.pack,
-      packId: policy.packId,
-      defaultPack: defaultPackOf(policy.packs),
-      assignments: policy.groups.assignments,
+    const answer = effective({
+      policy,
+      names: inventory.rows.map((row) => row.name),
+      scope: 'workspace',
+      complete: inventory.complete,
     })
-    const hidden = inventory.complete
-      ? hiddenNames(
-          inventory.rows.map((row) => row.name),
-          resolver,
-        )
-      : []
     const value: SnapshotValue = {
       rows: inventory.rows,
       complete: inventory.complete,
-      hidden,
+      hidden: answer.hidden,
       policy,
       warnings: policy.warnings,
     }

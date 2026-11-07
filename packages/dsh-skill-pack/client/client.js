@@ -715,34 +715,6 @@ window.__ModuleLoader__.load({
       return inherit ? 2 : 3
     }
 
-    /**
-     * 生效值。链与 `src/policy.ts` 一致：
-     * `pack.items ?? pack.groups ?? default.items ?? default.groups ?? true`。
-     */
-    function resolveItem(pack, defaultPack, assignments, name) {
-      const own = itemValue(pack, name)
-      if (own !== null) return own
-      const gid = assignments[name] || null
-      if (gid !== null) {
-        const group = groupValue(pack, gid)
-        if (group !== null) return group
-      }
-      const fallbackItem = itemValue(defaultPack, name)
-      if (fallbackItem !== null) return fallbackItem
-      if (gid !== null) {
-        const fallbackGroup = groupValue(defaultPack, gid)
-        if (fallbackGroup !== null) return fallbackGroup
-      }
-      return true
-    }
-
-    function groupInherit(pack, defaultPack, groupId) {
-      const fromPack = groupValue(pack, groupId)
-      if (fromPack !== null) return fromPack
-      const fromDefault = groupValue(defaultPack, groupId)
-      return fromDefault === null ? true : fromDefault
-    }
-
     function groupNameOf(groups, groupId) {
       for (const group of groups || []) {
         if (group.id === groupId) return group.name
@@ -1462,17 +1434,11 @@ window.__ModuleLoader__.load({
               })
         // 顺序是「开 > 关 > 跟随(开) > 跟随(关)」：显式决定过的排在前面，
         // 跟随项再按它实际会落到开还是关分档。同档按名字排。
+        // 「跟随」会落到哪：选中 pack 的组记录优先，其余由宿主给的 default 链答案决定。
+        const landing = (row) => groupValue(pack, groupIdOf(row)) ?? row.openGlobal
         return visible.sort((a, b) => {
-          const left = rankOf(
-            itemValue(pack, a.name),
-            isDefault,
-            resolveItem(pack, defaultPack, data.groups.assignments, a.name),
-          )
-          const right = rankOf(
-            itemValue(pack, b.name),
-            isDefault,
-            resolveItem(pack, defaultPack, data.groups.assignments, b.name),
-          )
+          const left = rankOf(itemValue(pack, a.name), isDefault, landing(a))
+          const right = rankOf(itemValue(pack, b.name), isDefault, landing(b))
           if (left !== right) return left - right
           return a.name.localeCompare(b.name, 'zh')
         })
@@ -1481,8 +1447,9 @@ window.__ModuleLoader__.load({
       /** 分组同样「开 > 关 > 跟随(开) > 跟随(关)」。 */
       const orderedGroups = useMemo(() => {
         return [...data.groups.groups].sort((a, b) => {
-          const left = rankOf(groupValue(pack, a.id), isDefault, groupInherit(pack, defaultPack, a.id))
-          const right = rankOf(groupValue(pack, b.id), isDefault, groupInherit(pack, defaultPack, b.id))
+          // 选中 pack 没有组记录时，落在 default 的组记录上；再没有就是开。
+          const left = rankOf(groupValue(pack, a.id), isDefault, groupValue(defaultPack, a.id) ?? true)
+          const right = rankOf(groupValue(pack, b.id), isDefault, groupValue(defaultPack, b.id) ?? true)
           if (left !== right) return left - right
           return a.name.localeCompare(b.name, 'zh')
         })
@@ -1617,7 +1584,7 @@ window.__ModuleLoader__.load({
             ? h('div', { style: S.hint }, '还没有分组。到「分组」页新建，或直接在下面逐项设置。')
             : orderedGroups.map((group) => {
                 const value = groupValue(pack, group.id)
-                const inherited = groupInherit(pack, defaultPack, group.id)
+                const inherited = groupValue(defaultPack, group.id) ?? true
                 return h(
                   'div',
                   {
@@ -1656,7 +1623,7 @@ window.__ModuleLoader__.load({
             : items.map((row) => {
                 const value = itemValue(pack, row.name)
                 const gid = groupIdOf(row)
-                const inherited = resolveItem(pack, defaultPack, data.groups.assignments, row.name)
+                const inherited = groupValue(pack, gid) ?? row.openGlobal
                 return h(
                   'div',
                   {
@@ -1686,6 +1653,16 @@ window.__ModuleLoader__.load({
                           title: '同层已被别的插件先注册，关闭不生效',
                         },
                         '关不掉',
+                      )
+                    : null,
+                  row.open === null
+                    ? h(
+                        'span',
+                        {
+                          style: { ...S.badge, color: T.dim },
+                          title: '清单不完整：这一行此刻没有生效状态，改动会在清单补齐后生效',
+                        },
+                        '未生效',
                       )
                     : null,
                   value === null && !isDefault
@@ -2004,8 +1981,6 @@ window.__ModuleLoader__.load({
           console.error('dsh-skill-pack: 客户端初始化失败', error)
         }
       },
-      /** 仅测试使用：核对浏览器侧求值链与服务端 `src/policy.ts` 一致。宿主加载器忽略未知字段。 */
-      __test: { resolveItem, normalizeCwd, groupValue, itemValue },
     }
   },
 })

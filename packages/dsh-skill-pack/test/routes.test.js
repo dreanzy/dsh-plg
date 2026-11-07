@@ -176,6 +176,24 @@ test('default pack 关掉的项在行里体现为 openGlobal=false 且来源是 
   assert.equal(alpha.decidedVia, 'item')
 })
 
+test('清单不完整时行不下发生效值，hidden 为空', async () => {
+  const home = await freshHome()
+  await writePacks(home, { default: { name: 'default', items: { alpha: false } } })
+  // 清单残缺时遮蔽集会被当成空集：此地说「关」就是假话，行只能给 null。
+  const partial = {
+    ...fakeSkills(),
+    async snapshot() {
+      return { skills: rows, complete: false }
+    },
+  }
+  const view = await handleGlobal(fakeCtx(partial), depsWith(partial))
+  const alpha = view.value.skills.find((row) => row.name === 'alpha')
+  assert.equal(alpha.open, null)
+  // 链自己的答案仍保留，供面板诊断。
+  assert.equal(alpha.openGlobal, false)
+  assert.equal(alpha.itemGlobal, false)
+})
+
 test('apply 写盘后返回新状态，且意图不互相覆盖', async () => {
   const home = await freshHome()
   const ctx = fakeCtx(fakeSkills())

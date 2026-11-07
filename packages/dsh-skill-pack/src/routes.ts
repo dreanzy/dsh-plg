@@ -1,4 +1,5 @@
-import { createResolver, defaultPackOf } from './policy.js'
+import { defaultPackOf } from './policy.js'
+import { effective } from './effective.js'
 import { isOfficialSkill, type SkillSummaryLike, type SkillsFace } from './inventory.js'
 import { applyCommands, type PolicyState } from './store.js'
 import type { ScopeSnapshot, SnapshotValue } from './snapshot.js'
@@ -45,8 +46,8 @@ export interface SkillRow {
   /** 官方 `@deepseek-ai` 技能：默认不在面板出现。 */
   readonly official: boolean
   readonly groupId: string | null
-  /** 该工作区绑定的 pack 求值出的最终状态。全局面板用不到。 */
-  readonly open: boolean
+  /** 该工作区绑定的 pack 求值出的最终状态；清单不完整时为 `null`（未生效）。 */
+  readonly open: boolean | null
   /** 只按 default pack 求值的状态。全局面板用它渲染开关。 */
   readonly openGlobal: boolean
   /** 行内是否带项级覆盖（该 pack 有键）。 */
@@ -228,29 +229,18 @@ function packViews(book: PackBook): PackView[] {
 /**
  * 造面板行。
  *
- * `scope` 决定用哪条求值链：`workspace` 走「绑定 pack → default → 内置缺省」，
- * `global` 直接按 default 求值（全局面板与旧客户端都只认那一层）。
+ * 求值本身归 `effective`：面板与装配读同一份结论，这里只把清单上的展示字段拼上去。
+ * `scope` 决定用哪条链：`workspace` 走「绑定 pack → default → 内置缺省」，
+ * `global` 直接按 default 求值。
  */
 function buildRows(
   rows: readonly SkillSummaryLike[],
   state: PolicyState,
   scope: 'global' | 'workspace',
+  complete: boolean,
 ): SkillRow[] {
-  const defaultPack = defaultPackOf(state.packs)
-  const resolver =
-    scope === 'workspace'
-      ? createResolver({
-          pack: state.pack,
-          packId: state.packId,
-          defaultPack,
-          assignments: state.groups.assignments,
-        })
-      : createResolver({ pack: null, defaultPack, assignments: state.groups.assignments })
-  const defaultResolver = createResolver({
-    pack: null,
-    defaultPack,
-    assignments: state.groups.assignments,
-  })
+  const answer = effective({ policy: state, names: rows.map((row) => row.name), scope, complete })
+  const answers = new Map(answer.rows.map((row) => [row.name, row]))
   const showOfficial = state.ui.showOfficialSkills
   const out: SkillRow[] = []
   for (const row of rows) {
@@ -258,21 +248,14 @@ function buildRows(
     // 官方技能只在面板层面过滤；求值始终用全量清单，
     // 否则把「显示官方技能」关回去之后，之前对它们做的决定会失效。
     if (official && !showOfficial) continue
-    const decision = resolver.decide(row.name)
-    const defaultDecision = defaultResolver.decide(row.name)
+    const item = answers.get(row.name)
+    if (item === undefined) continue
     out.push({
-      name: row.name,
+      ...item,
       description: row.description,
       source: row.source,
       provider: row.provider,
       official,
-      groupId: resolver.groupOf(row.name) ?? null,
-      open: decision.value,
-      openGlobal: defaultDecision.value,
-      itemGlobal: defaultPack.items[row.name] ?? null,
-      itemWorkspace: state.pack === null ? null : (state.pack.items[row.name] ?? null),
-      decidedBy: decision.packId,
-      decidedVia: decision.via,
       origin: originOf(row),
     })
   }
@@ -344,7 +327,7 @@ export async function handleGlobal(
         ui: state.ui,
         groups: state.groups,
         bindings: state.bindings,
-        skills: buildRows(view.rows, state, 'global'),
+        skills: buildRows(view.rows, state, 'global', view.complete),
         complete: view.complete,
         warnings: view.warnings,
         stuck: deps.stuck(),
@@ -379,7 +362,7 @@ async function buildWorkspaceView(
       ui: state.ui,
       groups: state.groups,
       bindings: state.bindings,
-      skills: buildRows(view.rows, state, 'workspace'),
+      skills: buildRows(view.rows, state, 'workspace', view.complete),
       complete: view.complete,
       warnings: view.warnings,
       cwd,
