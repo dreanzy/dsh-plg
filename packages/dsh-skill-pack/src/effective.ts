@@ -50,13 +50,13 @@ export interface Effective {
 export function effective(input: EffectiveInput): Effective {
   const { policy, names, scope, complete } = input
   const defaultPack = defaultPackOf(policy.packs)
-  const assignments = policy.groups.assignments
+  const groups = policy.groups
   const resolver = createResolver(
     scope === 'workspace'
-      ? { pack: policy.pack, packId: policy.packId, defaultPack, assignments }
-      : { pack: null, defaultPack, assignments },
+      ? { pack: policy.pack, packId: policy.packId, defaultPack, groups }
+      : { pack: null, defaultPack, groups },
   )
-  const globalResolver = createResolver({ pack: null, defaultPack, assignments })
+  const globalResolver = createResolver({ pack: null, defaultPack, groups })
   const answers = new Map<string, Decision>()
   const rows: EffectiveRow[] = []
   for (const name of names) {

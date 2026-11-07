@@ -26,14 +26,31 @@ function emptyPack(name = '默认') {
   return { name, items: {}, groups: {} }
 }
 
+/** 造一份组注册表：用例只关心归属，组名就用 id 顶替。 */
+function registryOf(map) {
+  const ids = new Set(Object.values(map))
+  return { groups: [...ids].map((id) => ({ id, name: id })), assignments: map }
+}
+
 function withPolicy(pack = null, defaultPack = emptyPack(), map = assignments, packId) {
   return createResolver({
     pack,
     ...(packId === undefined ? {} : { packId }),
     defaultPack: { ...emptyPack(), ...defaultPack },
-    assignments: map,
+    groups: registryOf(map),
   })
 }
+
+test('悬空组 id 按未分组处理', () => {
+  // 删除分组时 store 会清归属，旧数据里仍可能留下指向已删分组的 id。
+  const r = createResolver({
+    pack: { name: 'p1', items: {}, groups: { 'g-gone': false } },
+    defaultPack: emptyPack(),
+    groups: { groups: [], assignments: { x: 'g-gone' } },
+  })
+  assert.equal(r.groupOf('x'), undefined)
+  assert.equal(r.isOpen('x'), true)
+})
 
 test('没有记录时默认开', () => {
   assert.equal(withPolicy(null).isOpen('anything'), true)
