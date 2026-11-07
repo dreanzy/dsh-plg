@@ -1,4 +1,5 @@
 import { type Inventory, type SkillSummaryLike, type SkillsFace } from './inventory.js'
+import { createReconciler, type Dispose } from './reconcile.js'
 import { createScopeSnapshot, fingerprintOf, type ScopeSnapshot } from './snapshot.js'
 import { loadState } from './store.js'
 
@@ -65,24 +66,26 @@ function scopedSkills(agent: AgentLike): SkillsFace | null {
 
 interface AgentState {
   readonly agent: AgentLike
-  /** 释放全部遮蔽副本。`null` 表示当前这一轮没有任何遮蔽。 */
-  dispose: (() => void) | null
   /** 隐藏集的规范串，用来跳过没有变化的重新落地。 */
   key: string
   /** 注册遮蔽副本后复验，模型侧仍然看得见的名字。 */
   stuck: readonly string[]
 }
 
-async function buildShadows(
-  ctx: PluginContext,
+/** 一份遮蔽的「读」阶段产物：注册时只差调用 `skills.register()`。 */
+interface ShadowDraft {
+  readonly row: SkillSummaryLike
+  readonly content: string
+}
+
+async function prepareShadows(
   skills: SkillsFace,
   rows: readonly SkillSummaryLike[],
   hidden: readonly string[],
   cwd: string,
   scope: unknown,
-): Promise<{ dispose: () => void; stuck: string[] }> {
+): Promise<ShadowDraft[]> {
   const byName = new Map(rows.map((row) => [row.name, row]))
-  const disposers: Array<() => void> = []
 
   /**
    * **先取全部定义，再统一注册。**
@@ -95,7 +98,7 @@ async function buildShadows(
    *
    * 分段之后只有第一次 `get()` 可能全量，其余命中缓存；注册本身是微秒级。
    */
-  const prepared: Array<{ row: SkillSummaryLike; content: string }> = []
+  const prepared: ShadowDraft[] = []
   for (const name of hidden) {
     const row = byName.get(name)
     if (row === undefined) continue
@@ -109,7 +112,22 @@ async function buildShadows(
     prepared.push({ row, content })
   }
 
-  for (const { row, content } of prepared) {
+  return prepared
+}
+
+/**
+ * 同步注册一份遮蔽。
+ *
+ * 放进 reconcile 的 `build` 里调用：那一刻上一轮已经释放；这一半失败也退回无资源，
+ * 不会留下半份。
+ */
+function registerShadows(
+  ctx: PluginContext,
+  skills: SkillsFace,
+  drafts: readonly ShadowDraft[],
+): Dispose | null {
+  const disposers: Dispose[] = []
+  for (const { row, content } of drafts) {
     try {
       disposers.push(
         skills.register({
@@ -125,8 +143,8 @@ async function buildShadows(
       ctx.logger.warn(`dsh-skill-pack: 注册遮蔽副本失败（${row.name}）：${String(error)}`)
     }
   }
-
-  const release = (): void => {
+  if (disposers.length === 0) return null
+  return () => {
     for (const dispose of disposers) {
       try {
         dispose()
@@ -135,9 +153,19 @@ async function buildShadows(
       }
     }
   }
+}
 
-  // 复验：判据是 `invocation.modelInvocable !== false`，不是「名字还在不在」。
-  // 遮蔽只改 invocation 标记，名字永远在清单里。
+/**
+ * 复验：判据是 `invocation.modelInvocable !== false`，不是「名字还在不在」。
+ * 遮蔽只改 invocation 标记，名字永远在清单里。
+ */
+async function verifyShadows(
+  ctx: PluginContext,
+  skills: SkillsFace,
+  hidden: readonly string[],
+  cwd: string,
+  scope: unknown,
+): Promise<string[]> {
   let stuck: string[] = []
   try {
     const after = await skills.snapshot({ cwd, scope })
@@ -156,8 +184,7 @@ async function buildShadows(
   } catch {
     // 复验失败不影响已落地的遮蔽，只是这条会话的「关不掉」名单未知。
   }
-
-  return { dispose: release, stuck }
+  return stuck
 }
 
 /**
@@ -186,6 +213,13 @@ export function installHooks(
   snapshot: ScopeSnapshot
 } {
   const states = new Map<string, AgentState>()
+  /**
+   * 每个 agent 一份装配记账：先释放上一轮、串行、失败退回无资源，三件事都在这里。
+   * key 用 agent id，一个 agent 只有一份遮蔽。
+   */
+  const shadows = createReconciler((message) => {
+    ctx.logger.warn(`dsh-skill-pack: ${message}`)
+  })
   /**
    * scope 对象 → agent 的索引。
    *
@@ -282,51 +316,42 @@ export function installHooks(
     }
 
     const hidden = view.hidden
+    // 计划没变就跳过：这条判断留在调用方，reconcile 只管落地。
     const key = hidden.join(',')
     if (key === state.key) return
 
-    if (state.dispose !== null) {
-      state.dispose()
-      state.dispose = null
-    }
-    state.stuck = []
-
-    if (hidden.length === 0) {
-      state.key = key
+    // 读正文不碰注册表，可以在这里并发；注册必须排进 reconcile 的队列，
+    // 这样「先释放上一轮、再施加这一轮」才成立。
+    const drafts = await prepareShadows(skills, view.rows, hidden, cwd, state.agent.raw)
+    const landed = await shadows.apply(state.agent.id, () => registerShadows(ctx, skills, drafts))
+    if (!landed) {
+      // 上一轮已被释放、这一轮没有资源：不推进 key，下一个事件会重试。
+      state.stuck = []
       return
     }
-
-    const built = await buildShadows(ctx, skills, view.rows, hidden, cwd, state.agent.raw)
-    state.dispose = built.dispose
-    state.stuck = built.stuck
     state.key = key
+    state.stuck =
+      drafts.length === 0 ? [] : await verifyShadows(ctx, skills, hidden, cwd, state.agent.raw)
   }
 
   const onCreated = async (payload: unknown): Promise<void> => {
-    const agent = asAgentLike((payload as { agent?: unknown } | null)?.agent)
-    if (agent === null) {
-      ctx.logger.warn('dsh-skill-pack: agent/created 负载形状不符，跳过')
-      return
-    }
-    if (cwdOf(agent) === null) {
-      ctx.logger.warn(`dsh-skill-pack: agent/created 缺少 cwd，跳过（agent=${agent.id}）`)
-      return
-    }
-    const state: AgentState = { agent, dispose: null, key: '', stuck: [] }
-    // 宿主可能对同一个 agent id 再发一次 created（会话恢复、重连）。
-    // 覆盖前必须释放旧遮蔽，否则注册表里留下没人能释放的第二份副本。
-    const previous = states.get(agent.id)
-    if (previous !== undefined && previous.dispose !== null) {
-      try {
-        previous.dispose()
-      } catch {
-        // 旧遮蔽释放失败不影响新的一轮。
-      }
-    }
-    states.set(agent.id, state)
-    if (typeof agent.raw === 'object' && agent.raw !== null) agentByScope.set(agent.raw, agent)
+    // 这个事件的监听器抛错会让会话创建失败（仓库红线），所以整条路径吞掉降级。
     try {
-      // 这个事件的监听器抛错会让会话创建失败，所以一律吞掉降级。
+      const agent = asAgentLike((payload as { agent?: unknown } | null)?.agent)
+      if (agent === null) {
+        ctx.logger.warn('dsh-skill-pack: agent/created 负载形状不符，跳过')
+        return
+      }
+      if (cwdOf(agent) === null) {
+        ctx.logger.warn(`dsh-skill-pack: agent/created 缺少 cwd，跳过（agent=${agent.id}）`)
+        return
+      }
+      // 宿主可能对同一个 agent id 再发一次 created（会话恢复、重连）。
+      // 覆盖前必须释放旧遮蔽，否则注册表里留下没人能释放的第二份副本。
+      shadows.release(agent.id)
+      const state: AgentState = { agent, key: '', stuck: [] }
+      states.set(agent.id, state)
+      if (typeof agent.raw === 'object' && agent.raw !== null) agentByScope.set(agent.raw, agent)
       await guarded(async () => {
         await applyOne(state)
       })
@@ -340,13 +365,8 @@ export function installHooks(
     if (agent === null) return
     const state = states.get(agent.id)
     if (state === undefined) return
-    if (state.dispose !== null) {
-      try {
-        state.dispose()
-      } catch {
-        // 释放失败无副作用：Agent 已经消失。
-      }
-    }
+    // 释放并忘记这个主体的资源；还排在队列里的那一轮会自己作废。
+    shadows.release(agent.id)
     states.delete(agent.id)
     // 这一格已经没有消费者；不清理会让缓存按开过的会话数单调增长。
     // 同目录还有活会话时会被一并打掉，代价是它们下一轮重读一次。
@@ -402,15 +422,7 @@ export function installHooks(
         // 退订失败不影响后续释放。
       }
     }
-    for (const state of states.values()) {
-      if (state.dispose !== null) {
-        try {
-          state.dispose()
-        } catch {
-          // 同上。
-        }
-      }
-    }
+    for (const id of states.keys()) shadows.release(id)
     states.clear()
     snapshot.invalidate()
   }
@@ -437,7 +449,7 @@ export function installHooks(
     for (const raw of list) {
       const agent = asAgentLike({ agent: raw })
       if (agent === null || states.has(agent.id) || cwdOf(agent) === null) continue
-      const state: AgentState = { agent, dispose: null, key: '', stuck: [] }
+      const state: AgentState = { agent, key: '', stuck: [] }
       states.set(agent.id, state)
       if (typeof agent.raw === 'object' && agent.raw !== null) agentByScope.set(agent.raw, agent)
       try {
