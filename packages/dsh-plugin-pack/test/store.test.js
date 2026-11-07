@@ -1,14 +1,11 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { basename, dirname, join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import {
   applyCommands,
   groupsPath,
-  legacyGlobalPath,
-  legacyGroupsPath,
-  legacyWorkspacePath,
   loadState,
   packsPath,
   workspacesPath,
@@ -16,11 +13,10 @@ import {
 import { normalizeCwd } from '../lib/policy.js'
 
 /**
- * 落盘与兼容读的用例。
+ * 落盘用例。
  *
- * 旧实现有两个策略文件（全局层 + 工作区层）落 `$DSH_HOME/plugin-manager/`；
- * 新实现有三个，都落在 `$DSH_HOME/packs/plugin/`：`packs.json`、`groups.json`、
- * `workspaces.json`。工作区目录下不再产生任何状态文件。
+ * 三个策略文件都落在 `$DSH_HOME/packs/plugin/`：`packs.json`、`groups.json`、
+ * `workspaces.json`。工作区目录下不产生任何状态文件。
  */
 
 async function freshHome() {
@@ -155,85 +151,6 @@ test('ui 命令写入 packs.json', async () => {
     { op: 'defaultTab', value: 'packs' },
   ])
   assert.deepEqual((await readJson(packsPath())).ui, { showOfficialPlugins: false, showChip: false, defaultTab: 'packs' })
-})
-
-test('兼容读：旧 global.json 映射成 default，且读取不写新文件', async () => {
-  await freshHome()
-  await writeJson(legacyGlobalPath(), {
-    items: { 'plug-a': false },
-    groups: { g1: true },
-    // `showSidebarEntry` 已废弃：旧文件里残留这个键时忽略，不报错。
-    ui: { showSidebarEntry: false },
-  })
-  const state = await loadState(null)
-  assert.deepEqual(state.packs.packs.default.items, { 'plug-a': false })
-  assert.deepEqual(state.packs.packs.default.groups, { g1: true })
-  assert.deepEqual(state.ui, { showOfficialPlugins: false, showChip: true, defaultTab: 'groups' })
-  assert.equal(await fileExists(packsPath()), false)
-  assert.equal(await fileExists(workspacesPath()), false)
-})
-
-test('兼容读：旧 groups.json 映射成组注册表，且读取不写新文件', async () => {
-  await freshHome()
-  await writeJson(legacyGroupsPath(), {
-    groups: [{ id: 'g1', name: '一组' }],
-    assignments: { 'plug-a': 'g1' },
-  })
-  const state = await loadState(null)
-  assert.deepEqual(state.groups.groups, [{ id: 'g1', name: '一组' }])
-  assert.deepEqual(state.groups.assignments, { 'plug-a': 'g1' })
-  assert.equal(await fileExists(groupsPath()), false)
-})
-
-test('兼容读：旧工作区层在内存里合成 pack 并绑定到该 cwd，不写盘', async () => {
-  await freshHome()
-  const cwd = await mkdtemp(join(tmpdir(), 'dpp-ws-'))
-  await writeJson(legacyWorkspacePath(cwd), { items: { 'plug-a': false }, groups: { g1: true } })
-  const state = await loadState(cwd)
-  const key = normalizeCwd(cwd)
-  assert.equal(state.binding, 'legacy')
-  assert.equal(state.packId, 'legacy')
-  assert.deepEqual(state.pack?.items, { 'plug-a': false })
-  assert.deepEqual(state.pack?.groups, { g1: true })
-  assert.equal(state.pack?.name, basename(key))
-  assert.deepEqual(state.bindings.bindings, { [key]: 'legacy' })
-  assert.equal(await fileExists(workspacesPath()), false)
-  assert.equal(await fileExists(packsPath()), false)
-})
-
-test('新文件存在时不再读旧文件', async () => {
-  await freshHome()
-  await writeJson(packsPath(), {
-    version: 1,
-    ui: {},
-    packs: { default: { name: 'default', items: { 'plug-a': true } } },
-  })
-  await writeJson(legacyGlobalPath(), { items: { 'plug-a': false } })
-  const state = await loadState(null)
-  assert.deepEqual(state.packs.packs.default.items, { 'plug-a': true })
-})
-
-test('兼容读之后第一次保存承接旧决定，不从空策略起写', async () => {
-  await freshHome()
-  await writeJson(legacyGlobalPath(), { items: { 'plug-a': false } })
-  await applyCommands(null, [{ op: 'packItem', packId: 'default', name: 'plug-b', value: false }])
-  const onDisk = await readJson(packsPath())
-  assert.deepEqual(onDisk.packs.default.items, { 'plug-a': false, 'plug-b': false })
-})
-
-test('兼容读之后第一次组写入同样承接旧组定义', async () => {
-  await freshHome()
-  await writeJson(legacyGroupsPath(), {
-    groups: [{ id: 'g1', name: '一组' }],
-    assignments: { 'plug-a': 'g1' },
-  })
-  await applyCommands(null, [{ op: 'createGroup', name: '二组' }])
-  const onDisk = await readJson(groupsPath())
-  assert.deepEqual(onDisk.groups, [
-    { id: 'g1', name: '一组' },
-    { id: 'g2', name: '二组' },
-  ])
-  assert.deepEqual(onDisk.assignments, { 'plug-a': 'g1' })
 })
 
 test('没有新绑定文件时，deletePack 不会凭空创建 workspaces.json', async () => {

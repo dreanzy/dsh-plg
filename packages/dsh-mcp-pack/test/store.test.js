@@ -1,26 +1,22 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdir, mkdtemp, readdir, readFile, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { normalizeCwd } from '../lib/policy.js'
 import {
   applyCommands,
   groupsPath,
-  legacyGlobalPath,
-  legacyRowsPath,
-  legacyWorkspacePath,
   loadState,
   packsPath,
   workspacesPath,
 } from '../lib/store.js'
 
 /**
- * 落盘与兼容读的用例。
+ * 落盘用例。
  *
- * 旧实现把策略落在 `$DSH_HOME/mcp-manager/` 与 `<cwd>/.dsh/mcp-manager.json`；
- * 新实现三份都落在 `$DSH_HOME/packs/mcp/`：`packs.json`、`groups.json`、
- * `workspaces.json`。工作区目录下不再产生任何状态文件。
+ * 三份状态都落在 `$DSH_HOME/packs/mcp/`：`packs.json`、`groups.json`、
+ * `workspaces.json`。工作区目录下不产生任何状态文件。
  */
 
 async function freshHome() {
@@ -214,86 +210,6 @@ test('组的新增、改名、指派与删除', async () => {
 
   await assert.rejects(applyCommands(null, [{ op: 'assign', rowKey: 'global:a', groupId: 'g9' }]), /未知分组/u)
   await assert.rejects(applyCommands(null, [{ op: 'deleteGroup', groupId: 'g9' }]), /未知分组/u)
-})
-
-test('兼容读：旧 global.json 映射成 default，且读取不写新文件', async () => {
-  await freshHome()
-  await writeJson(legacyGlobalPath(), {
-    version: 1,
-    rows: { 'global:a': { enabled: false, mode: 'lazy' } },
-    // `showSidebarEntry` 已废弃：旧文件里残留这个键时忽略，不报错。
-    settings: { showSidebarEntry: false },
-  })
-  const state = await loadState(null)
-  assert.deepEqual(state.packs.packs.default.rows, { 'global:a': { enabled: false, mode: 'lazy' } })
-  assert.deepEqual(state.ui, { showChip: true, defaultTab: 'groups' })
-  assert.equal(await fileExists(packsPath()), false)
-  assert.equal(await fileExists(groupsPath()), false)
-  assert.equal(await fileExists(workspacesPath()), false)
-})
-
-test('兼容读：更早的 rows.json 也能读', async () => {
-  await freshHome()
-  await writeJson(legacyRowsPath(), { version: 1, rows: { 'own:x': { enabled: false } } })
-  const state = await loadState(null)
-  assert.deepEqual(state.packs.packs.default.rows, { 'own:x': { enabled: false } })
-  assert.equal(await fileExists(packsPath()), false)
-})
-
-test('新文件存在时不再读旧文件', async () => {
-  await freshHome()
-  await writeJson(packsPath(), {
-    version: 1,
-    ui: {},
-    packs: { default: { name: 'default', rows: { 'global:a': { enabled: true } } } },
-  })
-  await writeJson(legacyGlobalPath(), { version: 1, rows: { 'global:a': { enabled: false } } })
-  const state = await loadState(null)
-  assert.deepEqual(state.packs.packs.default.rows, { 'global:a': { enabled: true } })
-})
-
-test('兼容读：旧工作区层在内存里合成 pack 并绑定到该 cwd，不写盘', async () => {
-  await freshHome()
-  const cwd = await mkdtemp(join(tmpdir(), 'dmp-ws-'))
-  await writeJson(legacyWorkspacePath(cwd), {
-    version: 1,
-    rows: { 'global:a': { enabled: false } },
-  })
-  const state = await loadState(cwd)
-  const key = normalizeCwd(cwd)
-  assert.equal(state.binding, 'legacy')
-  assert.equal(state.packId, 'legacy')
-  assert.equal(state.pack.name, key.split('/').pop())
-  assert.deepEqual(state.pack.rows, { 'global:a': { enabled: false } })
-  assert.deepEqual(state.bindings.bindings, { [key]: 'legacy' })
-  assert.equal(await fileExists(workspacesPath()), false)
-  assert.equal(await fileExists(packsPath()), false)
-})
-
-test('兼容读不写盘：连读多次也不产生任何新文件', async () => {
-  const home = await freshHome()
-  await writeJson(legacyGlobalPath(), { version: 1, rows: { 'global:a': { enabled: false } } })
-  await loadState(null)
-  await loadState('D:/other')
-  await loadState(null)
-  const written = await readdir(join(home, 'packs')).catch(() => [])
-  assert.deepEqual(
-    written.filter((name) => name.endsWith('.json')),
-    [],
-  )
-})
-
-test('兼容读之后第一次保存承接旧决定，不从空策略起写', async () => {
-  await freshHome()
-  await writeJson(legacyGlobalPath(), { version: 1, rows: { 'global:a': { enabled: false } } })
-  await applyCommands(null, [
-    { op: 'packRow', packId: 'default', rowKey: 'global:b', patch: { enabled: false } },
-  ])
-  const onDisk = await readJson(packsPath())
-  assert.deepEqual(onDisk.packs.default.rows, {
-    'global:a': { enabled: false },
-    'global:b': { enabled: false },
-  })
 })
 
 test('没有新绑定文件时，deletePack 不会凭空创建 workspaces.json', async () => {

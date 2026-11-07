@@ -150,26 +150,6 @@ test('read：cwd 不是字符串返回 bad-request', async () => {
   assert.match(result.error.message, /cwd/)
 })
 
-test('read：兼容投影把 packs 与绑定映射成旧面板认的形状', async () => {
-  const home = await tempRoot()
-  const cwd = await tempRoot()
-  const { deps } = depsFor(home)
-
-  await handleApply(deps, {
-    cwd,
-    commands: [
-      { op: 'putPack', packId: 'standard', pack: STANDARD },
-      { op: 'bind', cwd, packId: 'standard' },
-    ],
-  })
-
-  const read = await handleRead(deps, { cwd })
-  assert.equal(read.ok, true)
-  assert.equal(read.data.state.global.defaultSchemeId, DEFAULT_PACK_ID)
-  assert.deepEqual(read.data.state.global.schemes.standard, STANDARD)
-  assert.deepEqual(read.data.state.workspace, { schemeId: 'standard' })
-})
-
 /* ------------------------------------------------------------------ *
  * apply / 读回
  * ------------------------------------------------------------------ */

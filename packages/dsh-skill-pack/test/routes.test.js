@@ -376,7 +376,6 @@ test('工作区视图返回绑定与每项的来源 pack', async () => {
   assert.equal(view.value.binding, 'p1')
   assert.equal(view.value.packId, 'p1')
   assert.equal(view.value.packName, '一')
-  assert.deepEqual(view.value.workspace.items, { alpha: false })
 
   const alpha = view.value.skills.find((row) => row.name === 'alpha')
   assert.equal(alpha.open, false)

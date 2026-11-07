@@ -786,16 +786,15 @@ window.__ModuleLoader__.load({
       return '未分组'
     }
 
-    /** `ui` 段兼容读：新服务端给 `ui`，旧形状只有 `policy`。 */
+    /**
+     * `ui` 段。
+     *
+     * 服务端一定有 `ui`；旧面板靠 `policy` 投影兜底的那条分支随兼容层一起删掉了。
+     */
     function uiOf(view) {
       if (!view) return null
       if (view.ui) return view.ui
-      const policy = view.policy || {}
-      return {
-        showOfficialSkills: policy.showOfficialSkills === true,
-        showChip: true,
-        defaultTab: 'groups',
-      }
+      return { showOfficialSkills: false, showChip: true, defaultTab: 'groups' }
     }
 
     /**

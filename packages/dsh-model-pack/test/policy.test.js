@@ -15,8 +15,6 @@ import {
 } from '../lib/pack.js'
 import {
   applyCommands,
-  legacySchemesPath,
-  legacyWorkspacePath,
   loadState,
   packsPath,
   promptsPath,
@@ -74,14 +72,6 @@ async function seedPacks(home, value) {
 
 async function seedWorkspaces(home, value) {
   await writeAt(workspacesPath({ home }), json(value))
-}
-
-async function seedLegacy(home, value) {
-  await writeAt(legacySchemesPath({ home }), json(value))
-}
-
-async function seedLegacyBinding(cwd, value) {
-  await writeAt(legacyWorkspacePath(cwd), json(value))
 }
 
 async function readPacks(home) {
@@ -221,100 +211,6 @@ test('求值链：default 可编辑，内容直接生效', async () => {
   const resolved = resolve(await loadState(cwd, { home }), cwd)
   assert.deepEqual(resolved.pack.session, ROUTE)
   assert.equal(resolved.source, 'default')
-})
-
-/* ------------------------------------------------------------------ *
- * 兼容读：旧路径只在内存里映射，绝不写盘
- * ------------------------------------------------------------------ */
-
-test('兼容读：旧 schemes.json 里每个方案各成一张 pack', async () => {
-  const home = await tempRoot()
-  await seedLegacy(home, { version: 1, defaultSchemeId: 'standard', schemes: { standard: STANDARD, minimal: MINIMAL } })
-
-  const state = await loadState(null, { home })
-  assert.deepEqual(state.packs.packs.minimal, MINIMAL)
-  assert.ok(state.packs.packs.standard !== undefined)
-  // 旧 defaultSchemeId 指向的方案内容搬进 default，名字仍是出厂名。
-  assert.deepEqual(state.packs.packs.default.session, STANDARD.session)
-  assert.deepEqual(state.packs.packs.default.tiers, STANDARD.tiers)
-  assert.equal(state.packs.packs.default.name, '出厂方案')
-  assert.equal(state.defaultFromFile, true)
-  assert.equal(resolve(state).source, 'default')
-})
-
-test('兼容读：旧 defaultSchemeId 指向不存在的方案时用出厂内容', async () => {
-  const home = await tempRoot()
-  await seedLegacy(home, { version: 1, defaultSchemeId: 'gone', schemes: { standard: STANDARD } })
-
-  const state = await loadState(null, { home })
-  assert.deepEqual(state.packs.packs.default.tiers, {})
-  assert.equal(state.defaultFromFile, false)
-  assert.equal(resolve(state).source, 'builtin')
-  assert.ok(state.warnings.some((warning) => warning.includes('gone')))
-})
-
-test('兼容读：旧工作区文件的一条 schemeId 变成一条绑定', async () => {
-  const home = await tempRoot()
-  const cwd = await tempRoot()
-  await seedLegacy(home, { version: 1, defaultSchemeId: 'standard', schemes: { standard: STANDARD } })
-  await seedLegacyBinding(cwd, { version: 1, schemeId: 'standard' })
-
-  const state = await loadState(cwd, { home })
-  assert.equal(state.binding, 'standard')
-  assert.deepEqual(state.bindings, { bindings: { [normalizeCwd(cwd)]: 'standard' }, extra: [] })
-  const resolved = resolve(state, cwd)
-  assert.equal(resolved.source, 'workspace')
-})
-
-test('兼容读：旧工作区写 builtin 归一到未绑定', async () => {
-  const home = await tempRoot()
-  const cwd = await tempRoot()
-  await seedLegacy(home, { version: 1, defaultSchemeId: 'standard', schemes: { standard: STANDARD } })
-  await seedLegacyBinding(cwd, { version: 1, schemeId: 'builtin' })
-
-  const state = await loadState(cwd, { home })
-  assert.equal(state.binding, null)
-  assert.equal(resolve(state, cwd).source, 'default')
-})
-
-test('兼容读：旧提示词文件换到新目录读取', async () => {
-  const home = await tempRoot()
-  await writeAt(join(home, 'model-scheme', 'prompts.json'), json({ version: 1, delegation: '旧覆盖' }))
-
-  const state = await loadState(null, { home })
-  assert.equal(state.prompts.delegation, '旧覆盖')
-  assert.equal(existsSync(promptsPath({ home })), false)
-})
-
-test('兼容读：整轮读取不写任何新文件', async () => {
-  const home = await tempRoot()
-  const cwd = await tempRoot()
-  await seedLegacy(home, { version: 1, defaultSchemeId: 'standard', schemes: { standard: STANDARD } })
-  await seedLegacyBinding(cwd, { version: 1, schemeId: 'standard' })
-  await writeAt(join(home, 'model-scheme', 'prompts.json'), json({ version: 1, delegation: '旧覆盖' }))
-
-  const state = await loadState(cwd, { home })
-  assert.equal(resolve(state, cwd).id, 'standard')
-  assert.equal(state.prompts.delegation, '旧覆盖')
-
-  // 兼容读只在内存里映射：新目录一个文件都不该出现，旧文件逐字节不变。
-  assert.equal(existsSync(join(home, 'packs')), false)
-  assert.equal(
-    await readFile(legacyWorkspacePath(cwd), 'utf8'),
-    json({ version: 1, schemeId: 'standard' }),
-  )
-})
-
-test('兼容读：首次保存从旧配置起步，不丢旧决定', async () => {
-  const home = await tempRoot()
-  await seedLegacy(home, { version: 1, defaultSchemeId: 'standard', schemes: { standard: STANDARD } })
-
-  const state = await applyCommands(null, [{ op: 'showChip', value: false }], { home })
-  const written = await readPacks(home)
-  assert.equal(written.ui.showChip, false)
-  assert.deepEqual(written.packs.default.session, STANDARD.session)
-  assert.deepEqual(written.packs.standard, STANDARD)
-  assert.equal(state.ui.showChip, false)
 })
 
 /* ------------------------------------------------------------------ *
@@ -793,8 +689,6 @@ test('路径：默认落在 DSH home 下，注入时落在注入根下', async (
   assert.equal(promptsPath(), join(sandboxHome, 'packs', 'model', 'prompts.json'))
   assert.equal(promptsPath({ home }), join(home, 'packs', 'model', 'prompts.json'))
   assert.equal(workspacesPath(), join(sandboxHome, 'packs', 'model', 'workspaces.json'))
-  assert.equal(legacySchemesPath({ home }), join(home, 'model-scheme', 'schemes.json'))
-  assert.equal(legacyWorkspacePath('C:\\work'), join('C:\\work', '.dsh', 'model-scheme.json'))
 })
 
 test('隔离：整轮测试没有在真实 home 下创建 pack 或提示词文件', () => {

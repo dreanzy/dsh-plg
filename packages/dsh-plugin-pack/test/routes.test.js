@@ -87,10 +87,6 @@ function workspacesFile(home) {
   return join(home, 'packs', 'plugin', 'workspaces.json')
 }
 
-function legacyGlobalFile(home) {
-  return join(home, 'plugin-manager', 'global.json')
-}
-
 async function writeJson(path, value) {
   await mkdir(join(path, '..'), { recursive: true })
   await writeFile(path, `${JSON.stringify(value, null, 2)}${NEWLINE}`)
@@ -212,19 +208,6 @@ test('default pack 项级停用反映到 open、openGlobal 与来源', async () 
 
   const other = view.value.plugins.find((entry) => entry.pkg === '@deepseek-ai/dsh-thing')
   assert.equal(other.open, true)
-  // 兼容字段是 default pack 的只读投影，不是独立的一层。
-  assert.deepEqual(view.value.policy, { items: { 'plug-a': false }, groups: {} })
-})
-
-test('兼容读：旧 global.json 的决定直接反映在面板上，且不写新文件', async () => {
-  const home = await freshHome()
-  await writeJson(legacyGlobalFile(home), { items: { 'plug-a': false }, ui: { showSidebarEntry: false } })
-  const view = await handleGlobal(fakeCtx(), deps({ catalog: feedFor(catalogFor(defaultPlugins)) }))
-  assert.equal(view.ok, true)
-  const row = view.value.plugins.find((entry) => entry.pkg === 'plug-a')
-  assert.equal(row.open, false)
-  assert.equal(await fileExists(packsFile(home)), false)
-  assert.equal(await fileExists(workspacesFile(home)), false)
 })
 
 test('范围外包名保留不删，且不出现在插件行里', async () => {
@@ -458,7 +441,6 @@ test('工作区视图带 cwd、绑定、生效 pack 名与 stuck', async () => {
   assert.equal(view.value.packName, '工作')
   assert.equal(view.value.live, true)
   assert.deepEqual(view.value.stuck, ['alpha'])
-  assert.deepEqual(view.value.workspace.items, { 'plug-a': false })
 
   const row = view.value.plugins.find((entry) => entry.pkg === 'plug-a')
   assert.equal(row.open, false)
@@ -497,7 +479,6 @@ test('悬空绑定在工作区视图里退回 default，binding 仍保留原始 
   assert.equal(view.value.binding, 'p1-gone')
   assert.equal(view.value.packId, 'default')
   assert.equal(view.value.packName, 'default')
-  assert.equal(view.value.workspace, null)
   const row = view.value.plugins.find((entry) => entry.pkg === 'plug-a')
   assert.equal(row.open, false)
   assert.equal(row.decidedBy, 'default')

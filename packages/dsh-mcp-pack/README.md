@@ -24,7 +24,7 @@
 
 ## 分包与分组
 
-- **Pack（分包）**：一张具名的策略表。工作区只绑一个 pack，未绑定走内置的 `default`。策略不再落在工程目录里：`<cwd>/.dsh/mcp-manager.json` 已废弃，只在兼容读时识别。
+- **Pack（分包）**：一张具名的策略表。工作区只绑一个 pack，未绑定走内置的 `default`。策略不再落在工程目录里：`<cwd>/.dsh/mcp-manager.json` 已废弃，兼容读也已移除。
 - **分组**：描述「哪些行是一类」，与 pack 正交。`groups.json` 的 `assignments` 以行键（`own:<name>` / `global:<name>`）为键。
 - **逐字段独立求值**：
 

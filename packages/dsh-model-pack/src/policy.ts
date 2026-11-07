@@ -7,9 +7,6 @@
  * 求值链严格三段：
  *   工作区绑定的 pack 存在 → 否则 `packs.default` → 否则出厂内置 `DEFAULT_PACK`。
  *
- * 旧文件（`$DSH_HOME/model-scheme/` 与 `<cwd>/.dsh/model-scheme.json`）仍被兼容读：
- * 新文件不存在时在内存里映射成 pack 与绑定，**读取路径绝不写盘**。
- *
  * 不 import 任何宿主服务、不读宿主事件：这里的输入只有路径与命令，
  * 目的是让这些规则能在 `os.tmpdir()` 下被完整验证，而不依赖 DSH 进程。
  */
@@ -28,10 +25,7 @@ import {
   TIER_IDS,
   isTierId,
   normalizeCwd,
-  packsFromLegacy,
   parseBindings,
-  parseLegacyBinding,
-  parseLegacySchemeStore,
   parsePack,
   parsePacks,
   parsePromptOverrides,
@@ -85,21 +79,6 @@ export function workspacesPath(options: PackPathOptions = {}): string {
   return homeJoin(options.home, 'packs', 'model', 'workspaces.json')
 }
 
-/** 旧的全局层路径。只用于兼容读，写路径不再碰它。 */
-export function legacySchemesPath(options: PackPathOptions = {}): string {
-  return homeJoin(options.home, 'model-scheme', 'schemes.json')
-}
-
-/** 旧的提示词覆盖路径。只用于兼容读。 */
-export function legacyPromptsPath(options: PackPathOptions = {}): string {
-  return homeJoin(options.home, 'model-scheme', 'prompts.json')
-}
-
-/** 旧的工作区层路径。只用于兼容读，且只在内存里映射，不写盘。 */
-export function legacyWorkspacePath(cwd: string): string {
-  return join(cwd, '.dsh', 'model-scheme.json')
-}
-
 /* ------------------------------------------------------------------ *
  * 读
  * ------------------------------------------------------------------ */
@@ -128,17 +107,12 @@ async function readText(path: string, warnings: string[]): Promise<string | unde
 interface LoadedPacks {
   readonly book: PackBook
   readonly ui: UiState
-  /** `default` 来自文件或旧配置；假表示它是补出来的出厂内容。 */
+  /** `default` 来自文件；假表示它是补出来的出厂内容。 */
   readonly defaultFromFile: boolean
   readonly warnings: readonly string[]
 }
 
-/**
- * 读 pack 名册。
- *
- * 新文件不存在、旧的 `$DSH_HOME/model-scheme/schemes.json` 存在时，把旧配置在**内存里**
- * 映射成 pack。读取路径绝不写盘：迁移由独立脚本完成。
- */
+/** 读 pack 名册。文件不存在时回落到出厂内容。 */
 async function loadPacks(options: PackPathOptions): Promise<LoadedPacks> {
   const warnings: string[] = []
   const path = packsPath(options)
@@ -153,25 +127,10 @@ async function loadPacks(options: PackPathOptions): Promise<LoadedPacks> {
     }
   }
 
-  const legacyPath = legacySchemesPath(options)
-  const legacyText = await readText(legacyPath, warnings)
-  if (legacyText !== undefined) {
-    const legacy = parseLegacySchemeStore(legacyText, legacyPath)
-    // 映射过程自己也会补 warning（defaultSchemeId 指向不存在的方案），所以用可变副本。
-    const legacyWarnings = [...legacy.warnings]
-    const mapped = packsFromLegacy(legacy.value, legacyWarnings)
-    return {
-      book: mapped.book,
-      ui: { ...EMPTY_UI },
-      defaultFromFile: mapped.defaultFromFile,
-      warnings: [...warnings, ...legacyWarnings],
-    }
-  }
-
   return { book: EMPTY_PACKS, ui: { ...EMPTY_UI }, defaultFromFile: false, warnings }
 }
 
-/** 读提示词覆盖。新文件不存在时读旧路径，同样只在内存里生效。 */
+/** 读提示词覆盖。文件不存在时覆盖为空。 */
 async function loadPrompts(options: PackPathOptions): Promise<{ value: PromptOverrides; warnings: readonly string[] }> {
   const warnings: string[] = []
   const path = promptsPath(options)
@@ -181,27 +140,11 @@ async function loadPrompts(options: PackPathOptions): Promise<{ value: PromptOve
     return { value: parsed.value, warnings: [...warnings, ...parsed.warnings] }
   }
 
-  const legacyPath = legacyPromptsPath(options)
-  const legacyText = await readText(legacyPath, warnings)
-  if (legacyText !== undefined) {
-    const parsed = parsePromptOverrides(legacyText, legacyPath)
-    return { value: parsed.value, warnings: [...warnings, ...parsed.warnings] }
-  }
-
   return { value: EMPTY_PROMPTS, warnings }
 }
 
-/**
- * 读工作区绑定表。
- *
- * `workspaces.json` 缺席时，把该 cwd 的旧 `<cwd>/.dsh/model-scheme.json` 合成一条
- * 内存绑定。旧文件里写 `builtin` 归一成未绑定。
- */
-async function loadBindings(
-  cwd: string | null,
-  cwdKey: string | null,
-  options: PackPathOptions,
-): Promise<{ bindings: Bindings; warnings: readonly string[] }> {
+/** 读工作区绑定表。`workspaces.json` 缺席即空表。 */
+async function loadBindings(options: PackPathOptions): Promise<{ bindings: Bindings; warnings: readonly string[] }> {
   const warnings: string[] = []
   const path = workspacesPath(options)
   const text = await readText(path, warnings)
@@ -210,16 +153,7 @@ async function loadBindings(
     return { bindings: parsed.value, warnings: [...warnings, ...parsed.warnings] }
   }
 
-  if (cwd === null || cwdKey === null) return { bindings: EMPTY_BINDINGS, warnings }
-  const legacyPath = legacyWorkspacePath(cwd)
-  const legacyText = await readText(legacyPath, warnings)
-  if (legacyText === undefined) return { bindings: EMPTY_BINDINGS, warnings }
-
-  const legacy = parseLegacyBinding(legacyText, legacyPath)
-  const merged = [...warnings, ...legacy.warnings]
-  const schemeId = legacy.value.schemeId
-  if (schemeId === undefined) return { bindings: EMPTY_BINDINGS, warnings: merged }
-  return { bindings: { bindings: { [cwdKey]: schemeId }, extra: [] }, warnings: merged }
+  return { bindings: EMPTY_BINDINGS, warnings }
 }
 
 /**
@@ -240,7 +174,7 @@ export interface PackState {
   readonly packId: string
   /** 生效的 pack；`packId === 'default'` 时为 `null`（按 default 求值）。 */
   readonly pack: Pack | null
-  /** `packs.default` 来自文件或旧配置；假表示它是补出来的出厂内容。 */
+  /** `packs.default` 来自文件；假表示它是补出来的出厂内容。 */
   readonly defaultFromFile: boolean
   /** 提示词覆盖；缺省字段跟随内置（spec §6.3.1）。 */
   readonly prompts: PromptOverrides
@@ -257,7 +191,7 @@ export async function loadState(cwd: string | null, options: PackPathOptions = {
   warnings.push(...promptsParsed.warnings)
 
   const cwdKey = normalizeCwd(cwd)
-  const bindingsParsed = await loadBindings(cwd, cwdKey, options)
+  const bindingsParsed = await loadBindings(options)
   warnings.push(...bindingsParsed.warnings)
   const bindings = bindingsParsed.bindings
 
@@ -813,7 +747,7 @@ export async function applyCommands(
   const warnings: string[] = []
 
   if (plan.packs) {
-    // seed 承接兼容读：文件缺席时从旧配置起步，不让第一次保存清空旧决定。
+    // seed 承接读侧：文件缺席时以读到的内容为起点，不让第一次保存清空已有决定。
     const seed = await loadPacks(options)
     await transact(packsPath(options), (current) => applyToPacks(current, commands, seed, warnings), warnings)
   }
@@ -822,7 +756,7 @@ export async function applyCommands(
     await transact(promptsPath(options), (current) => applyToPrompts(current, commands, seed.value, warnings), warnings)
   }
   if (plan.bindings) {
-    const seed = await loadBindings(cwd, normalizeCwd(cwd), options)
+    const seed = await loadBindings(options)
     await transact(
       workspacesPath(options),
       (current) => applyToBindings(current, commands, seed.bindings, warnings),

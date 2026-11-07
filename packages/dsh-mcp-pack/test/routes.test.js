@@ -96,7 +96,6 @@ test('全局视图列出 Loader 行与托管行，并给出三份策略路径', 
   assert.match(view.value.paths.groups, /groups\.json$/u)
   assert.match(view.value.paths.workspaces, /workspaces\.json$/u)
   assert.match(view.value.paths.servers, /servers\.json$/u)
-  assert.equal(view.value.paths.legacyWorkspace, null)
   // 全局视图只按 default 求值：绑定与 pack 名册依然原样给出来。
   assert.equal(view.value.binding, null)
   assert.equal(view.value.packId, 'default')

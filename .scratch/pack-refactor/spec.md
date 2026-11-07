@@ -234,13 +234,16 @@ skill 的侧栏入口已废弃：`sidebar.panellist` 与 `main` 两个槽位不�
 逐个领域，每个领域走同一条流水线：
 
 1. 新代码落地，旧文件仍被读取（兼容读）。
+
 2. 迁移脚本把旧数据写成 pack：
    - `$DSH_HOME/<旧包名>/global.json` 的 `items` / `groups` → `packs.default`；
    - 每个 `<cwd>/.dsh/<旧包名>.json` → 一个名为该目录 basename 的 pack，内容是那份文件的 `items` / `groups`，并在 `workspaces.json` 里绑定该 cwd。同名目录加序号后缀。
    - model 领域：`schemes.json` 的每个方案 → 一个 pack，`defaultSchemeId` 指向的方案内容 → `packs.default`；每个工作区的 `{ schemeId }` → 一条绑定。
 3. 用户验收 UI 显示与迁移结果一致。
-4. 验收通过后，由我方删除旧文件与旧目录。
+4. 验收通过后，由用户删除旧文件与旧目录。
 5. 四个领域全部验收后，删除兼容读代码。
+
+> **状态：已完成。** 四个领域的迁移脚本都已执行，旧全局目录与工作区文件由用户手工清除，兼容读代码（旧路径解析、`Legacy*` 类型、`compatState` / `compatResolved` 投影、对应测试）已从 `src` 移除。
 
 迁移脚本写在 `.tmp/pack-refactor/`，只读取旧文件、只写入新文件，绝不删除任何东西；删除动作单列为一步，由用户确认后执行。
 

@@ -138,9 +138,6 @@ const PROMPT_TIER_IDS: readonly string[] = [...TIER_IDS]
 const PROMPT_KEYS: readonly string[] = ['delegation', ...PROMPT_TIER_IDS]
 const PROMPT_TIER_FIELDS: readonly string[] = ['label', 'text']
 
-/** 内置 pack 的 id。与 pack.ts 的 `DEFAULT_PACK_ID` 逐字一致。 */
-const DEFAULT_PACK_ID = 'default'
-
 /** 覆盖段的一个字段：`null` 删键（= 恢复内置），空串与纯空白一律拒绝。 */
 function readPromptField(
   value: unknown,
@@ -381,38 +378,6 @@ function parseCommands(raw: unknown): { ok: true; commands: ValidCommand[] } | {
 }
 
 /**
- * 兼容投影：旧面板（`client/client.js`）按「全局层 + 工作区层」读取
- * `data.state.global.schemes`、`data.state.workspace.schemeId` 与 `data.resolved.scheme`。
- *
- * 数据实际落在 `packs.json` 与 `workspaces.json`；这里只把生效值投影成旧形状，
- * 让面板重写期间不整页空白。旧的写命令（`putScheme` / `setDefaultScheme` /
- * `bindWorkspace`）已不再接受，投影只用于渲染。
- */
-function compatState(state: unknown): unknown {
-  const record = isRecord(state) ? state : {}
-  const book = isRecord(record['packs']) ? record['packs'] : {}
-  const packs = isRecord(book['packs']) ? book['packs'] : {}
-  const binding = typeof record['binding'] === 'string' ? record['binding'] : null
-  return {
-    ...record,
-    global: { defaultSchemeId: DEFAULT_PACK_ID, schemes: packs },
-    workspace: binding === null ? {} : { schemeId: binding },
-  }
-}
-
-/**
- * 兼容投影：`resolved.pack` 同时以 `scheme` 暴露。
- *
- * 旧面板按 `resolved.scheme.name` 取显示名。新词是 `pack`，两个名字指向同一份数据。
- * `source` 不做映射：`default` 与旧的 `global` 不是同一件事（前者是 pack 名册里的
- * 内置项，后者是已删除的一层），混用会让「绑定失效」与「未绑定」看起来一样。
- */
-function compatResolved(resolved: unknown): unknown {
-  const record = isRecord(resolved) ? resolved : {}
-  return { ...record, scheme: record['pack'] }
-}
-
-/**
  * 面板要的提示词视图：生效值、内置值、用户覆盖原样。
  *
  * 三份都给：生效值用来渲染，内置值用来标「与内置相同」，覆盖原样用来判断
@@ -437,8 +402,8 @@ function buildData(deps: RouteDeps, cwd: string | null, state: unknown): PanelDa
   const record = isRecord(state) ? state : {}
   const overrides = isRecord(record['prompts']) ? record['prompts'] : { tiers: {} }
   return {
-    state: compatState(state),
-    resolved: compatResolved(deps.resolve(state, cwd)),
+    state,
+    resolved: deps.resolve(state, cwd),
     prompts: {
       effective: deps.resolvePrompt(overrides),
       builtin: deps.builtinPrompt(),

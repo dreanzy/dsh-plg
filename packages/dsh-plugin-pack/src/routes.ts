@@ -13,7 +13,6 @@ import {
   type Catalog,
   type Command,
   type GroupRegistry,
-  type LayerPolicy,
   type PackBook,
   type UiState,
 } from './types.js'
@@ -106,11 +105,6 @@ export interface PluginView {
   readonly outOfScope: readonly string[]
   /** 目录还没扫完。前端据此把空的归属显示成「识别中」而不是「未知」。 */
   readonly pending: boolean
-  /**
-   * 兼容字段：旧面板按「全局层」读取 `policy.items` / `policy.groups`。
-   * 值是 `default` pack 的只读投影，不是独立的一层。
-   */
-  readonly policy: LayerPolicy
 }
 
 export interface WorkspaceView extends PluginView {
@@ -120,8 +114,6 @@ export interface WorkspaceView extends PluginView {
   /** 生效的 pack id；未绑定或悬空时为 `default`。 */
   readonly packId: string
   readonly packName: string
-  /** 兼容字段：绑定 pack 的只读投影，不再落盘。 */
-  readonly workspace: LayerPolicy | null
   /** 该工作区是否有活的 Agent（没有时清单只有全局视图）。 */
   readonly live: boolean
   /** 已施加限制但复验仍可见的名字。 */
@@ -298,11 +290,6 @@ function packViews(book: PackBook): PackView[] {
   return out
 }
 
-/** 旧面板字段的投影：`default` pack 就是原来的全局层。 */
-function compatPolicy(state: PolicyState): LayerPolicy {
-  const pack = defaultPackOf(state.packs)
-  return { items: { ...pack.items }, groups: { ...pack.groups } }
-}
 
 interface BuildInput {
   readonly loaded: PolicyState
@@ -398,7 +385,6 @@ function buildPluginView(input: BuildInput): PluginView {
     support: deps.support(),
     outOfScope: [...extras].sort(),
     pending,
-    policy: compatPolicy(loaded),
   }
 }
 
@@ -527,8 +513,6 @@ async function buildWorkspaceView(
     workspaceScoped: true,
   })
   const defaultPack = defaultPackOf(loaded.packs)
-  const workspace: LayerPolicy | null =
-    loaded.pack === null ? null : { items: { ...loaded.pack.items }, groups: { ...loaded.pack.groups } }
   return {
     ok: true,
     value: {
@@ -537,7 +521,6 @@ async function buildWorkspaceView(
       binding: loaded.binding,
       packId: loaded.packId,
       packName: loaded.pack?.name ?? defaultPack.name,
-      workspace,
       live,
       stuck: deps.stuck(),
     },

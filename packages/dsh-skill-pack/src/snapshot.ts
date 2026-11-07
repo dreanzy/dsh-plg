@@ -3,9 +3,6 @@ import type { Inventory, SkillSummaryLike } from './inventory.js'
 import { createResolver, defaultPackOf, hiddenNames, normalizeCwd } from './policy.js'
 import {
   groupsPath,
-  legacyGlobalPath,
-  legacyGroupsPath,
-  legacyWorkspacePath,
   packsPath,
   workspacesPath,
   type PolicyState,
@@ -104,24 +101,17 @@ async function fileStamp(path: string): Promise<string> {
 }
 
 /**
- * 三份新文件与三份旧文件的指纹。
+ * 三份状态文件的指纹。
  *
  * **只做兜底**：同进程写入用 `invalidate()` 显式打掉，不依赖时间戳。这里覆盖的是
- * 「用户在编辑器里手改了文件」——那种改动没有事件可订阅。旧文件也纳入指纹，
- * 因为新文件缺席时读的是它们。
+ * 「用户在编辑器里手改了文件」——那种改动没有事件可订阅。
  *
  * 已知盲区：同毫秒内改完且字节数不变时指纹一样。显式失效路径能覆盖同进程写入，
  * 所以这个盲区只在「外部手改 + 恰好同毫秒同字节数」时成立，代价是旧值多活一轮。
  */
 export async function fingerprintOf(cwd: string | null): Promise<string> {
-  const paths = [
-    packsPath(),
-    groupsPath(),
-    workspacesPath(),
-    legacyGlobalPath(),
-    legacyGroupsPath(),
-  ]
-  if (cwd !== null && cwd.trim() !== '') paths.push(legacyWorkspacePath(cwd))
+  // cwd 已不进指纹（旧工作区层不再读）；参数保留以匹配 `SnapshotDeps.fingerprint` 的形状。
+  const paths = [packsPath(), groupsPath(), workspacesPath()]
   const stamps = await Promise.all(paths.map((path) => fileStamp(path)))
   return stamps.join('|')
 }

@@ -2,7 +2,7 @@ import { scanRows } from './inventory.js'
 import { defaultPackOf, resolveRow, rowEntryOf } from './policy.js'
 import { parseServerDef, readOwned, removeServer, serversPath, updateOwned, upsertServer, type OwnedServers } from './servers.js'
 import { type ScopeSnapshot } from './snapshot.js'
-import { applyCommands, groupsPath, legacyGlobalPath, legacyWorkspacePath, loadState, packsPath, workspacesPath } from './store.js'
+import { applyCommands, groupsPath, loadState, packsPath, workspacesPath } from './store.js'
 import {
   DEFAULT_PACK_ID,
   type Bindings,
@@ -84,8 +84,6 @@ export interface RowsView {
     readonly groups: string
     readonly workspaces: string
     readonly servers: string
-    readonly legacyGlobal: string
-    readonly legacyWorkspace: string | null
   }
 }
 
@@ -221,8 +219,6 @@ async function buildView(
         groups: groupsPath(),
         workspaces: workspacesPath(),
         servers: serversPath(),
-        legacyGlobal: legacyGlobalPath(),
-        legacyWorkspace: cwd === null ? null : legacyWorkspacePath(cwd),
       },
     },
   }

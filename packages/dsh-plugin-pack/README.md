@@ -44,7 +44,7 @@ dsh plugin --profile <profile> add 'github:<owner>/<repo>#<sha>&path:/packages/d
 
 三个策略文件各自独立事务：pack 的编辑压力都在 `packs.json`，组定义与绑定变动稀少，拆开是为了让每份文件都能单独原子写。删除一个 pack 后，绑定表里指向它的键会成为悬空引用，读侧按 `default` 求值，写侧顺手清掉。
 
-旧路径（`$DSH_HOME/plugin-manager/` 与 `<cwd>/.dsh/plugin-manager.json`）仍被**兼容读**：新文件不存在时在内存里映射成 pack，读取路径绝不写盘。迁移由独立脚本完成。
+旧路径（`$DSH_HOME/plugin-manager/` 与 `<cwd>/.dsh/plugin-manager.json`）的兼容读已移除：迁移完成后这些文件连同读取分支一起删掉了，现在只认上面三个文件。
 
 ## 面板
 

@@ -24,7 +24,7 @@ Trade-off: `dynamic` binds arguments best, but every `mcp_load` rewrites the too
 
 ## Packs and groups
 
-- A **pack** is a named policy table. A workspace binds exactly one pack; an unbound workspace follows the built-in `default`. Policies no longer live inside the project: `<cwd>/.dsh/mcp-manager.json` is legacy, read for compatibility only.
+- A **pack** is a named policy table. A workspace binds exactly one pack; an unbound workspace follows the built-in `default`. Policies no longer live inside the project: `<cwd>/.dsh/mcp-manager.json` is legacy and is no longer read either.
 - A **group** says which rows belong together; it is orthogonal to a pack. `groups.json` keys assignments by row key (`own:<name>` / `global:<name>`).
 - Every field resolves **independently**:
 

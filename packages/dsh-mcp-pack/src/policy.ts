@@ -3,7 +3,6 @@ import {
   DEFAULT_PACK_ID,
   EMPTY_BINDINGS,
   EMPTY_GROUPS,
-  EMPTY_LEGACY,
   EMPTY_PACK,
   EMPTY_UI,
   MODES,
@@ -11,7 +10,6 @@ import {
   type FieldSource,
   type GroupDef,
   type GroupRegistry,
-  type LegacyLayer,
   type McpPack,
   type Mode,
   type PackBook,
@@ -344,20 +342,6 @@ export function parseGroups(text: string | undefined): ParseResult<GroupRegistry
   }
 
   return { value: { groups, assignments }, warnings }
-}
-
-/**
- * 兼容读旧的策略层。
- *
- * `$DSH_HOME/mcp-manager/global.json` 与 `<cwd>/.dsh/mcp-manager.json` 都是这个
- * 形状，只在读取路径使用：内容会被映射成内存里的 pack，**不在读取路径写盘**。
- * 旧文件里的 `settings.showSidebarEntry` 已随侧栏入口废弃，与其余未知键一样忽略。
- */
-export function parseLayer(text: string | undefined): ParseResult<LegacyLayer> {
-  const warnings: string[] = []
-  const raw = readJson(text, warnings)
-  if (raw === null) return { value: EMPTY_LEGACY, warnings }
-  return { value: { rows: parseRows(raw['rows'], 'rows', warnings) }, warnings }
 }
 
 function serializeRecord(entries: Record<string, unknown>): string {

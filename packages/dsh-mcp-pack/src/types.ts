@@ -155,18 +155,6 @@ export const EMPTY_UI: UiState = { showChip: true, defaultTab: 'groups' }
 export const EMPTY_GROUPS: GroupRegistry = { groups: [], assignments: {} }
 
 /**
- * 旧策略文件的形状（`$DSH_HOME/mcp-manager/global.json` 与
- * `<cwd>/.dsh/mcp-manager.json` 都是它）。
- *
- * 只用于兼容读：内容在内存里映射成 pack 的 `rows`，**读取路径绝不写盘**。
- */
-export interface LegacyLayer {
-  readonly rows: Readonly<Record<string, RowPolicy>>
-}
-
-export const EMPTY_LEGACY: LegacyLayer = { rows: {} }
-
-/**
  * 字段值来自哪一层。
  *
  * `pack` = 工作区绑定的 pack，`default` = 内置 pack，`builtin` = 两层都没记录，

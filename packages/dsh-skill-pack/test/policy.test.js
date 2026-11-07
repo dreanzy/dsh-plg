@@ -6,9 +6,7 @@ import {
   hiddenNames,
   normalizeCwd,
   parseBindings,
-  parseGlobal,
   parseGroups,
-  parseLayer,
   parsePacks,
   serializeBindings,
   serializeGroups,
@@ -191,18 +189,6 @@ test('已废弃的 ui.showSidebarEntry 残留键被忽略，不留 warning', () 
   assert.equal('showSidebarEntry' in parsed.value.ui, false)
   assert.equal(parsed.value.ui.showOfficialSkills, true)
   assert.deepEqual(parsed.warnings, [])
-})
-
-test('旧全局层仍能解析（仅兼容读）', () => {
-  assert.equal(parseGlobal(undefined).value.showOfficialSkills, false)
-  const legacy = parseGlobal(JSON.stringify({ items: { x: false }, ui: { showOfficialSkills: true } }))
-  assert.deepEqual(legacy.value.items, { x: false })
-  assert.equal(legacy.value.showOfficialSkills, true)
-})
-
-test('旧工作区层仍能解析（仅兼容读）', () => {
-  const legacy = parseLayer(JSON.stringify({ groups: { g1: false } }))
-  assert.deepEqual(legacy.value, { items: {}, groups: { g1: false } })
 })
 
 test('组定义解析：成员表与孤儿引用都保留', () => {

@@ -32,7 +32,7 @@ A binding that points at a deleted pack falls back to `default` and is flagged i
 | `$DSH_HOME/packs/model/prompts.json` | prompt overrides, orthogonal to packs |
 | `$DSH_HOME/packs/model/workspaces.json` | workspace → pack bindings, plus manually added paths |
 
-The legacy paths (`$DSH_HOME/model-scheme/` and `<cwd>/.dsh/model-scheme.json`) are still read for compatibility: when the new files are absent they are mapped into packs and bindings in memory. The read path never writes.
+Compatibility reads for the legacy paths (`$DSH_HOME/model-scheme/` and `<cwd>/.dsh/model-scheme.json`) have been removed: once the migration finished, those files and their read branches were deleted together. Only the three files above are read now.
 
 ```jsonc
 // $DSH_HOME/packs/model/packs.json

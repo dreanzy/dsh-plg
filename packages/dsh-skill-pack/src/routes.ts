@@ -6,9 +6,7 @@ import {
   DEFAULT_PACK_ID,
   type Bindings,
   type Command,
-  type GlobalPolicy,
   type GroupRegistry,
-  type LayerPolicy,
   type PackBook,
   type UiState,
 } from './types.js'
@@ -81,11 +79,6 @@ export interface GlobalView {
   readonly skills: readonly SkillRow[]
   readonly complete: boolean
   readonly warnings: readonly string[]
-  /**
-   * 兼容字段：旧面板按「全局层」读取 `policy.items` / `policy.groups`。
-   * 值是 `default` pack 的只读投影，不是独立的一层。
-   */
-  readonly policy: GlobalPolicy
 }
 
 export interface WorkspaceView extends GlobalView {
@@ -95,8 +88,6 @@ export interface WorkspaceView extends GlobalView {
   /** 生效的 pack id；未绑定或悬空时为 `default`。 */
   readonly packId: string
   readonly packName: string
-  /** 兼容字段：绑定 pack 的只读投影，不再落盘。 */
-  readonly workspace: LayerPolicy | null
   readonly live: boolean
   readonly hidden: readonly string[]
   /** 已注册遮蔽副本但复验仍可见的名字。 */
@@ -203,15 +194,6 @@ function originOf(row: SkillSummaryLike): string {
   return segments[segments.length - 1] ?? ''
 }
 
-/** 旧面板字段的投影：`default` pack 就是原来的全局层。 */
-function compatGlobalPolicy(state: PolicyState): GlobalPolicy {
-  const pack = defaultPackOf(state.packs)
-  return {
-    items: { ...pack.items },
-    groups: { ...pack.groups },
-    showOfficialSkills: state.ui.showOfficialSkills,
-  }
-}
 
 function packViews(book: PackBook): PackView[] {
   const ids = Object.keys(book.packs).sort((a, b) => {
@@ -357,7 +339,6 @@ export async function handleGlobal(
         skills: buildRows(view.rows, state, 'global'),
         complete: view.complete,
         warnings: view.warnings,
-        policy: compatGlobalPolicy(state),
       },
     }
   } catch (error) {
@@ -382,8 +363,6 @@ async function buildWorkspaceView(
   const view = await deps.snapshot.refresh(cwd, agent)
   const state = view.policy
   const defaultPack = defaultPackOf(state.packs)
-  const workspace: LayerPolicy | null =
-    state.pack === null ? null : { items: { ...state.pack.items }, groups: { ...state.pack.groups } }
   return {
     ok: true,
     value: {
@@ -394,12 +373,10 @@ async function buildWorkspaceView(
       skills: buildRows(view.rows, state, 'workspace'),
       complete: view.complete,
       warnings: view.warnings,
-      policy: compatGlobalPolicy(state),
       cwd,
       binding: state.binding,
       packId: state.packId,
       packName: state.pack?.name ?? defaultPack.name,
-      workspace,
       live,
       hidden: view.hidden,
       stuck,

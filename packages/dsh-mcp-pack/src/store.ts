@@ -1,17 +1,15 @@
 import { mkdir, readFile } from 'node:fs/promises'
-import { basename, dirname, join } from 'node:path'
+import { dirname } from 'node:path'
 import { withFileLock, writeFileAtomic } from '@deepseek-ai/dsh-atomic-write'
 import { dshHomePath } from '@deepseek-ai/dsh-home-paths'
 import {
   normalizeCwd,
   parseBindings,
   parseGroups,
-  parseLayer,
   parsePacks,
   serializeBindings,
   serializeGroups,
   serializePacks,
-  type ParsedPacks,
 } from './policy.js'
 import {
   DEFAULT_PACK_ID,
@@ -22,7 +20,6 @@ import {
   type Bindings,
   type Command,
   type GroupRegistry,
-  type LegacyLayer,
   type McpPack,
   type PackBook,
   type ParseResult,
@@ -54,21 +51,6 @@ export function diagPath(): string {
   return dshHomePath('packs', 'mcp', 'diag.json')
 }
 
-/** 旧全局层路径。只用于兼容读，写路径不再碰它。 */
-export function legacyGlobalPath(): string {
-  return dshHomePath('mcp-manager', 'global.json')
-}
-
-/** 更早的一版旧全局层文件名。只用于兼容读，读不到就当没有。 */
-export function legacyRowsPath(): string {
-  return dshHomePath('mcp-manager', 'rows.json')
-}
-
-/** 旧的工作区层路径。只用于兼容读，且只在内存里映射，不写盘。 */
-export function legacyWorkspacePath(cwd: string): string {
-  return join(cwd, '.dsh', 'mcp-manager.json')
-}
-
 async function readText(path: string): Promise<string | undefined> {
   try {
     return await readFile(path, 'utf8')
@@ -89,8 +71,7 @@ async function transact(path: string, mutate: (current: string | undefined) => s
   await withFileLock(path, async () => {
     const current = await readText(path)
     const next = mutate(current)
-    // `null` 表示这一批命令没有实际改变：不落盘。兼容读期间这很重要——
-    // 凭空建一个空文件会让旧文件的降级路径立刻失效。
+    // `null` 表示这一批命令没有实际改变：不落盘，不凭空建空文件。
     if (next === null) return
     await writeFileAtomic(path, next, { mode: 0o600, dirMode: 0o700 })
   })
@@ -150,56 +131,16 @@ interface LoadedPacks {
   readonly warnings: readonly string[]
 }
 
-/**
- * 读 `packs.json`。
- *
- * 新文件不存在、旧的 `$DSH_HOME/mcp-manager/global.json`（或更早的 `rows.json`）
- * 存在时，把旧全局层在**内存里**映射成 `packs.default`。读取路径绝不写盘：
- * 迁移由独立脚本完成。
- */
+/** 读 `packs.json`；文件缺席时 `parsePacks` 已给出只有 `default` 的空名册。 */
 async function loadPacks(): Promise<LoadedPacks> {
-  const text = await readText(packsPath())
-  if (text !== undefined) {
-    const parsed = parsePacks(text)
-    return { book: parsed.value.book, ui: parsed.value.ui, warnings: parsed.warnings }
-  }
-
-  for (const path of [legacyGlobalPath(), legacyRowsPath()]) {
-    const legacyText = await readText(path)
-    if (legacyText === undefined) continue
-    const legacy = parseLayer(legacyText)
-    return {
-      book: {
-        packs: {
-          [DEFAULT_PACK_ID]: { name: DEFAULT_PACK_ID, groups: {}, rows: legacy.value.rows },
-        },
-      },
-      ui: { ...EMPTY_UI },
-      warnings: legacy.warnings,
-    }
-  }
-
-  return { book: { packs: { [DEFAULT_PACK_ID]: EMPTY_PACK } }, ui: { ...EMPTY_UI }, warnings: [] }
+  const { value, warnings } = parsePacks(await readText(packsPath()))
+  return { book: value.book, ui: value.ui, warnings }
 }
 
 async function loadGroups(): Promise<ParseResult<GroupRegistry>> {
   const text = await readText(groupsPath())
   if (text !== undefined) return parseGroups(text)
-  // 旧包里没有分组这一层，没有可兼容读的来源。
   return { value: EMPTY_GROUPS, warnings: [] }
-}
-
-function hasRows(layer: LegacyLayer): boolean {
-  return Object.keys(layer.rows).length > 0
-}
-
-/** 给兼容读造出来的 pack 取一个不冲突的 id。 */
-function uniquePackId(packs: Readonly<Record<string, McpPack>>, base: string): string {
-  if (packs[base] === undefined) return base
-  for (let index = 2; ; index += 1) {
-    const candidate = `${base}-${String(index)}`
-    if (packs[candidate] === undefined) return candidate
-  }
 }
 
 /**
@@ -228,7 +169,7 @@ export async function loadState(cwd: string | null): Promise<PolicyState> {
   const warnings: string[] = []
   const loaded = await loadPacks()
   warnings.push(...loaded.warnings)
-  const packs: Record<string, McpPack> = { ...loaded.book.packs }
+  const packs = loaded.book.packs
 
   const groupsParsed = await loadGroups()
   warnings.push(...groupsParsed.warnings)
@@ -240,22 +181,6 @@ export async function loadState(cwd: string | null): Promise<PolicyState> {
     const parsed = parseBindings(bindingsText)
     bindings = parsed.value
     warnings.push(...parsed.warnings)
-  } else if (cwdKey !== null) {
-    // 兼容读：旧的 `<cwd>/.dsh/mcp-manager.json` 合成一个内存 pack 并绑定到该 cwd。
-    const legacyText = await readText(legacyWorkspacePath(cwdKey))
-    if (legacyText !== undefined) {
-      const legacy = parseLayer(legacyText)
-      warnings.push(...legacy.warnings)
-      if (hasRows(legacy.value)) {
-        const id = uniquePackId(packs, 'legacy')
-        packs[id] = {
-          name: basename(cwdKey) || cwdKey,
-          groups: {},
-          rows: legacy.value.rows,
-        }
-        bindings = { bindings: { ...bindings.bindings, [cwdKey]: id }, extra: [] }
-      }
-    }
   }
 
   const binding = cwdKey === null ? null : (bindings.bindings[cwdKey] ?? null)
@@ -299,14 +224,9 @@ function nextPackId(packs: Readonly<Record<string, McpPack>>): string {
   }
 }
 
-/**
- * 写 packs.json。
- *
- * `seed` 是文件缺席时的初值：它来自兼容读的旧全局层。没有这个 seed，
- * 兼容读之后第一次保存会从空策略起写，旧决定被静默丢掉。
- */
-function applyToPacks(current: string | undefined, commands: readonly Command[], seed: ParsedPacks): string {
-  const parsed = current === undefined ? seed : parsePacks(current).value
+/** 写 packs.json。文件缺席时从缺省名册起步。 */
+function applyToPacks(current: string | undefined, commands: readonly Command[]): string {
+  const parsed = parsePacks(current).value
   const ui = { ...parsed.ui }
   const packs: Record<string, McpPack> = { ...parsed.book.packs }
 
@@ -357,9 +277,7 @@ function applyToPacks(current: string | undefined, commands: readonly Command[],
   return serializePacks(packs, ui)
 }
 
-/**
- * 写 groups.json。`seed` 的用途同 `applyToPacks`：文件缺席时先承接兼容读的组定义。
- */
+/** 写 groups.json。文件缺席时从空注册表起步。 */
 function applyToGroups(current: string | undefined, commands: readonly Command[], seed: GroupRegistry): string {
   const parsed = current === undefined ? seed : parseGroups(current).value
   const assignments = { ...parsed.assignments }
@@ -473,8 +391,7 @@ function applyToBindings(
     }
   }
 
-  // 没有实际变化就不创建文件：workspaces.json 一旦存在，旧工作区层的兼容读
-  // 就会关闭，凭空建空文件等于丢掉旧配置。
+  // 没有实际变化就不创建文件：避免产生无意义的空文件。
   return changed ? serializeBindings({ bindings, extra }) : null
 }
 
@@ -530,9 +447,7 @@ export async function applyCommands(cwd: string | null, commands: readonly Comma
   const plan = targets(commands)
 
   if (plan.packs) {
-    // seed 承接兼容读：文件缺席时从旧全局层起步，不让第一次保存清空旧决定。
-    const seed = await loadPacks()
-    await transact(packsPath(), (current) => applyToPacks(current, commands, { book: seed.book, ui: seed.ui }))
+    await transact(packsPath(), (current) => applyToPacks(current, commands))
   }
   if (plan.groups) {
     const seed = (await loadGroups()).value

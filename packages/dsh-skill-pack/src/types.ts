@@ -36,22 +36,6 @@ export interface UiState {
 /** 设置页的三页，顺序固定。 */
 export type SettingsTab = 'groups' | 'packs' | 'workspace'
 
-/**
- * 旧全局层的形状。
- *
- * 仍然保留，但用途只剩两个：兼容读旧的 `global.json`，以及给旧面板提供
- * 只读投影（`policy` / `workspace` 字段）。本插件不再往这个形状落盘。
- */
-export interface LayerPolicy {
-  readonly items: Record<string, boolean>
-  readonly groups: Record<string, boolean>
-}
-
-/** 旧全局层多一个单机级 UI 开关；兼容读与旧面板投影共用。 */
-export interface GlobalPolicy extends LayerPolicy {
-  readonly showOfficialSkills: boolean
-}
-
 /** 分组身份。id 稳定，name 可改。 */
 export interface GroupDef {
   readonly id: string

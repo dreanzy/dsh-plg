@@ -5,9 +5,6 @@
  * 从不抛异常。引用是否成立（绑定的 pack 指向谁）不在这里判定，那是 policy.ts 的求值链；
  * 提示词覆盖与内置的合并也不在这里，那是 prompt.ts 的 resolvePrompt。
  *
- * 旧形状（`$DSH_HOME/model-scheme/schemes.json` 与 `<cwd>/.dsh/model-scheme.json`）
- * 的解析也在这里：只在读取路径使用，绝不写回。
- *
  * 术语见 GLOSSARY.md：pack / 档 / 路由 / 首选与备选 / 思考等级跟随。
  */
 
@@ -40,9 +37,6 @@ export const DEFAULT_PACK_ID = 'default'
  * 文件里没有 `default` 时补这一份，所以「未配置过」与「default 为空」表现一致。
  */
 export const DEFAULT_PACK: Pack = { name: '出厂方案', tiers: {} }
-
-/** 旧文件里代表「出厂方案」的 id。兼容读时归一到 `default`。 */
-export const LEGACY_BUILTIN_ID = 'builtin'
 
 /** pack 条数上限，只为防止文件被写成无界清单。 */
 const MAX_PACKS = 200
@@ -127,21 +121,6 @@ export interface UiState {
 }
 
 /**
- * 旧全局层（`$DSH_HOME/model-scheme/schemes.json`）的形状。
- *
- * 只在兼容读里使用：内容在内存里映射成 pack，读取路径绝不写盘。
- */
-export interface LegacySchemeStore {
-  readonly defaultSchemeId?: string
-  readonly schemes: Readonly<Record<string, Pack>>
-}
-
-/** 旧工作区层（`<cwd>/.dsh/model-scheme.json`）的形状。只用于兼容读。 */
-export interface LegacyBinding {
-  readonly schemeId?: string
-}
-
-/**
  * 一档的提示词覆盖。
  *
  * 与 pack 正交：所有 pack 共用同一份覆盖（spec §6.3.1）。字段缺省即跟随内置，
@@ -177,7 +156,6 @@ export const EMPTY_PACKS: PackBook = { packs: { [DEFAULT_PACK_ID]: DEFAULT_PACK 
 export const EMPTY_BINDINGS: Bindings = { bindings: {}, extra: [] }
 export const EMPTY_UI: UiState = { showChip: true, defaultTab: 'packs' }
 export const EMPTY_PROMPTS: PromptOverrides = { tiers: {} }
-export const EMPTY_LEGACY_BINDING: LegacyBinding = {}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -478,71 +456,6 @@ export function parseBindings(text: string | undefined, path?: string): ParseRes
 }
 
 /**
- * 解析旧全局层 `$DSH_HOME/model-scheme/schemes.json`。
- *
- * 只在兼容读里使用：内容会被映射成 pack，**不在读取路径写盘**。
- * 真正的迁移由独立脚本完成。
- */
-export function parseLegacySchemeStore(text: string | undefined, path?: string): ParseResult<LegacySchemeStore> {
-  const warnings: string[] = []
-  const raw = readJsonObject(text, '旧 pack 文件', warnings, path)
-  if (raw === null) return { value: { schemes: {} }, warnings }
-  checkVersion(raw, '旧 pack 文件', warnings)
-
-  const schemes: Record<string, Pack> = {}
-  const schemesRaw = raw['schemes']
-  if (schemesRaw !== undefined && schemesRaw !== null) {
-    if (!isRecord(schemesRaw)) {
-      warnings.push('旧 pack 文件的 schemes 不是对象，已忽略')
-    } else {
-      const ids = Object.keys(schemesRaw).sort()
-      if (ids.length > MAX_PACKS) {
-        warnings.push(`旧 pack 文件的 schemes 超过 ${String(MAX_PACKS)} 项，已只保留前 ${String(MAX_PACKS)} 项`)
-        ids.length = MAX_PACKS
-      }
-      for (const id of ids) {
-        if (id === LEGACY_BUILTIN_ID) {
-          warnings.push(`旧 pack 文件里不能定义出厂方案「${LEGACY_BUILTIN_ID}」，已忽略`)
-          continue
-        }
-        const pack = parsePack(schemesRaw[id], id, warnings)
-        if (pack !== null) schemes[id] = pack
-      }
-    }
-  }
-
-  const defaultSchemeId = readString(raw['defaultSchemeId'])
-  if (raw['defaultSchemeId'] !== undefined && raw['defaultSchemeId'] !== null && defaultSchemeId === undefined) {
-    warnings.push('旧 pack 文件的 defaultSchemeId 不是非空字符串，已按出厂内容处理')
-  }
-
-  return {
-    value: defaultSchemeId === undefined ? { schemes } : { defaultSchemeId, schemes },
-    warnings,
-  }
-}
-
-/**
- * 解析旧工作区层 `<cwd>/.dsh/model-scheme.json`。
- *
- * `schemeId` 指向旧的方案 id；新语义下它是一条 `bindings` 记录。
- * 旧文件里写 `builtin` 表示「出厂方案」，归一成未绑定。
- */
-export function parseLegacyBinding(text: string | undefined, path?: string): ParseResult<LegacyBinding> {
-  const warnings: string[] = []
-  const raw = readJsonObject(text, '旧工作区绑定文件', warnings, path)
-  if (raw === null) return { value: EMPTY_LEGACY_BINDING, warnings }
-  checkVersion(raw, '旧工作区绑定文件', warnings)
-
-  const schemeId = readString(raw['schemeId'])
-  if (raw['schemeId'] !== undefined && raw['schemeId'] !== null && schemeId === undefined) {
-    warnings.push('旧工作区绑定文件的 schemeId 不是非空字符串，已按未绑定处理')
-  }
-  const normalized = schemeId === LEGACY_BUILTIN_ID ? undefined : schemeId
-  return { value: normalized === undefined ? EMPTY_LEGACY_BINDING : { schemeId: normalized }, warnings }
-}
-
-/**
  * 读一个提示词覆盖字段。
  *
  * 非字符串是 warning 级降级；空串按 spec §6.3.1 视为「没有覆盖」。读时宽容
@@ -699,46 +612,4 @@ export function uniquePackId(packs: Readonly<Record<string, Pack>>, base: string
     const candidate = `${base}-${String(index)}`
     if (packs[candidate] === undefined) return candidate
   }
-}
-
-/**
- * 把旧全局层映射成 pack 名册（内存里，不写盘）。
- *
- * 两条映射：
- * 1. `defaultSchemeId` 指向的方案 → `packs.default` 的**内容**。名字仍是出厂名——
- *    `default` 不可改名，它是求值链的终点而不是一张用户命名过的表。
- * 2. 其余每个方案 → 一张同 id 的 pack（id 冲突时加序号后缀，不丢数据）。
- *
- * 旧 id 与 `default` 撞车（旧文件里真有一张叫 `default` 的方案）时，它保留为
- * `default-2`，因为 `default` 这个 id 已经被内置项占用。
- */
-export function packsFromLegacy(
-  store: LegacySchemeStore,
-  warnings: string[],
-): { book: PackBook; defaultFromFile: boolean } {
-  const packs: Record<string, Pack> = {}
-
-  const chosen = store.defaultSchemeId
-  const source =
-    chosen === undefined || chosen === '' || chosen === LEGACY_BUILTIN_ID ? undefined : store.schemes[chosen]
-  if (chosen !== undefined && chosen !== '' && chosen !== LEGACY_BUILTIN_ID && source === undefined) {
-    warnings.push(`旧配置的 defaultSchemeId「${chosen}」没有对应方案，已按出厂内容处理`)
-  }
-  packs[DEFAULT_PACK_ID] =
-    source === undefined
-      ? DEFAULT_PACK
-      : {
-          name: DEFAULT_PACK.name,
-          ...(source.session === undefined ? {} : { session: source.session }),
-          tiers: source.tiers,
-        }
-
-  for (const id of Object.keys(store.schemes).sort()) {
-    const pack = store.schemes[id]
-    if (pack === undefined) continue
-    const packId = id === DEFAULT_PACK_ID ? uniquePackId(packs, id) : id
-    packs[packId] = pack
-  }
-
-  return { book: { packs }, defaultFromFile: source !== undefined }
 }

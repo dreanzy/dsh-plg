@@ -41,10 +41,10 @@ export interface UiState {
 export type SettingsTab = 'groups' | 'packs' | 'workspace'
 
 /**
- * 旧策略层的形状（`global.json` 与 `<cwd>/.dsh/plugin-manager.json` 都是它）。
+ * 旧策略层的形状。
  *
- * 仍然保留，但用途只剩两个：兼容读旧文件，以及给旧面板提供只读投影
- * （`policy` / `workspace` 字段）。本插件不再往这个形状落盘。
+ * 仍然保留，但用途只剩一个：给旧面板提供只读投影（`policy` / `workspace`
+ * 字段）。本插件不再往这个形状落盘。
  */
 export interface LayerPolicy {
   readonly items: Record<string, boolean>
@@ -107,7 +107,6 @@ export const EMPTY_UI: UiState = {
   defaultTab: 'groups',
 }
 export const EMPTY_GROUPS: GroupRegistry = { groups: [], assignments: {} }
-export const EMPTY_LAYER: LayerPolicy = { items: {}, groups: {} }
 
 /**
  * 受保护工具：关闭前需要二次确认。名单固定，不由任何一层策略改写。

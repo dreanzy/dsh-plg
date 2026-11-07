@@ -2,13 +2,11 @@ import {
   DEFAULT_PACK_ID,
   EMPTY_BINDINGS,
   EMPTY_GROUPS,
-  EMPTY_LAYER,
   EMPTY_PACK,
   EMPTY_UI,
   type Bindings,
   type GroupDef,
   type GroupRegistry,
-  type LayerPolicy,
   type Pack,
   type PackBook,
   type ParseResult,
@@ -80,8 +78,8 @@ function readJson(text: string | undefined, warnings: string[]): Record<string, 
  * 工作区键归一：同一目录的不同写法必须落到同一个键。
  *
  * 反斜杠转正斜杠、剥除尾部斜杠、Windows 下转小写；盘符根目录保留尾斜杠。
- * 这份实现是**唯一一份**：绑定表的键（store）、旧工作区层的读取，以及任何按
- * cwd 找绑定的调用点都调它。复制一份必然分叉，表现是「绑定了却不生效」。
+ * 这份实现是**唯一一份**：绑定表的键（store）以及任何按 cwd 找绑定的调用点
+ * 都调它。复制一份必然分叉，表现是「绑定了却不生效」。
  * 三个 pack 包（skill / plugin / mcp）必须逐字节一致。
  */
 export function normalizeCwd(cwd: string | null): string | null {
@@ -224,28 +222,6 @@ export function parseBindings(text: string | undefined): ParseResult<Bindings> {
   }
 
   return { value: { bindings, extra }, warnings }
-}
-
-/**
- * 兼容读旧的策略层。
- *
- * `$DSH_HOME/plugin-manager/global.json` 与 `<cwd>/.dsh/plugin-manager.json`
- * 都是这个形状，只在读取路径使用：内容会被映射成内存里的 pack，
- * **不在读取路径写盘**。真正的迁移由独立脚本完成。
- *
- * 旧文件里的 `ui.showSidebarEntry` 已随侧栏入口废弃，这里与其余未知键一样忽略。
- */
-export function parseLayer(text: string | undefined): ParseResult<LayerPolicy> {
-  const warnings: string[] = []
-  const raw = readJson(text, warnings)
-  if (raw === null) return { value: EMPTY_LAYER, warnings }
-  return {
-    value: {
-      items: parseMap(raw['items'], 'items', warnings),
-      groups: parseMap(raw['groups'], 'groups', warnings),
-    },
-    warnings,
-  }
 }
 
 /**

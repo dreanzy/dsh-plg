@@ -4,15 +4,7 @@ import { renderInventory, type InventoryRow } from './inventory-section.js'
 import type { ConnectionSpec } from './mcp-connection.js'
 import { defaultPackOf, normalizeCwd, resolveRow } from './policy.js'
 import { serversPath, type OwnedServers, type ServerDef } from './servers.js'
-import {
-  groupsPath,
-  legacyGlobalPath,
-  legacyRowsPath,
-  legacyWorkspacePath,
-  packsPath,
-  workspacesPath,
-  type PolicyState,
-} from './store.js'
+import { groupsPath, packsPath, workspacesPath, type PolicyState } from './store.js'
 import type { ToolTarget } from './tools.js'
 import type { McpRow, Mode, ResolvedRow, RowScan } from './types.js'
 
@@ -206,21 +198,12 @@ async function fileStamp(path: string): Promise<string> {
 }
 
 /**
- * 状态文件的指纹：三个策略文件、托管定义，以及兼容读会读到的旧文件。
+ * 状态文件的指纹：三个策略文件 + 托管定义。
  *
  * 只兜「用户手改了文件」——同进程写入由 `invalidate()` 显式打掉，不靠时间戳。
- * 旧文件也要算进来：删掉 `packs.json` 退回旧文件时，缓存必须失效。
  */
 export async function fingerprintOf(cwd: string | null): Promise<string> {
-  const paths = [
-    packsPath(),
-    groupsPath(),
-    workspacesPath(),
-    serversPath(),
-    legacyGlobalPath(),
-    legacyRowsPath(),
-  ]
-  if (cwd !== null && cwd.trim() !== '') paths.push(legacyWorkspacePath(cwd))
+  const paths = [packsPath(), groupsPath(), workspacesPath(), serversPath()]
   const stamps = await Promise.all(paths.map((path) => fileStamp(path)))
   return stamps.join('|')
 }

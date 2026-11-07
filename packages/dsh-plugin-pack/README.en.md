@@ -44,7 +44,7 @@ Replace `<owner>/<repo>#<sha>` with the real repository and commit (use a commit
 
 The three policy files transact independently: editing pressure lands on `packs.json`, while groups and bindings change rarely, so splitting them lets each file be written atomically on its own. After a pack is deleted, keys in the binding table that still point at it become dangling references: the read side evaluates them as `default`, and the write side cleans them up.
 
-The old paths (`$DSH_HOME/plugin-manager/` and `<cwd>/.dsh/plugin-manager.json`) are still **read for compatibility**: when the new files are absent they are mapped to packs in memory, and the read path never writes. Migration is done by a separate script.
+Compatibility reads for the old paths (`$DSH_HOME/plugin-manager/` and `<cwd>/.dsh/plugin-manager.json`) have been removed: once the migration finished, those files and their read branches were deleted together. Only the three files above are read now.
 
 ## The panel
 

@@ -5,10 +5,8 @@ import {
   EMPTY_PACK,
   EMPTY_UI,
   type Bindings,
-  type GlobalPolicy,
   type GroupDef,
   type GroupRegistry,
-  type LayerPolicy,
   type Pack,
   type PackBook,
   type ParseResult,
@@ -223,49 +221,6 @@ export function parseBindings(text: string | undefined): ParseResult<Bindings> {
   }
 
   return { value: { bindings, extra }, warnings }
-}
-
-/**
- * 兼容读旧的 `$DSH_HOME/skill-manager/global.json`。
- *
- * 只用于新文件缺席时的降级；写路径永远不再产出这个形状。
- */
-export function parseGlobal(text: string | undefined): ParseResult<GlobalPolicy> {
-  const warnings: string[] = []
-  const raw = readJson(text, warnings)
-  if (raw === null) {
-    return { value: { items: {}, groups: {}, showOfficialSkills: false }, warnings }
-  }
-  const ui = raw['ui']
-  const showOfficialSkills =
-    isRecord(ui) && typeof ui['showOfficialSkills'] === 'boolean' ? ui['showOfficialSkills'] : false
-  return {
-    value: {
-      items: parseMap(raw['items'], 'items', warnings),
-      groups: parseMap(raw['groups'], 'groups', warnings),
-      showOfficialSkills,
-    },
-    warnings,
-  }
-}
-
-/**
- * 兼容读旧的 `<cwd>/.dsh/skill-manager.json`。
- *
- * 同样只在读取路径使用：内容会被映射成内存里的一个 pack 并绑定到该 cwd，
- * **不在读取路径写盘**。真正的迁移由独立脚本完成。
- */
-export function parseLayer(text: string | undefined): ParseResult<LayerPolicy> {
-  const warnings: string[] = []
-  const raw = readJson(text, warnings)
-  if (raw === null) return { value: { items: {}, groups: {} }, warnings }
-  return {
-    value: {
-      items: parseMap(raw['items'], 'items', warnings),
-      groups: parseMap(raw['groups'], 'groups', warnings),
-    },
-    warnings,
-  }
 }
 
 /**
