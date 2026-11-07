@@ -58,8 +58,15 @@ export interface ScopeSnapshot {
   read(cwd: string | null, scope?: unknown): SnapshotValue | null
   /** 异步求值。指纹没变就复用；同键并发只算一次。 */
   refresh(cwd: string | null, scope?: unknown, options?: { readonly force?: boolean }): Promise<SnapshotValue>
-  /** 打掉缓存。省略清全部；传 `null` 只清全局那一格。 */
-  invalidate(cwd?: string | null): void
+  /**
+   * 打掉缓存。
+   *
+   * 省略清全部；传 `null` 只清全局那一格；带 `scope` 只清该 scope 那一格。
+   * scope 这一维不能省：会话结束只该回收自己那格，按 cwd 全清会连带打掉
+   * 同目录下其他会话的视图，它们的 `target()` 随后读不到缓存，`mcp_call`
+   * 就报「unknown or disabled MCP server」——Unity 侧看起来一切正常。
+   */
+  invalidate(cwd?: string | null, scope?: unknown): void
   stats(): SnapshotStats
 }
 
@@ -322,7 +329,7 @@ export function createScopeSnapshot(deps: SnapshotDeps): ScopeSnapshot {
         inflight.delete(key)
       }
     },
-    invalidate(cwd) {
+    invalidate(cwd, scope) {
       if (cwd === undefined) {
         entries.clear()
         keysByCwd.clear()
@@ -331,6 +338,13 @@ export function createScopeSnapshot(deps: SnapshotDeps): ScopeSnapshot {
       const cwdKey = cwdKeyOf(cwd)
       const keys = keysByCwd.get(cwdKey)
       if (keys === undefined) return
+      if (scope !== undefined) {
+        const key = `${cwdKey}|${scopeKeyOf(scope)}`
+        entries.delete(key)
+        keys.delete(key)
+        if (keys.size === 0) keysByCwd.delete(cwdKey)
+        return
+      }
       for (const key of keys) entries.delete(key)
       keysByCwd.delete(cwdKey)
     },

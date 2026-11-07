@@ -290,8 +290,10 @@ export function installHooks(deps: HookDeps): Hooks {
     }
     scopes.delete(agent as object)
     byId.delete(agent.id)
-    // 快照缓存按 agent 索引，会话结束后没人再读它，留着只是内存。
-    snapshot.invalidate(cwdOf(agent))
+    // 快照缓存按 cwd + scope 索引，会话结束后没人再读它，留着只是内存。
+    // 必须带 agent：只按 cwd 清会连带打掉同目录下其他会话（子代理与父会话同 cwd）
+    // 的那一格，它们的 target() 立刻读不到缓存。
+    snapshot.invalidate(cwdOf(agent), agent)
     releaseAgent(agent as object, deps.pool)
   }
 

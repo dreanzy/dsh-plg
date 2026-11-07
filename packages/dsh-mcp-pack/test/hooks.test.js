@@ -4,6 +4,7 @@ import { mkdtemp } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { installHooks } from '../lib/hooks.js'
+import { createScopeSnapshot } from '../lib/snapshot.js'
 
 // hooks 自建的快照会读策略文件；不隔离开就会读到跑测试的人自己的 $DSH_HOME。
 process.env['DSH_HOME'] = await mkdtemp(join(tmpdir(), 'dmp-hooks-'))
@@ -237,5 +238,59 @@ test('没有要罩的 server 时不调用 restrict', async () => {
   await evented.emit('agent/created', { agent })
   await new Promise((resolve) => setTimeout(resolve, 40))
   assert.equal(calls, 0)
+  hooks.dispose()
+})
+
+// 用户症状：派发子代理后，主会话的 `mcp_call` 报 unknown or disabled MCP server。
+// 子代理与父会话同 cwd，子会话结束若按 cwd 全清快照，父会话的 `target()` 就读不到缓存。
+test('子 agent 销毁后，同 cwd 的父会话仍能解析 MCP 目标', async () => {
+  const row = {
+    rowKey: 'own:unityMCP',
+    serverName: 'unityMCP',
+    transport: 'streamable-http',
+    definition: 'http://127.0.0.1:8080/mcp',
+    source: 'managed',
+    sourcePath: null,
+    owned: true,
+    declaredDisabled: false,
+    entryId: 'managed:unityMCP',
+    config: { transport: 'streamable-http', serverName: 'unityMCP', url: 'http://127.0.0.1:8080/mcp' },
+  }
+  const defaultPack = { name: 'default', groups: {}, rows: { 'own:unityMCP': { enabled: false, mode: 'lazy' } } }
+  const workPack = { name: 'p2', groups: {}, rows: { 'own:unityMCP': { enabled: true } } }
+  const policy = {
+    packs: { packs: { default: defaultPack, p2: workPack } },
+    ui: { showChip: true, defaultTab: 'groups' },
+    binding: 'p2',
+    packId: 'p2',
+    pack: workPack,
+    groups: { groups: [], assignments: {} },
+    bindings: { bindings: {}, extra: [] },
+    warnings: [],
+  }
+  const snapshot = createScopeSnapshot({
+    scan: () => ({ rows: [row], complete: true, warnings: [] }),
+    load: async () => ({ policy, owned: { version: 1, servers: {} }, warnings: [] }),
+    fingerprint: async () => '0',
+  })
+
+  const evented = fakeEventContext()
+  const hooks = installHooks({
+    context: evented.context,
+    pool: fakePool().pool,
+    scan,
+    snapshot,
+    shieldedServers: async () => [],
+  })
+  const parent = { id: 'parent-1', session: { header: { cwd: 'D:/proj' } } }
+  const child = { id: 'child-1', session: { header: { cwd: 'D:/proj' } } }
+  await evented.emit('agent/created', { agent: parent })
+  await evented.emit('agent/created', { agent: child })
+  assert.notEqual(hooks.scopeOf(parent).inventory.target('unityMCP'), null)
+
+  evented.emit('agent/disposed', { agent: child })
+
+  assert.notEqual(hooks.scopeOf(parent).inventory.target('unityMCP'), null)
+  assert.equal(hooks.scopeOf(child), null)
   hooks.dispose()
 })

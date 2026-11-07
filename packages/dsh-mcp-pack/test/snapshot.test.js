@@ -202,3 +202,28 @@ test('按目录失效不影响别的目录', async () => {
   assert.equal(f.snapshot.read('D:/a'), null)
   assert.notEqual(f.snapshot.read('D:/b'), null)
 })
+
+// 子代理与父会话同 cwd：会话结束只该回收自己那格。按 cwd 全清会让父会话的
+// `target()` 读不到缓存，`mcp_call` 报「unknown or disabled MCP server」。
+test('按 scope 失效不影响同 cwd 的另一个 scope', async () => {
+  const f = fixture()
+  const parent = {}
+  const child = {}
+  await f.snapshot.refresh('D:/proj', parent)
+  await f.snapshot.refresh('D:/proj', child)
+  f.snapshot.invalidate('D:/proj', child)
+  assert.equal(f.snapshot.read('D:/proj', child), null)
+  assert.notEqual(f.snapshot.read('D:/proj', parent), null)
+})
+
+// 不带 scope 的全清是刻意的（路由写入后紧跟 reconcileAll 重建）。
+test('按目录失效不带 scope 时清掉该目录全部格子', async () => {
+  const f = fixture()
+  const scopeA = {}
+  const scopeB = {}
+  await f.snapshot.refresh('D:/proj', scopeA)
+  await f.snapshot.refresh('D:/proj', scopeB)
+  f.snapshot.invalidate('D:/proj')
+  assert.equal(f.snapshot.read('D:/proj', scopeA), null)
+  assert.equal(f.snapshot.read('D:/proj', scopeB), null)
+})
