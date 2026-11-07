@@ -1,11 +1,6 @@
+import { defaultCatalogFeed, type CatalogFeed } from './catalog.js'
 import { effective, type EffectiveRow } from './effective.js'
-import {
-  defaultCatalogFeed,
-  type CatalogFeed,
-  type Support,
-  type ToolSchemaLike,
-  type ToolsFace,
-} from './hooks.js'
+import type { Support, ToolSchemaLike, ToolsFace } from './hooks.js'
 import { defaultPackOf } from './policy.js'
 import { applyCommands, loadState, type PolicyState } from './store.js'
 import {
@@ -221,7 +216,8 @@ async function currentCatalog(
   ) {
     state.lastScanAt = Date.now()
     const scanning = feed
-      .load()
+      // 写盘失败不致命，但必须留痕：否则「面板一直识别中」没有任何线索。
+      .load({ warn: (message) => ctx.logger.warn(message) })
       .then(() => undefined)
       .catch((error: unknown) => {
         ctx.logger.warn('dsh-plugin-pack: 扫描插件目录失败：' + String(error))

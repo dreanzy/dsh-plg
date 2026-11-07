@@ -1,4 +1,4 @@
-import { loadCatalog } from './catalog.js'
+import { defaultCatalogFeed } from './catalog.js'
 import { installHooks, type PluginContext } from './hooks.js'
 import {
   handleApply,
@@ -89,9 +89,11 @@ export function apply(ctx: unknown): void {
 
   // 预热插件目录：面板第一次打开时缓存已经在盘上，不用先空一轮「识别中」。
   // 它只影响速度与归属展示，失败绝不能影响插件装配。
-  void loadCatalog().catch((error: unknown) => {
-    context.logger.warn(name + ': 预热插件目录失败：' + String(error))
-  })
+  void defaultCatalogFeed
+    .load({ warn: (message) => context.logger.warn(message) })
+    .catch((error: unknown) => {
+      context.logger.warn(name + ': 预热插件目录失败：' + String(error))
+    })
 
   context.inject(['connection'], () => {
     const face = readFetchFace(context)

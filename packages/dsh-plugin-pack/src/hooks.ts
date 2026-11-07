@@ -1,4 +1,4 @@
-import { loadCatalog, readCachedCatalog } from './catalog.js'
+import { defaultCatalogFeed, type CatalogFeed } from './catalog.js'
 import { effective, type Effective } from './effective.js'
 import { createReconciler } from './reconcile.js'
 import { loadState, type PolicyState } from './store.js'
@@ -62,24 +62,6 @@ export interface ToolsFace {
 export interface Support {
   readonly restrict: boolean
   readonly promptFilter: boolean
-}
-
-/**
- * 插件目录的读写面。
- *
- * 抽成接口不是为了「可替换」，是为了测试能在一份固定的归属表上跑：
- * 真实扫描要读整个 profile 的 node_modules，用例里跑一遍要几百毫秒且随机器变化。
- * 生产路径永远用 defaultCatalogFeed。
- */
-export interface CatalogFeed {
-  read(): Catalog | null
-  load(options?: { force?: boolean }): Promise<Catalog>
-}
-
-/** 生产用 feed。hooks 与 routes 共用同一个对象，后台扫描的进行状态才不会各算一份。 */
-export const defaultCatalogFeed: CatalogFeed = {
-  read: () => readCachedCatalog(),
-  load: (options) => loadCatalog(options),
 }
 
 /** agent/created 负载里的 Agent，只取本插件用到的字段。 */

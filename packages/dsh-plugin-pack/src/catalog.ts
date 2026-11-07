@@ -106,14 +106,9 @@ interface PackageCandidate {
   readonly version: string
   readonly entry: CandidateFile | null
   readonly lib: readonly CandidateFile[]
+  /** lib 的清单被上限（单包文件数或递归深度）截断了：这份列表不是整包。 */
+  readonly truncated: boolean
 }
-
-/**
- * 扫描计数：只给测试与诊断用。
- *
- * 缓存命中时 `scans` 与 `filesRead` 都不该增长——这就是「命中不做扫描」的可观测断言点。
- */
-export const scanStats: { scans: number; filesRead: number } = { scans: 0, filesRead: 0 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return null
@@ -215,8 +210,13 @@ function stampOf(path: string): string {
   }
 }
 
-/** 只读缓存，不触发扫描。装配路径上只允许用它。 */
-export function readCachedCatalog(): Catalog | null {
+/**
+ * 只读缓存，不触发扫描。装配路径上只允许用它。
+ *
+ * 不对外导出：模块外一律经由 `defaultCatalogFeed.read()`，那样扫描状态与去重
+ * 才有唯一的一份归属。
+ */
+function readCachedCatalog(): Catalog | null {
   const path = catalogPath()
   const stamp = stampOf(path)
   // 取成局部量再判空：`memo` 是可变的，直接访问属性时 TypeScript 收窄不了。
@@ -325,26 +325,38 @@ async function candidateFile(path: string): Promise<CandidateFile | null> {
   }
 }
 
-/** 递归列 lib 目录下的 .js，跳过 node_modules 与隐藏目录。 */
-async function listLibJs(dir: string, depth: number, out: CandidateFile[]): Promise<void> {
-  if (depth > MAX_LIB_DEPTH || out.length >= MAX_FILES_PER_PACKAGE) return
+/**
+ * 递归列 lib 目录下的 .js，跳过 node_modules 与隐藏目录。
+ *
+ * 返回值表示**有没有因为上限放弃过子树**。上限命中时列表只是包的一部分，而调用方
+ * 只看得到列表，从内容上分不出「就这么多」和「被砍了一半」，所以必须显式带出去。
+ */
+async function listLibJs(dir: string, depth: number, out: CandidateFile[]): Promise<boolean> {
+  if (depth > MAX_LIB_DEPTH) {
+    // 越过深度上限就整棵子树放弃，里面有没有 js 不再确认：那正是这条上限要省的遍历。
+    // 宁可多报一次残缺（代价是一轮重扫），也不能把「只扫了一半」说成完整。
+    return true
+  }
+  if (out.length >= MAX_FILES_PER_PACKAGE) return true
   let entries
   try {
     entries = await readdir(dir, { withFileTypes: true })
   } catch {
-    return
+    return false
   }
   entries.sort((left, right) => (left.name < right.name ? -1 : left.name > right.name ? 1 : 0))
+  let truncated = false
   for (const entry of entries) {
-    if (out.length >= MAX_FILES_PER_PACKAGE) return
+    if (out.length >= MAX_FILES_PER_PACKAGE) return true
     if (entry.isDirectory()) {
       if (entry.name === 'node_modules' || entry.name.startsWith('.')) continue
-      await listLibJs(join(dir, entry.name), depth + 1, out)
+      if (await listLibJs(join(dir, entry.name), depth + 1, out)) truncated = true
     } else if (entry.isFile() && entry.name.endsWith('.js')) {
       const file = await candidateFile(join(dir, entry.name))
       if (file !== null) out.push(file)
     }
   }
+  return truncated
 }
 
 /** 解析包声明的入口：文件就用它，目录按 Node 的惯例取 `index.js`。 */
@@ -363,8 +375,8 @@ async function collectDirPackage(dir: string, name: string): Promise<PackageCand
   const version = typeof manifest['version'] === 'string' ? manifest['version'] : '0.0.0'
   const main = typeof manifest['main'] === 'string' && manifest['main'] !== '' ? manifest['main'] : null
   const lib: CandidateFile[] = []
-  await listLibJs(join(dir, 'lib'), 0, lib)
-  return { name, version, entry: await entryFile(dir, main), lib }
+  const truncated = await listLibJs(join(dir, 'lib'), 0, lib)
+  return { name, version, entry: await entryFile(dir, main), lib, truncated }
 }
 
 /**
@@ -550,6 +562,8 @@ async function collectArchivePackages(archive: string): Promise<PackageCandidate
       version,
       entry: entryEntry === undefined ? null : materialize(entryEntry),
       lib,
+      // 归档这一路不设文件数与深度上限：条目表已经在内存里，遍历不再读盘。
+      truncated: false,
     })
   }
   return candidates
@@ -778,7 +792,14 @@ async function scanPackage(candidate: PackageCandidate, deadline: number): Promi
   const sections = new Map<string, number>()
   const tokens = packageTokens(candidate.name)
   const seen = new Set<string>()
-  let complete = true
+  /**
+   * 这包是不是完整扫过。
+   *
+   * 候选清单自己就被上限砍过时，从第一个文件起就是残缺的：complete 初值 false，
+   * 后面读文件失败或撞预算只是保持它。complete 是下游「要不要遮蔽 / 要不要显示未生效」
+   * 的依据，说完整却少了一半文件，比说残缺更贵。
+   */
+  let complete = !candidate.truncated
   let dynamic = 0
 
   const files = candidate.entry === null ? candidate.lib : [candidate.entry, ...candidate.lib]
@@ -792,7 +813,6 @@ async function scanPackage(candidate: PackageCandidate, deadline: number): Promi
     let text: string
     try {
       text = await file.read()
-      scanStats.filesRead += 1
     } catch {
       complete = false
       continue
@@ -860,7 +880,9 @@ async function writeCatalog(catalog: Catalog): Promise<void> {
  *
  * 指纹 = 各包 `name@version` + 入口 mtime 的哈希，对不上就重扫。
  */
-export async function loadCatalog(options?: { force?: boolean }): Promise<Catalog> {
+async function loadCatalog(options?: CatalogLoadOptions): Promise<Catalog> {
+  // 写盘失败只降级成日志：默认空函数，调用方没接就不是错误。
+  const warn = options?.warn ?? (() => undefined)
   const cached = await readCachedEntry()
   // 手写表优先级最高：直接采用，不重扫也不覆盖，`force` 也不例外。
   if (cached !== null && cached.manual) return toCatalog(cached)
@@ -875,7 +897,6 @@ export async function loadCatalog(options?: { force?: boolean }): Promise<Catalo
     return toCatalog(cached)
   }
 
-  scanStats.scans += 1
   const plugins: PluginContribution[] = []
   // "truncated" 与包自己的 known 标志必须分开：
   // - truncated：预算或 IO 把扫描**掐断**了，结果缺一块，写盘会把残缺固化成缓存；
@@ -916,9 +937,43 @@ export async function loadCatalog(options?: { force?: boolean }): Promise<Catalo
    */
   try {
     await writeCatalog(catalog)
-  } catch {
+  } catch (error) {
     // 写不进去（只读 home、权限、占用）只影响下次冷启动要重扫；抛出去会让调用方
-    // 丢掉这一轮刚扫到的结果。
+    // 丢掉这一轮刚扫到的结果。但也不能像以前那样整个吞掉：没有这条日志，
+    // 「面板一直停在识别中」就查不出是缓存根本没落盘。
+    warn('dsh-plugin-pack: 插件目录缓存没写成，下次会重扫：' + String(error))
   }
   return catalog
+}
+
+/* ------------------------------------------------------------------ 读写面 */
+
+/**
+ * 插件目录的读写面。
+ *
+ * 抽成接口不是为了「可替换」，是为了测试能在一份固定的归属表上跑：
+ * 真实扫描要读整个 profile 的 node_modules，用例里跑一遍要几百毫秒且随机器变化。
+ * 生产路径永远用 defaultCatalogFeed。
+ */
+export interface CatalogFeed {
+  read(): Catalog | null
+  load(options?: CatalogLoadOptions): Promise<Catalog>
+}
+
+/** 载入选项。`warn` 用来接「缓存没写成，下次会重扫」这类不致命的问题。 */
+export interface CatalogLoadOptions {
+  readonly force?: boolean
+  readonly warn?: (message: string) => void
+}
+
+/**
+ * 生产用的唯一实例。
+ *
+ * 必须是模块级单例：routes 的扫描去重按 feed 的**对象身份**索引（一个 feed 一份
+ * ScanState，scanning 同时充当并发锁），hooks 与 index 的预热也必须落在同一份状态上。
+ * 各处各造一个，两个请求同时进来就会各扫一遍，去重与 60 秒退避一起失效。
+ */
+export const defaultCatalogFeed: CatalogFeed = {
+  read: () => readCachedCatalog(),
+  load: (options) => loadCatalog(options),
 }
