@@ -22,9 +22,17 @@ import {
  *   mode:     pack.rows[行].mode ?? default.rows[行].mode ?? 'dynamic'
  *   tools:    pack.rows[行].tools ?? default.rows[行].tools ?? []
  *   description: pack.rows[行].description ?? default.rows[行].description ?? ''
+ *
+ * 组级两环只在 gid 仍留在注册表里时参与：悬空引用按未分组处理。
  */
 
-const assignments = { 'global:a': 'g-a', 'global:b': 'g-a', 'global:c': 'g-c' }
+const registry = {
+  groups: [
+    { id: 'g-a', name: '甲' },
+    { id: 'g-c', name: '丙' },
+  ],
+  assignments: { 'global:a': 'g-a', 'global:b': 'g-a', 'global:c': 'g-c' },
+}
 
 function emptyPack(name = '默认') {
   return { name, groups: {}, rows: {} }
@@ -34,31 +42,32 @@ function packOf(rows = {}, groups = {}, name = 'p1') {
   return { name, groups, rows }
 }
 
-function resolve(rowKey, pack = null, defaultPack = emptyPack(), map = assignments) {
-  return resolveRow(rowKey, pack, defaultPack, map)
+function resolve(rowKey, pack = null, defaultPack = emptyPack(), groups = registry, packId = 'p1') {
+  return resolveRow(rowKey, pack, packId, defaultPack, groups)
 }
 
 test('两层都没有记录时取内置缺省：允许、dynamic、无规则、空描述', () => {
   const resolved = resolve('global:a')
-  assert.equal(resolved.enabled, true)
+  assert.equal(resolved.open, true)
+  assert.equal(resolved.openGlobal, true)
   assert.equal(resolved.mode, 'dynamic')
   assert.deepEqual(resolved.tools, [])
   assert.equal(resolved.description, '')
   assert.equal(resolved.groupId, 'g-a')
-  assert.equal(resolved.from, 'builtin')
-  assert.deepEqual(resolved.sources, {
-    enabled: 'builtin',
-    mode: 'builtin',
-    tools: 'builtin',
-    description: 'builtin',
-  })
+  assert.equal(resolved.itemWorkspace, null)
+  assert.equal(resolved.itemGlobal, null)
+  assert.equal(resolved.decidedBy, 'default')
+  assert.equal(resolved.decidedVia, 'builtin')
 })
 
 test('default pack 的逐字段决定生效（原「全局项级」用例）', () => {
   const resolved = resolve('global:a', null, packOf({ 'global:a': { enabled: false, mode: 'lazy' } }, {}, 'default'))
-  assert.equal(resolved.enabled, false)
+  assert.equal(resolved.open, false)
   assert.equal(resolved.mode, 'lazy')
-  assert.equal(resolved.sources.enabled, 'default')
+  assert.equal(resolved.itemWorkspace, null)
+  assert.equal(resolved.itemGlobal, false)
+  assert.equal(resolved.decidedBy, 'default')
+  assert.equal(resolved.decidedVia, 'item')
 })
 
 test('绑定 pack 压过 default pack，两个方向都能覆盖', () => {
@@ -67,15 +76,19 @@ test('绑定 pack 压过 default pack，两个方向都能覆盖', () => {
     packOf({ 'global:a': { enabled: true } }),
     packOf({ 'global:a': { enabled: false } }, {}, 'default'),
   )
-  assert.equal(on.enabled, true)
-  assert.equal(on.sources.enabled, 'pack')
+  assert.equal(on.open, true)
+  assert.equal(on.itemWorkspace, true)
+  assert.equal(on.itemGlobal, false)
+  assert.equal(on.decidedBy, 'p1')
+  assert.equal(on.decidedVia, 'item')
 
   const off = resolve(
     'global:a',
     packOf({ 'global:a': { enabled: false } }),
     packOf({ 'global:a': { enabled: true } }, {}, 'default'),
   )
-  assert.equal(off.enabled, false)
+  assert.equal(off.open, false)
+  assert.equal(off.decidedBy, 'p1')
 })
 
 test('逐字段独立：pack 只改 enabled，mode 仍跟随 default', () => {
@@ -84,36 +97,39 @@ test('逐字段独立：pack 只改 enabled，mode 仍跟随 default', () => {
     packOf({ 'global:a': { enabled: false } }),
     packOf({ 'global:a': { mode: 'lazy', description: '浏览器' } }, {}, 'default'),
   )
-  assert.equal(resolved.enabled, false)
-  assert.equal(resolved.sources.enabled, 'pack')
+  assert.equal(resolved.open, false)
+  assert.equal(resolved.decidedVia, 'item')
   assert.equal(resolved.mode, 'lazy')
-  assert.equal(resolved.sources.mode, 'default')
+  // 只按 default 求值时两层都没有 enabled 记录，落到内置缺省的「开」。
+  assert.equal(resolved.openGlobal, true)
+  assert.equal(resolved.itemGlobal, null)
   assert.equal(resolved.description, '浏览器')
-  assert.equal(resolved.from, 'pack')
 })
 
 test('组级只影响 enabled；mode 等只读 default，pack 级不参与', () => {
   const pack = packOf({ 'global:a': { mode: 'eager' } }, { 'g-a': false })
   const resolved = resolve('global:a', pack)
-  assert.equal(resolved.enabled, false)
-  assert.equal(resolved.sources.enabled, 'pack')
+  assert.equal(resolved.open, false)
+  assert.equal(resolved.decidedBy, 'p1')
+  assert.equal(resolved.decidedVia, 'group')
   // 加载方式描述的是服务器本身，按工作区换没有意义：pack 里写了也不生效。
   assert.equal(resolved.mode, 'dynamic')
-  assert.equal(resolved.sources.mode, 'builtin')
   assert.equal(resolved.groupId, 'g-a')
+  assert.equal(resolved.itemGlobal, null)
+  assert.equal(resolved.openGlobal, true)
 })
 
 test('行级压过组级，同一个 pack 内', () => {
   const pack = packOf({ 'global:a': { enabled: true } }, { 'g-a': false })
-  assert.equal(resolve('global:a', pack).enabled, true)
+  assert.equal(resolve('global:a', pack).open, true)
 })
 
 test('default 的组级压过 default 的行级之外的一切，未分组行不受影响', () => {
   const defaultPack = packOf({}, { 'g-a': false }, 'default')
-  assert.equal(resolve('global:a', null, defaultPack).enabled, false)
-  assert.equal(resolve('global:b', null, defaultPack).enabled, false)
-  assert.equal(resolve('global:c', null, defaultPack).enabled, true)
-  assert.equal(resolve('not-grouped', null, defaultPack).enabled, true)
+  assert.equal(resolve('global:a', null, defaultPack).open, false)
+  assert.equal(resolve('global:b', null, defaultPack).open, false)
+  assert.equal(resolve('global:c', null, defaultPack).open, true)
+  assert.equal(resolve('not-grouped', null, defaultPack).open, true)
 })
 
 test('链序优先：绑定 pack 的组级压过 default 的行级', () => {
@@ -122,8 +138,9 @@ test('链序优先：绑定 pack 的组级压过 default 的行级', () => {
     packOf({}, { 'g-a': true }),
     packOf({ 'global:a': { enabled: false } }, {}, 'default'),
   )
-  assert.equal(resolved.enabled, true)
-  assert.equal(resolved.sources.enabled, 'pack')
+  assert.equal(resolved.open, true)
+  assert.equal(resolved.decidedBy, 'p1')
+  assert.equal(resolved.decidedVia, 'group')
 })
 
 test('绑定 pack 未覆盖的字段逐级跟随 default，来源记为 default', () => {
@@ -132,24 +149,42 @@ test('绑定 pack 未覆盖的字段逐级跟随 default，来源记为 default'
     packOf({ 'global:a': { enabled: false } }),
     packOf({ 'global:c': { enabled: false, description: 'x' } }, {}, 'default'),
   )
-  assert.equal(resolved.enabled, false)
-  assert.equal(resolved.sources.enabled, 'default')
+  assert.equal(resolved.open, false)
+  assert.equal(resolved.decidedBy, 'default')
+  assert.equal(resolved.decidedVia, 'item')
+  assert.equal(resolved.itemWorkspace, null)
+  assert.equal(resolved.itemGlobal, false)
   assert.equal(resolved.description, 'x')
 })
 
 test('显式 false 与缺席是两件事', () => {
   const pack = packOf({ 'global:a': { enabled: false } })
-  assert.equal(resolve('global:a', pack).enabled, false)
-  assert.equal(resolve('global:b', pack).enabled, true)
+  assert.equal(resolve('global:a', pack).open, false)
+  assert.equal(resolve('global:b', pack).open, true)
   assert.equal(rowEntryOf(pack, 'global:a').enabled, false)
   assert.equal(rowEntryOf(pack, 'global:b'), null)
   assert.equal(rowEntryOf(null, 'global:a'), null)
 })
 
 test('没有分组信息时组级两环自然跳过', () => {
-  const resolved = resolveRow('global:a', packOf({}, { 'g-a': false }), emptyPack())
-  assert.equal(resolved.enabled, true)
+  const resolved = resolveRow('global:a', packOf({}, { 'g-a': false }), 'p1', emptyPack())
+  assert.equal(resolved.open, true)
   assert.equal(resolved.groupId, null)
+})
+
+test('指向已删分组的悬空引用按未分组处理', () => {
+  const dangling = {
+    groups: [{ id: 'g-live', name: '在用' }],
+    assignments: { 'global:a': 'g-gone' },
+  }
+  const pack = packOf({}, { 'g-gone': false })
+  const defaultPack = packOf({}, { 'g-gone': false }, 'default')
+  const resolved = resolveRow('global:a', pack, 'p1', defaultPack, dangling)
+  assert.equal(resolved.groupId, null)
+  // 若悬空 id 仍被拿去查 pack.groups，这里会是被遗留开关决定的 false。
+  assert.equal(resolved.open, true)
+  assert.equal(resolved.decidedBy, 'default')
+  assert.equal(resolved.decidedVia, 'builtin')
 })
 
 test('坏 JSON 降级成空策略且不抛错', () => {

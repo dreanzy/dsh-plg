@@ -1,5 +1,5 @@
 import { scanRows } from './inventory.js'
-import { defaultPackOf, resolveRow, rowEntryOf } from './policy.js'
+import { defaultPackOf, rowEntryOf } from './policy.js'
 import { parseServerDef, readOwned, removeServer, serversPath, updateOwned, upsertServer, type OwnedServers } from './servers.js'
 import { type ScopeSnapshot } from './snapshot.js'
 import { applyCommands, groupsPath, loadState, packsPath, workspacesPath } from './store.js'
@@ -52,9 +52,13 @@ export interface PackView {
   readonly builtin: boolean
 }
 
-/** 面板用的一行：发现结果 + 求值结果 + 两个 pack 里的原始条目。 */
-export interface RowView extends McpRow {
-  readonly resolved: ResolvedRow
+/**
+ * 面板用的一行：发现结果 + 求值结论 + 两个 pack 里的原始条目。
+ *
+ * 求值字段（`open` / `itemWorkspace` / `itemGlobal` / `decidedBy` / `decidedVia`）
+ * 摊平在行上，与另外两个包同名：浏览器只渲染，不再自己走链。
+ */
+export interface RowView extends McpRow, ResolvedRow {
   /** 绑定 pack 里的原始条目；没有即跟随。 */
   readonly packEntry: RowPolicy | null
   /** `default` pack 里的原始条目；没有即内置缺省。 */
@@ -177,8 +181,8 @@ function packViews(book: PackBook): PackView[] {
 /**
  * 由共享快照渲染面板视图。
  *
- * 求值本身在 `snapshot.ts`：读盘、合并托管定义、沿链求值、缓存与失效都在那里。
- * 这里只把结果摊平成面板要的形状，不重算任何一刀。
+ * 求值本身在 `effective.ts`，由 `snapshot.ts` 连同读盘与缓存一起持有：面板与
+ * 闸门、名册读的是同一份结论。这里只把它摊平成面板要的形状，不重算任何一刀。
  */
 async function buildView(
   ctx: RouteContext,
@@ -192,14 +196,17 @@ async function buildView(
   const view = await deps.snapshot.refresh(cwd)
   const { policy } = view
   const defaultPack: McpPack = defaultPackOf(policy.packs)
-  const rows: RowView[] = view.rows.map((row) => ({
-    ...row,
-    // 求值结果一定在表里；兜底只为防御快照被换掉的极端情况。
-    resolved:
-      view.resolved.get(row.rowKey) ?? resolveRow(row.rowKey, policy.pack, defaultPack, policy.groups.assignments),
-    packEntry: rowEntryOf(policy.pack, row.rowKey),
-    defaultEntry: rowEntryOf(defaultPack, row.rowKey),
-  }))
+  const rows: RowView[] = []
+  for (const [index, row] of view.rows.entries()) {
+    const resolved = view.effective.rows[index]
+    if (resolved === undefined) continue
+    rows.push({
+      ...row,
+      ...resolved,
+      packEntry: rowEntryOf(policy.pack, row.rowKey),
+      defaultEntry: rowEntryOf(defaultPack, row.rowKey),
+    })
+  }
   return {
     ok: true,
     value: {

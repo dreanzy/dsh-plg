@@ -48,7 +48,7 @@ mode:     default.rows ?? dynamic
 tools:    default.rows ?? []
 description: default.rows ?? ''
 ```
-组级只出现在 `enabled` 那条链上；`mode` / `tools` / `description` 只读内置 `default`——它们描述「这台 server 本身怎么加载」，天然是全局的，分包只覆盖开关。前一环存在即不读后一环。
+组级只出现在 `enabled` 那条链上；`mode` / `tools` / `description` 只读内置 `default`——它们描述「这台 server 本身怎么加载」，天然是全局的，分包只覆盖开关。前一环存在即不读后一环。组级两环只在该行键的分组 id 仍在注册表里时参与：指向已删分组的悬空引用按未分组处理，`pack.groups` 里遗留的开关不生效。
 _Avoid_: 合并规则、优先级
 
 **三态（Tri-state）**:

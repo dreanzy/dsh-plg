@@ -1,19 +1,20 @@
 import { stat } from 'node:fs/promises'
+import { effective, type Effective } from './effective.js'
 import { parseToolFilter } from './filter.js'
 import type { InventoryRow } from './inventory-section.js'
 import type { ConnectionSpec } from './mcp-connection.js'
-import { defaultPackOf, normalizeCwd, resolveRow } from './policy.js'
+import { normalizeCwd } from './policy.js'
 import { serversPath, type OwnedServers, type ServerDef } from './servers.js'
 import { groupsPath, packsPath, workspacesPath, type PolicyState } from './store.js'
 import type { ToolTarget } from './tools.js'
-import type { McpRow, Mode, ResolvedRow, RowScan } from './types.js'
+import type { McpRow, Mode, RowScan } from './types.js'
 
 /** 一份已求值的快照：行、求值结果与两张派生表。 */
 export interface SnapshotValue {
   /** 合并托管定义之后的行。 */
   readonly rows: readonly McpRow[]
-  /** rowKey → 四字段求值结果。 */
-  readonly resolved: ReadonlyMap<string, ResolvedRow>
+  /** 本轮求值结论，与 `rows` 同序；面板与闸门共用这一份。 */
+  readonly effective: Effective
   /** 名册行：允许且不是 eager 的那些。 */
   readonly inventory: readonly InventoryRow[]
   /** rowKey → 可加载目标（含连接参数与工具规则）。 */
@@ -263,18 +264,16 @@ export function createScopeSnapshot(deps: SnapshotDeps): ScopeSnapshot {
       ...loaded.warnings,
       ...scan.warnings,
     ])
-    const defaultPack = defaultPackOf(loaded.policy.packs)
-    const assignments = loaded.policy.groups.assignments
+    const evaluated = effective({ policy: loaded.policy, rows: merged.rows })
 
-    const resolved = new Map<string, ResolvedRow>()
     const targets = new Map<string, ToolTarget>()
     const policies = new Map<string, { enabled: boolean; mode: Mode }>()
     const inventory: InventoryRow[] = []
-    for (const row of merged.rows) {
-      const result = resolveRow(row.rowKey, loaded.policy.pack, defaultPack, assignments)
-      resolved.set(row.rowKey, result)
-      policies.set(row.serverName, { enabled: result.enabled, mode: result.mode })
-      if (!result.enabled) continue
+    for (const [index, row] of merged.rows.entries()) {
+      const result = evaluated.rows[index]
+      if (result === undefined) continue
+      policies.set(row.serverName, { enabled: result.open, mode: result.mode })
+      if (!result.open) continue
       const spec = connectionSpecOf(row)
       if (spec === null) continue
       targets.set(row.rowKey, {
@@ -290,7 +289,7 @@ export function createScopeSnapshot(deps: SnapshotDeps): ScopeSnapshot {
 
     const value: SnapshotValue = {
       rows: merged.rows,
-      resolved,
+      effective: evaluated,
       inventory,
       targets,
       policies,

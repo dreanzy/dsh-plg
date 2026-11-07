@@ -945,20 +945,9 @@ window.__ModuleLoader__.load({
       return typeof row.source === 'string' ? row.source : ''
     }
 
-    /** 一行求值后的结果；服务端没给 `resolved` 时按行上的平铺字段降级。 */
-    function resolvedOf(row) {
-      const resolved = row && row.resolved && typeof row.resolved === 'object' ? row.resolved : null
-      const source = resolved !== null ? resolved : row || {}
-      return {
-        enabled: source.enabled !== false,
-        mode: MODE_LABELS[source.mode] ? source.mode : DEFAULT_MODE,
-        tools: Array.isArray(source.tools) ? source.tools : [],
-        description: typeof source.description === 'string' ? source.description : '',
-      }
-    }
-
+    /** 行描述：宿主求出的描述优先，空时退回定义摘要。 */
     function rowDescriptionOf(row) {
-      const description = resolvedOf(row).description
+      const description = row && typeof row.description === 'string' ? row.description : ''
       if (description !== '') return description
       return row && typeof row.definition === 'string' ? row.definition : ''
     }
@@ -1013,19 +1002,12 @@ window.__ModuleLoader__.load({
     /**
      * 这一行属于哪个组。
      *
-     * 优先用行上的 `groupId`；行上没带时退回组注册表的 `assignments`——两处都读
-     * 才不会因为服务端少投影一个字段就把整页显示成「未分组」。指向未知组时按
-     * 未分组处理（那是悬空引用，不是分组）。
+     * 宿主求值时已校验注册表：悬空引用在那里按未分组处理，这里直接信 `groupId`，
+     * 不再读 `assignments` 复核——两套规则必然分叉。
      */
-    function groupOfRow(groups, row) {
-      const own = row && typeof row.groupId === 'string' && row.groupId !== '' ? row.groupId : null
-      const fromMap = groups.assignments[rowKeyOf(row)] || null
-      const gid = own !== null ? own : fromMap
-      if (gid === null) return null
-      for (const group of groups.groups) {
-        if (group.id === gid) return gid
-      }
-      return null
+    function groupIdOf(row) {
+      const gid = row && row.groupId
+      return typeof gid === 'string' && gid !== '' ? gid : null
     }
 
     function groupNameOf(registry, gid) {
@@ -1033,30 +1015,6 @@ window.__ModuleLoader__.load({
         if (group.id === gid) return group.name
       }
       return '未分组'
-    }
-
-    /** 组级开合：`null` 表示该层不表态。 */
-    function groupFlagOf(pack, gid) {
-      if (!pack || !pack.groups || typeof gid !== 'string') return null
-      const value = pack.groups[gid]
-      return typeof value === 'boolean' ? value : null
-    }
-
-    /**
-     * 某行「跟随」时会落到的开合值。
-     *
-     * 链与 src 一致：本 pack 组级 → default 行级 → default 组级 → 开。
-     * （问这个问题时，本 pack 的行级已经是「没记录」。）
-     */
-    function inheritEnabledOf(pack, defaultPack, groups, row) {
-      const gid = groupOfRow(groups, row)
-      const byGroup = groupFlagOf(pack, gid)
-      if (byGroup !== null) return byGroup
-      const fromRow = fieldOf(defaultPack, rowKeyOf(row), 'enabled')
-      if (fromRow !== null) return fromRow
-      const fromDefaultGroup = groupFlagOf(defaultPack, gid)
-      if (fromDefaultGroup !== null) return fromDefaultGroup
-      return true
     }
 
     /**
@@ -1604,7 +1562,8 @@ window.__ModuleLoader__.load({
         const byId = new Map()
         const loose = []
         for (const row of rows) {
-          const gid = groupOfRow(groups, row)
+          // 悬空引用由宿主归一成 null，这里拿到的 gid 一定在注册表里。
+          const gid = groupIdOf(row)
           if (gid === null) {
             if (matchRow(row)) loose.push(row)
             continue
@@ -1625,7 +1584,7 @@ window.__ModuleLoader__.load({
           })
         }
         return out
-      }, [rows, groups.groups, groups.assignments, needle])
+      }, [rows, groups.groups, needle])
 
       const searching = needle !== ''
       const total = buckets.reduce((sum, bucket) => sum + bucket.rows.length, 0)
@@ -1873,12 +1832,13 @@ window.__ModuleLoader__.load({
       const [removeError, setRemoveError] = useState(null)
       const rowKey = rowKeyOf(row)
       const entry = defaultEntryOf(row, defaultPack)
-      const resolved = resolvedOf(row)
       const mode = entryField(entry, 'mode')
       const tools = entryField(entry, 'tools')
       const description = entryField(entry, 'description')
       const source = rowSourceOf(row)
-      const toolCount = resolved.tools.length
+      // 生效值由宿主下发；这里只贴标签，不再重算链。
+      const activeMode = MODE_LABELS[row.mode] ? row.mode : DEFAULT_MODE
+      const toolCount = Array.isArray(row.tools) ? row.tools.length : 0
       const patch = (delta) => run([{ op: 'packRow', packId: DEFAULT_PACK_ID, rowKey: rowKey, patch: delta }])
       // 托管服务器的连接定义可以就地删掉；只关开关定义仍然在，与删除是两件事。
       const removeOwned = () => {
@@ -1921,7 +1881,7 @@ window.__ModuleLoader__.load({
                 textAlign: 'right',
               },
             },
-            '当前生效：' + MODE_LABELS[resolved.mode] + (toolCount === 0 ? ' · 工具不限' : ' · 工具 ' + toolCount + ' 条'),
+            '当前生效：' + MODE_LABELS[activeMode] + (toolCount === 0 ? ' · 工具不限' : ' · 工具 ' + toolCount + ' 条'),
           ),
           isOwned(row)
             ? h(ConfirmButton, {
@@ -2003,18 +1963,18 @@ window.__ModuleLoader__.load({
     function RowLine(props) {
       const row = props.row
       const pack = props.pack
-      const defaultPack = props.defaultPack
       const groups = props.groups
       const isDefault = props.isDefault
       const run = props.run
       const [open, setOpen] = useState(false)
       const rowKey = rowKeyOf(row)
-      const gid = groupOfRow(groups, row)
+      const gid = groupIdOf(row)
       const enabled = fieldOf(pack, rowKey, 'enabled')
       const source = rowSourceOf(row)
       // 「跟随」不是一种状态值，而是一个待求值的位置：告诉用户它此刻落到开还是关，
-      // 否则三态里那个中间项等于什么也没说。
-      const inherit = isDefault ? true : inheritEnabledOf(pack, defaultPack, groups, row)
+      // 否则三态里那个中间项等于什么也没说。选中 pack 的组记录优先，其余由宿主
+      // 按 default 求出的值决定——链只在宿主那边走一次。
+      const landing = groupValueOf(pack, gid) ?? row.openGlobal
       // 迁移可能把老的三个字段带进非 default 的 pack。MCP 页只读 default，看不到这些
       // 覆盖；这里只提示，绝不删数据。
       const overridden =
@@ -2048,7 +2008,7 @@ window.__ModuleLoader__.load({
             'span',
             { style: { display: 'flex', flex: '0 0 auto', alignItems: 'center', gap: '6px' }, onClick: (event) => event.stopPropagation() },
             enabled === null && !isDefault
-              ? h('span', { style: { ...S.hint, whiteSpace: 'nowrap' } }, inherit ? '跟随（开）' : '跟随（关）')
+              ? h('span', { style: { ...S.hint, whiteSpace: 'nowrap' } }, landing ? '跟随（开）' : '跟随（关）')
               : null,
             h(TriState, {
               value: enabled,
@@ -2249,50 +2209,41 @@ window.__ModuleLoader__.load({
                 if ((rowNameOf(row) + ' ' + rowKeyOf(row) + ' ' + rowDescriptionOf(row)).toLowerCase().indexOf(needle) >= 0) {
                   return true
                 }
-                const gid = groupOfRow(groups, row)
+                const gid = groupIdOf(row)
                 return gid !== null && hitGroups.has(gid)
               })
         // 顺序是「开 > 关 > 跟随(开) > 跟随(关)」：显式决定过的排在前面，
-        // 跟随项再按它会落到开还是关区分。同档按 server 名排。
+        // 跟随项再按它会落到开还是关区分。落点与 RowLine 同一套：选中 pack 的组记录
+        // 优先，其余是宿主按 default 求出的值。同档按 server 名排。
+        const landingOf = (row) => groupValueOf(pack, groupIdOf(row)) ?? row.openGlobal
         return visible.sort((a, b) => {
-          const left = rankOf(
-            fieldOf(pack, rowKeyOf(a), 'enabled'),
-            isDefault,
-            inheritEnabledOf(pack, defaultPack, groups, a),
-          )
-          const right = rankOf(
-            fieldOf(pack, rowKeyOf(b), 'enabled'),
-            isDefault,
-            inheritEnabledOf(pack, defaultPack, groups, b),
-          )
+          const left = rankOf(fieldOf(pack, rowKeyOf(a), 'enabled'), isDefault, landingOf(a))
+          const right = rankOf(fieldOf(pack, rowKeyOf(b), 'enabled'), isDefault, landingOf(b))
           if (left !== right) return left - right
           return rowNameOf(a).localeCompare(rowNameOf(b), 'zh') || rowKeyOf(a).localeCompare(rowKeyOf(b))
         })
-      }, [rows, groups, query, pack, defaultPack, isDefault])
+      }, [rows, groups, query, pack, isDefault])
 
-      /** 分组同样「开 > 关 > 跟随(开) > 跟随(关)」。 */
+      /** 分组同样「开 > 关 > 跟随(开) > 跟随(关)」；跟随落点用 default 的组记录。 */
       const orderedGroups = useMemo(() => {
-        const inheritOf = (gid) => {
-          const fromDefault = groupFlagOf(defaultPack, gid)
-          return fromDefault === null ? true : fromDefault
-        }
+        const inheritOf = (gid) => groupValueOf(defaultPack, gid) ?? true
         return [...groups.groups].sort((a, b) => {
           const left = rankOf(groupValueOf(pack, a.id), isDefault, inheritOf(a.id))
           const right = rankOf(groupValueOf(pack, b.id), isDefault, inheritOf(b.id))
           if (left !== right) return left - right
           return a.name.localeCompare(b.name, 'zh')
         })
-      }, [groups.groups, pack, isDefault])
+      }, [groups.groups, pack, defaultPack, isDefault])
 
       const groupCounts = useMemo(() => {
         const counts = {}
         for (const row of rows) {
-          const gid = groupOfRow(groups, row)
+          const gid = groupIdOf(row)
           if (gid === null) continue
           counts[gid] = (counts[gid] || 0) + 1
         }
         return counts
-      }, [rows, groups.groups, groups.assignments])
+      }, [rows])
 
       if (pack === null) {
         return h('div', { style: S.hint }, packMissing ? '该 pack 已不存在' : '没有可用的 pack')
@@ -2417,7 +2368,7 @@ window.__ModuleLoader__.load({
             ? h('div', { style: S.hint }, '还没有分组。到「分组」页新建，或直接在下面逐行设置。')
             : orderedGroups.map((group) => {
                 const value = groupValueOf(pack, group.id)
-                const inherited = defaultPack === null ? true : groupValueOf(defaultPack, group.id) !== false
+                const inherited = groupValueOf(defaultPack, group.id) ?? true
                 return h(
                   'div',
                   {
@@ -2460,7 +2411,6 @@ window.__ModuleLoader__.load({
                   key: rowKeyOf(row),
                   row: row,
                   pack: pack,
-                  defaultPack: defaultPack,
                   groups: groups,
                   isDefault: isDefault,
                   run: run,

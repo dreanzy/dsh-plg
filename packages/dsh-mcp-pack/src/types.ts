@@ -156,29 +156,27 @@ export const EMPTY_BINDINGS: Bindings = { bindings: {}, extra: [] }
 export const EMPTY_UI: UiState = { showChip: true, defaultTab: 'groups' }
 export const EMPTY_GROUPS: GroupRegistry = { groups: [], assignments: {} }
 
-/**
- * 字段值来自哪一层。
- *
- * `pack` = 工作区绑定的 pack，`default` = 内置 pack，`builtin` = 两层都没记录，
- * 取内置缺省。组级决定归属做出决定的那个 pack。
- */
-export type FieldSource = 'pack' | 'default' | 'builtin'
+/** 生效值来自 pack 的哪一级：行级记录、组级记录，还是两层都没有记录。 */
+export type DecisionVia = 'item' | 'group' | 'builtin'
 
 /** 一行求值后的完整结果：四个字段各自独立。 */
 export interface ResolvedRow {
   readonly rowKey: string
-  readonly enabled: boolean
+  /** 该行的分组 id；未分组、或指向已删分组的悬空引用，为 null。 */
+  readonly groupId: string | null
+  /** 生效值。 */
+  readonly open: boolean
+  /** 只按 default pack 求值的值：面板在任意 pack 页显示「跟随」落点时用它。 */
+  readonly openGlobal: boolean
   readonly mode: Mode
   readonly tools: readonly string[]
   readonly description: string
-  /** 该行的分组 id，未分组为 null。 */
-  readonly groupId: string | null
-  /** 影响该行最具体的那一层。 */
-  readonly from: FieldSource
-  readonly sources: {
-    readonly enabled: FieldSource
-    readonly mode: FieldSource
-    readonly tools: FieldSource
-    readonly description: FieldSource
-  }
+  /** 绑定 pack 里这一行的项级记录；未绑定或没有记录为 null（跟随）。 */
+  readonly itemWorkspace: boolean | null
+  /** default pack 里这一行的项级记录；没有记录为 null（跟随到内置缺省）。 */
+  readonly itemGlobal: boolean | null
+  /** 做出决定的 pack id；落到内置缺省时是 `default`。 */
+  readonly decidedBy: string
+  /** 生效值来自 pack 的哪一级。 */
+  readonly decidedVia: DecisionVia
 }

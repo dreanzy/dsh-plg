@@ -101,6 +101,14 @@ test('全局视图列出 Loader 行与托管行，并给出三份策略路径', 
   assert.equal(view.value.packId, 'default')
   assert.deepEqual(view.value.packs.map((pack) => pack.id), ['default'])
   assert.equal(view.value.packs[0].builtin, true)
+  // 全局视图没有绑定 pack：生效值与「只按 default 求值」的那一份必然相同。
+  const row = view.value.rows.find((item) => item.serverName === 'a')
+  assert.equal(row.open, true)
+  assert.equal(row.openGlobal, true)
+  assert.equal(row.itemWorkspace, null)
+  assert.equal(row.itemGlobal, null)
+  assert.equal(row.decidedBy, 'default')
+  assert.equal(row.decidedVia, 'builtin')
 })
 
 test('没有 loader 时返回 internal 错误', async () => {
@@ -147,11 +155,14 @@ test('工作区视图按该会话绑定的 pack 求值', async () => {
   assert.equal(view.value.packId, 'p1')
   assert.equal(view.value.packName, '工作')
   const row = view.value.rows[0]
-  assert.equal(row.resolved.enabled, false)
-  assert.equal(row.resolved.from, 'pack')
+  assert.equal(row.open, false)
+  assert.equal(row.decidedBy, 'p1')
+  assert.equal(row.decidedVia, 'item')
+  assert.equal(row.itemWorkspace, false)
+  assert.equal(row.itemGlobal, null)
   // mode 在绑定 pack 里没记录，跟随 default。
-  assert.equal(row.resolved.mode, 'lazy')
-  assert.equal(row.resolved.sources.mode, 'default')
+  assert.equal(row.mode, 'lazy')
+  assert.equal(row.openGlobal, true)
   assert.deepEqual(row.packEntry, { enabled: false })
   assert.deepEqual(row.defaultEntry, { mode: 'lazy' })
 })
@@ -174,6 +185,73 @@ test('悬空绑定按 default 求值并原样报出绑定 id', async () => {
   assert.equal(view.value.rows[0].packEntry, null)
 })
 
+test('行视图的三种来源：pack 记录、default 记录、跟随到内置缺省', async () => {
+  const home = await freshHome()
+  const cwd = await mkdtemp(join(tmpdir(), 'dmp-ws-'))
+  await writeJson(
+    join(home, 'packs', 'mcp', 'packs.json'),
+    packsFile({
+      default: { name: 'default', rows: { 'global:b': { enabled: false }, 'global:c': { mode: 'lazy' } } },
+      p1: { name: '工作', rows: { 'global:a': { enabled: false } } },
+    }),
+  )
+  await writeJson(join(home, 'packs', 'mcp', 'groups.json'), { version: 1, groups: [], assignments: {} })
+  await writeJson(join(home, 'packs', 'mcp', 'workspaces.json'), workspacesFile({ [normalizeCwd(cwd)]: 'p1' }))
+  const agent = { id: 's1', session: { header: { cwd } } }
+  const agents = { list: () => [agent], get: (id) => (id === 's1' ? agent : undefined) }
+  const entries = [mcpEntry('a'), mcpEntry('b'), mcpEntry('c')]
+  const view = await handleWorkspace(fakeCtx(entries, agents), { sessionId: 's1' }, deps(entries))
+  assert.equal(view.ok, true)
+  const byName = Object.fromEntries(view.value.rows.map((row) => [row.serverName, row]))
+
+  const fromPack = byName['a']
+  assert.equal(fromPack.open, false)
+  assert.equal(fromPack.itemWorkspace, false)
+  assert.equal(fromPack.itemGlobal, null)
+  assert.equal(fromPack.decidedBy, 'p1')
+  assert.equal(fromPack.decidedVia, 'item')
+
+  const fromDefault = byName['b']
+  assert.equal(fromDefault.open, false)
+  assert.equal(fromDefault.itemWorkspace, null)
+  assert.equal(fromDefault.itemGlobal, false)
+  assert.equal(fromDefault.decidedBy, 'default')
+  assert.equal(fromDefault.decidedVia, 'item')
+
+  const fromBuiltin = byName['c']
+  assert.equal(fromBuiltin.open, true)
+  assert.equal(fromBuiltin.openGlobal, true)
+  assert.equal(fromBuiltin.itemWorkspace, null)
+  assert.equal(fromBuiltin.itemGlobal, null)
+  assert.equal(fromBuiltin.decidedBy, 'default')
+  assert.equal(fromBuiltin.decidedVia, 'builtin')
+  // mode 只读 default，与 enabled 来自哪一层无关。
+  assert.equal(fromBuiltin.mode, 'lazy')
+})
+
+test('悬空分组在视图里按未分组处理', async () => {
+  const home = await freshHome()
+  const cwd = await mkdtemp(join(tmpdir(), 'dmp-ws-'))
+  // 组已被删，但 pack 里留着它的旧开关、assignments 里留着旧引用：
+  // 两处都是悬空数据，求值必须当未分组，不能被遗留开关关掉。
+  await writeJson(join(home, 'packs', 'mcp', 'packs.json'), packsFile({ default: { name: 'default', groups: { 'g-gone': false } } }))
+  await writeJson(join(home, 'packs', 'mcp', 'groups.json'), {
+    version: 1,
+    groups: [],
+    assignments: { 'global:a': 'g-gone' },
+  })
+  await writeJson(join(home, 'packs', 'mcp', 'workspaces.json'), workspacesFile({ [normalizeCwd(cwd)]: 'p1' }))
+  const agent = { id: 's1', session: { header: { cwd } } }
+  const agents = { list: () => [agent], get: (id) => (id === 's1' ? agent : undefined) }
+  const entries = [mcpEntry('a')]
+  const view = await handleWorkspace(fakeCtx(entries, agents), { sessionId: 's1' }, deps(entries))
+  assert.equal(view.ok, true)
+  const row = view.value.rows[0]
+  assert.equal(row.groupId, null)
+  assert.equal(row.open, true)
+  assert.equal(row.decidedVia, 'builtin')
+})
+
 test('apply 写入后视图立即反映新值，且落在 packs.json', async () => {
   const home = await freshHome()
   const entries = [mcpEntry('a')]
@@ -194,7 +272,7 @@ test('apply 写入后视图立即反映新值，且落在 packs.json', async () 
   )
   assert.equal(first.ok, true)
   assert.equal(writes, 1)
-  assert.equal(first.value.rows[0].resolved.enabled, false)
+  assert.equal(first.value.rows[0].open, false)
 
   const onDisk = await readJson(join(home, 'packs', 'mcp', 'packs.json'))
   assert.deepEqual(onDisk.packs.default.rows['global:a'], { enabled: false })
@@ -204,7 +282,7 @@ test('apply 写入后视图立即反映新值，且落在 packs.json', async () 
     { commands: [{ op: 'packRow', packId: 'default', rowKey: 'global:a', patch: { enabled: true } }] },
     d,
   )
-  assert.equal(second.value.rows[0].resolved.enabled, true)
+  assert.equal(second.value.rows[0].open, true)
 })
 
 test('packRow 的 null 表示回到跟随，与写 false 是两件事', async () => {
@@ -222,7 +300,7 @@ test('packRow 的 null 表示回到跟随，与写 false 是两件事', async ()
     d,
   )
   assert.equal(cleared.ok, true)
-  assert.equal(cleared.value.rows[0].resolved.enabled, true)
+  assert.equal(cleared.value.rows[0].open, true)
   const onDisk = await readJson(join(home, 'packs', 'mcp', 'packs.json'))
   // 没有行就整个 rows 段都不写，不留空对象。
   assert.equal(onDisk.packs.default.rows, undefined)
@@ -246,10 +324,11 @@ test('组级只影响 enabled，不影响 mode', async () => {
   )
   assert.equal(applied.ok, true)
   const row = applied.value.rows[0]
-  assert.equal(row.resolved.enabled, false)
-  assert.equal(row.resolved.sources.enabled, 'default')
-  assert.equal(row.resolved.mode, 'eager')
-  assert.equal(row.resolved.groupId, 'g1')
+  assert.equal(row.open, false)
+  assert.equal(row.decidedBy, 'default')
+  assert.equal(row.decidedVia, 'group')
+  assert.equal(row.mode, 'eager')
+  assert.equal(row.groupId, 'g1')
   assert.deepEqual((await readJson(join(home, 'packs', 'mcp', 'packs.json'))).packs.default.groups, { g1: false })
 })
 

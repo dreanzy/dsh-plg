@@ -29,13 +29,15 @@ function packOf(rows = {}, groups = {}, name = 'p1') {
 function policyOf({ pack = null, packId = 'default', defaultPack = emptyPack(), assignments = {}, binding = null } = {}) {
   const packs = { default: defaultPack }
   if (pack !== null) packs[packId] = pack
+  // 注册表按 assignments 里的 id 补齐：悬空引用要测的话，直接在用例里构造 policy。
+  const groupIds = [...new Set(Object.values(assignments))]
   return {
     packs: { packs },
     ui: { showChip: true, defaultTab: 'groups' },
     binding,
     packId: pack === null ? 'default' : packId,
     pack,
-    groups: { groups: [], assignments },
+    groups: { groups: groupIds.map((id) => ({ id, name: id })), assignments },
     bindings: { bindings: binding === null ? {} : { 'd:/proj': binding }, extra: [] },
     warnings: [],
   }
@@ -167,8 +169,11 @@ test('绑定 pack 覆盖 default，逐字段求值', async () => {
   const value = await f.snapshot.refresh('D:/proj')
   assert.equal(value.policies.get('a').enabled, true)
   assert.equal(value.policies.get('a').mode, 'lazy')
-  assert.equal(value.resolved.get('global:a').from, 'pack')
-  assert.equal(value.resolved.get('global:a').sources.mode, 'default')
+  // 与 rows 同序：第一行是 global:a。
+  assert.equal(value.effective.rows[0].decidedBy, 'p1')
+  assert.equal(value.effective.rows[0].decidedVia, 'item')
+  assert.equal(value.effective.rows[0].itemWorkspace, true)
+  assert.equal(value.effective.rows[0].itemGlobal, false)
   assert.equal(value.policy.packId, 'p1')
 })
 
@@ -178,7 +183,13 @@ test('未绑定（pack 为 null）时按 default 求值', async () => {
   })
   const value = await f.snapshot.refresh('D:/proj')
   assert.equal(value.policies.get('a').enabled, false)
-  assert.equal(value.resolved.get('global:a').from, 'default')
+  assert.equal(value.effective.rows[0].decidedBy, 'default')
+  assert.equal(value.effective.rows[0].decidedVia, 'item')
+  assert.equal(value.effective.rows[0].itemWorkspace, null)
+  assert.equal(value.effective.rows[0].itemGlobal, false)
+  // 清单内的名字可查；清单外的名字没有行，按关处理。
+  assert.equal(value.effective.isOpen('a'), false)
+  assert.equal(value.effective.isOpen('nope'), false)
 })
 
 test('组级只影响 enabled', async () => {
@@ -191,7 +202,8 @@ test('组级只影响 enabled', async () => {
   const value = await f.snapshot.refresh(null)
   assert.equal(value.policies.get('a').enabled, false)
   assert.equal(value.policies.get('a').mode, 'lazy')
-  assert.equal(value.resolved.get('global:a').groupId, 'g1')
+  assert.equal(value.effective.rows[0].groupId, 'g1')
+  assert.equal(value.effective.rows[0].decidedVia, 'group')
 })
 
 test('按目录失效不影响别的目录', async () => {

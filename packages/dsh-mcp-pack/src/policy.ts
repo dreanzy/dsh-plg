@@ -8,7 +8,7 @@ import {
   EMPTY_UI,
   MODES,
   type Bindings,
-  type FieldSource,
+  type DecisionVia,
   type GroupDef,
   type GroupRegistry,
   type McpPack,
@@ -22,6 +22,9 @@ import {
 
 /** 单个域的名字上限，只为防止文件被写成无界清单。 */
 const MAX_NAMES = 2000
+
+/** 字段值来自哪一轮：绑定的 pack、default pack，还是内置缺省。 */
+type FieldSource = 'pack' | 'default' | 'builtin'
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -420,16 +423,31 @@ export function rowEntryOf(pack: McpPack | null, rowKey: string): RowPolicy | nu
   return pack.rows[rowKey] ?? null
 }
 
-/** 某个行键的分组 id；未分组为 `undefined`。 */
-export function groupOf(assignments: Readonly<Record<string, string>>, rowKey: string): string | undefined {
-  const groupId = assignments[rowKey]
-  return groupId === undefined || groupId === '' ? undefined : groupId
+/**
+ * 某个行键的分组 id；未分组为 `undefined`。
+ *
+ * 指向注册表里已不存在的分组时同样返回 `undefined`：悬空 id 只可能来自手改文件
+ * （删除分组时 store 会清掉成员），若照旧去 `pack.groups` 取值，一个早已删掉的
+ * 组还能靠遗留开关决定行是否可见，面板标签与真实值也会相反。
+ */
+export function groupOf(registry: GroupRegistry, rowKey: string): string | undefined {
+  const groupId = registry.assignments[rowKey]
+  if (groupId === undefined || groupId === '') return undefined
+  for (const group of registry.groups) {
+    if (group.id === groupId) return groupId
+  }
+  return undefined
 }
 
 /** 一个字段的决定：值、做出决定的那一层。 */
 interface FieldPick<T> {
   readonly value: T | undefined
   readonly source: FieldSource
+}
+
+/** `enabled` 的决定还多一项：落在行级还是组级。面板要靠它说清「为什么是开」。 */
+interface EnabledPick extends FieldPick<boolean> {
+  readonly via: DecisionVia
 }
 
 /**
@@ -443,22 +461,22 @@ function pickEnabled(
   pack: McpPack | null,
   defaultPack: McpPack,
   groupId: string | undefined,
-): FieldPick<boolean> {
+): EnabledPick {
   if (pack !== null) {
     const own = pack.rows[rowKey]?.enabled
-    if (own !== undefined) return { value: own, source: 'pack' }
+    if (own !== undefined) return { value: own, source: 'pack', via: 'item' }
     if (groupId !== undefined) {
       const byGroup = pack.groups[groupId]
-      if (byGroup !== undefined) return { value: byGroup, source: 'pack' }
+      if (byGroup !== undefined) return { value: byGroup, source: 'pack', via: 'group' }
     }
   }
   const top = defaultPack.rows[rowKey]?.enabled
-  if (top !== undefined) return { value: top, source: 'default' }
+  if (top !== undefined) return { value: top, source: 'default', via: 'item' }
   if (groupId !== undefined) {
     const byGroup = defaultPack.groups[groupId]
-    if (byGroup !== undefined) return { value: byGroup, source: 'default' }
+    if (byGroup !== undefined) return { value: byGroup, source: 'default', via: 'group' }
   }
-  return { value: undefined, source: 'builtin' }
+  return { value: undefined, source: 'builtin', via: 'builtin' }
 }
 
 /**
@@ -486,37 +504,35 @@ function pickField<T>(
  * 字段级独立是刻意的：某个 pack 只关了某行、模式仍沿用 default，是常见组合。
  * 合并成「整行取最具体的那个 pack」会让这种组合表达不出来。
  *
- * `assignments` 默认空表：没有分组信息时组级两环自然跳过，逐字段链不受影响。
+ * `groups` 默认空注册表：没有分组信息时组级两环自然跳过，逐字段链不受影响。
+ * `packId` 只用于标注决定来自哪张 pack（`pack` 层时才有意义），求值本身不读它。
  */
 export function resolveRow(
   rowKey: string,
   pack: McpPack | null,
+  packId: string,
   defaultPack: McpPack,
-  assignments: Readonly<Record<string, string>> = {},
+  groups: GroupRegistry = EMPTY_GROUPS,
 ): ResolvedRow {
-  const groupId = groupOf(assignments, rowKey) ?? null
+  const groupId = groupOf(groups, rowKey) ?? null
   const enabled = pickEnabled(rowKey, pack, defaultPack, groupId ?? undefined)
+  // 只按 default 求值的那一份：面板在任意 pack 页显示「跟随」落点，链本身只有一条。
+  const global = pickEnabled(rowKey, null, defaultPack, groupId ?? undefined)
   const mode = pickField<Mode>(rowKey, defaultPack, 'mode')
   const tools = pickField<readonly string[]>(rowKey, defaultPack, 'tools')
   const description = pickField<string>(rowKey, defaultPack, 'description')
 
-  const sources = {
-    enabled: enabled.source,
-    mode: mode.source,
-    tools: tools.source,
-    description: description.source,
-  }
-  const all = [sources.enabled, sources.mode, sources.tools, sources.description]
-  const from: FieldSource = all.includes('pack') ? 'pack' : all.includes('default') ? 'default' : 'builtin'
-
   return {
     rowKey,
-    enabled: enabled.value ?? true,
+    groupId,
+    open: enabled.value ?? true,
+    openGlobal: global.value ?? true,
     mode: mode.value ?? DEFAULT_MODE,
     tools: tools.value ?? [],
     description: description.value ?? '',
-    groupId,
-    from,
-    sources,
+    itemWorkspace: pack?.rows[rowKey]?.enabled ?? null,
+    itemGlobal: defaultPack.rows[rowKey]?.enabled ?? null,
+    decidedBy: enabled.source === 'pack' ? packId : DEFAULT_PACK_ID,
+    decidedVia: enabled.via,
   }
 }

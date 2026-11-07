@@ -304,10 +304,10 @@ export function apply(ctx: unknown): void {
       // 用同一份快照：这里以前自己扫一遍 Loader，既重复又漏掉托管行。
       const view = await snapshot.refresh(cwd, agent)
       const servers: string[] = []
-      for (const row of view.rows) {
-        const resolved = view.resolved.get(row.rowKey)
-        if (resolved === undefined || !resolved.enabled || resolved.mode === 'eager') continue
-        servers.push(row.serverName)
+      // policies 与名册段、`mcp_load` 同出一份求值：这里只筛选，不重算。
+      for (const [serverName, policy] of view.policies) {
+        if (!policy.enabled || policy.mode === 'eager') continue
+        servers.push(serverName)
       }
       return servers
     },
