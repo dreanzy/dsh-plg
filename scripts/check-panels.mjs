@@ -84,7 +84,37 @@ function loadFactory(path) {
   })
   if (typeof mod !== 'object' || mod === null) throw new Error('factory 没有返回对象')
   if (typeof mod.apply !== 'function') throw new Error('factory 的返回值缺少 apply')
-  return entry
+  return { entry, mod }
+}
+
+/**
+ * 客户端红线的冒烟：`apply` 抛错会让整个桌面端起不来，所以必须真的调一次。
+ *
+ * 假 ctx 的 `get` 一调就抛——宿主对取不到的已声明服务就是抛错，返回 undefined
+ * 的假 ctx 会掩盖降级路径（AGENTS.md 客户端红线 3）。
+ */
+function smokeApply(mod) {
+  const ctx = {
+    get() {
+      throw new Error('service unavailable')
+    },
+    slots: {
+      inject(_name, callback) {
+        callback()
+        return () => undefined
+      },
+      register() {
+        return () => undefined
+      },
+    },
+  }
+  try {
+    mod.apply(ctx)
+  } catch (error) {
+    throw new Error(
+      'apply 在服务缺失时抛错（桌面端会起不来）：' + String(error && error.message ? error.message : error),
+    )
+  }
 }
 
 let failures = 0
@@ -112,12 +142,22 @@ for (const dir of dirs) {
     const path = join(clientDir, file)
     const label = dir.name + '/client/' + file
     checked += 1
+    let loaded
     try {
-      loadFactory(path)
+      loaded = loadFactory(path)
     } catch (error) {
       failures += 1
       console.error(label + ': 无法作为宿主模块加载 —— ' + String(error && error.message ? error.message : error))
       continue
+    }
+    if (dir.name === 'dsh-plugin-pack') {
+      try {
+        smokeApply(loaded.mod)
+      } catch (error) {
+        failures += 1
+        console.error(label + ': ' + String(error && error.message ? error.message : error))
+        continue
+      }
     }
     const source = readFileSync(path, 'utf8')
     const rules = RULES[dir.name]
