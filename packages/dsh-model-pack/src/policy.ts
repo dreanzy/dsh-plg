@@ -329,6 +329,8 @@ const COMMAND_TARGET: Readonly<Record<PackCommand['op'], CommandTarget>> = {
  *
  * 父目录必须在拿锁之前建好：withFileLock 用 `wx` 直接建 `.lock` 兄弟文件，它不建父目录。
  * 读失败（非 ENOENT）时跳过写入而不是覆盖——读不到就写等于拿缺省值抹掉别人的配置。
+ * 读得到但读不懂（坏 JSON、顶层不是对象）同样跳过：解析失败会得到一份空名册，照写
+ * 就是拿空名册覆盖用户手改坏的文件，而这种覆盖没有任何办法撤回。
  * `mutate` 返回 `null` 表示这一批没有实际改变：不落盘，兼容读期间凭空建空文件会让
  * 旧文件的降级路径立刻失效。
  */
@@ -350,6 +352,10 @@ async function transact(
         }
         current = undefined
       }
+      if (current !== undefined && !isOverwritable(current)) {
+        warnings.push(`写入前发现 ${path} 不是合法 JSON，已跳过本次写入`)
+        return
+      }
       const next = mutate(current)
       if (next === null) return
       await writeFileAtomic(path, next, { mode: 0o600, dirMode: 0o700 })
@@ -357,6 +363,23 @@ async function transact(
   } catch (error) {
     warnings.push(`写入 ${path} 失败：${String(error)}`)
   }
+}
+
+/**
+ * 写前判定：这份内容还能被安全改写吗。
+ *
+ * 空文件算可写：它表示「还没有任何决定」，不是「读不懂」。其余只要解析出来的顶层
+ * 不是对象，就当作外部改坏，由调用方跳过写入并记 warning。
+ */
+function isOverwritable(text: string): boolean {
+  if (text.trim() === '') return true
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(text)
+  } catch {
+    return false
+  }
+  return typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)
 }
 
 /** 名字已存在？`default` 的出厂名也参与比较：两张同名 pack 在面板上分不清。 */

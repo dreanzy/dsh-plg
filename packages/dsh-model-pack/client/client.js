@@ -2412,11 +2412,15 @@ window.__ModuleLoader__.load({
 
         setSaving(true)
         // view.run 自己吞掉异常并返回 null；失败时草稿保留，用户改完可以再存。
+        const before = Array.isArray(data.state && data.state.warnings) ? data.state.warnings.length : 0
         const fresh = await view.run(commands)
         setSaving(false)
         if (fresh === null) return
         setDraft(EMPTY_DRAFT)
-        setNotice('已保存。新会话生效；已有会话不变。')
+        // 写盘失败不再抛，只往 warnings 里记一条。此时说「已保存」就是替宿主撒谎，
+        // 所以按告警条数有没有变多来选措辞。
+        const after = Array.isArray(fresh.state && fresh.state.warnings) ? fresh.state.warnings.length : 0
+        setNotice(after > before ? '改动没有完全落盘，原因见上方告警。' : '已保存。新会话生效；已有会话不变。')
       }
 
       // ---------- 渲染 ----------

@@ -516,13 +516,15 @@ test('写入：可交换，同一批命令换个顺序结果相同', async () =>
   assert.equal(await readFile(packsPath({ home: homeA }), 'utf8'), await readFile(packsPath({ home: homeB }), 'utf8'))
 })
 
-test('写入：坏输入走 warning 而不是异常', async () => {
+test('写入：坏输入走 warning 且拒写，不是异常', async () => {
   const home = await tempRoot()
+  // 读侧回落是兜底，写侧不能跟着回落：拿空名册覆盖手改坏的文件，没有撤回办法。
   await writeAt(packsPath({ home }), '{ broken')
 
   const state = await applyCommands(null, [{ op: 'putPack', packId: 'standard', pack: STANDARD }], { home })
   assert.ok(state.warnings.some((warning) => warning.includes('不是合法 JSON')))
-  assert.deepEqual(state.packs.packs.standard, STANDARD)
+  assert.equal(await readFile(packsPath({ home }), 'utf8'), '{ broken')
+  assert.equal(state.packs.packs.standard, undefined)
 })
 
 test('写入：目录 0700、文件 0600', { skip: process.platform === 'win32' ? 'Windows 不保留 POSIX mode' : false }, async () => {
