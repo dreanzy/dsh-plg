@@ -523,6 +523,34 @@ test('agent/disposed 释放限制并摘掉状态', async () => {
   assert.equal(tools.calls.length, 1)
 })
 
+test('同一 agent 再装配一次：上一轮的限制先被释放', async () => {
+  const { cwd } = await makeWorkspace()
+  await applyCommands(null, [{ op: 'packItem', packId: 'default', name: 'plug-a', value: false }])
+  const tools = fakeTools()
+  const ctx = fakeCtx()
+  installHooks(ctx, { catalog: feedFor(catalogFor(defaultPlugins)) })
+
+  const agent = agentFor(cwd, tools)
+  await ctx.emit('agent/created', { agent })
+  assert.deepEqual([...tools.denied], ['alpha'])
+
+  // 重新打开 plug-a，同一 id 再装配。计划变空；上一轮没释放的话掩码会永远留着。
+  await applyCommands(null, [{ op: 'packItem', packId: 'default', name: 'plug-a', value: true }])
+  await ctx.emit('agent/created', { agent })
+  assert.deepEqual([...tools.denied], [])
+  assert.deepEqual(tools.calls, [['alpha']])
+})
+
+test('agent/created 负载形状不符只 warn，不抛', async () => {
+  await makeWorkspace()
+  const ctx = fakeCtx()
+  installHooks(ctx, { catalog: feedFor(catalogFor(defaultPlugins)) })
+
+  // 这个监听器抛错会让会话创建失败，是仓库红线。
+  await assert.doesNotReject(() => ctx.emit('agent/created', { agent: null }))
+  assert.equal(ctx.warnings.length, 1)
+})
+
 test('没有任何 agent 时 bootstrap 不报错', async () => {
   await makeWorkspace()
   const ctx = fakeCtx({ agents: { list: () => [] } })

@@ -1,5 +1,6 @@
 import { loadCatalog, readCachedCatalog } from './catalog.js'
 import { effective, type Effective } from './effective.js'
+import { createReconciler } from './reconcile.js'
 import { loadState, type PolicyState } from './store.js'
 import { LOCKED_TOOLS, type Catalog } from './types.js'
 
@@ -196,8 +197,6 @@ function denyFor(
 
 interface AgentState {
   readonly agent: AgentLike
-  /** 释放当前这一轮的限制。null 表示没有任何要关的。 */
-  dispose: (() => void) | null
   /** 隐藏集的规范串，用来跳过没有变化的重新施加。 */
   key: string
   /** 施加后复验仍然可见的名字。 */
@@ -292,6 +291,11 @@ export interface HooksOptions {
 export function installHooks(ctx: PluginContext, options?: HooksOptions): HooksHandle {
   const feed = options?.catalog ?? defaultCatalogFeed
   const states = new Map<string, AgentState>()
+  /**
+   * 限制的释放记账。按 agent id 串行：同一主体的下一轮不会与上一轮重叠，
+   * 落地前先释放上一轮的资源；计划没变时调用方就跳过，这里只管落地。
+   */
+  const reconcile = createReconciler((message) => ctx.logger.warn('dsh-plugin-pack: ' + message))
   /** 对象身份索引：assemble 的 context.scope 就是 agent 本体。 */
   const byIdentity = new WeakMap<object, Snapshot>()
   /** 身份查不到时按 agent id / session id 回退。 */
@@ -407,65 +411,77 @@ export function installHooks(ctx: PluginContext, options?: HooksOptions): HooksH
 
     const hidden = denyFor(catalog, answer, visible, state.denied)
     const key = hidden.join(',')
+    // 计划没变就跳过：这层判断留在调用方，模块只负责落地。
     if (key === state.key) return
 
-    if (state.dispose !== null) {
-      state.dispose()
-      state.dispose = null
-    }
-    state.stuck = []
+    // 本轮的结论先记在本地，apply 返回 true 之后才落到 state 上：失败时推进 key
+    // 会让下一次事件误以为「已经生效」，于是永远不重试。
+    let planned: readonly string[] | null = null
+    let missing = false
+    let stuckNow: readonly string[] = []
 
-    // 空掩码绝不调用：宿主把空过滤当成「配置物化错了」并抛错。
-    // 空集只表示这一轮没有要关的，先前的限制已经在上面释放掉了。
-    if (hidden.length === 0) {
-      state.key = key
-      state.denied = []
-      return
-    }
+    const ok = await reconcile.apply(state.agent.id, () => {
+      // 空掩码绝不调用：宿主把空过滤当成「配置物化错了」并抛错。
+      // 空集只表示这一轮没有要关的，返回 null 让模块释放上一轮。
+      if (hidden.length === 0) {
+        planned = []
+        return null
+      }
 
-    const restrict = tools.restrict
-    if (typeof restrict !== 'function') {
-      warnOnce('no-restrict', '当前宿主不支持 tools.restrict()，策略已保存但工具不会生效')
-      // 刻意不更新 key：宿主若在运行中补上 restrict，下一次重算还能接上。
-      return
-    }
+      const restrict = tools.restrict
+      if (typeof restrict !== 'function') {
+        warnOnce('no-restrict', '当前宿主不支持 tools.restrict()，策略已保存但工具不会生效')
+        // 刻意不更新 key：宿主若在运行中补上 restrict，下一次重算还能接上。
+        missing = true
+        return null
+      }
 
-    // 掩码可能含「两次重算之间被卸载」的名字，宿主对整批校验，任一未知名都会让
-    // 全部限制失败。剔除未知名后重试一次：其余工具照样关闭，被剔的名字进 stuck，
-    // 由面板显示为「关不掉」，而不是静默失效。
-    let applied = hidden
-    let dispose: (() => unknown) | undefined
-    for (let attempt = 0; attempt < 2; attempt += 1) {
-      try {
-        dispose = restrict.call(tools, { deny: applied })
-        break
-      } catch (error) {
-        const unknown = unknownNamesIn(error, applied)
-        const remaining = applied.filter((name) => !unknown.includes(name))
-        if (unknown.length === 0 || remaining.length === 0) {
-          state.denied = []
-          state.key = ''
-          warnOnce(
-            'restrict-failed',
-            '施加限制失败，本会话保持原状（agent=' + state.agent.id + '）：' + String(error),
-          )
-          return
+      // 掩码可能含「两次重算之间被卸载」的名字，宿主对整批校验，任一未知名都会让
+      // 全部限制失败。剔除未知名后重试一次：其余工具照样关闭，被剔的名字进 stuck，
+      // 由面板显示为「关不掉」，而不是静默失效。
+      let candidate = hidden
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        try {
+          const dispose = restrict.call(tools, { deny: candidate })
+          planned = candidate
+          return () => {
+            try {
+              dispose()
+            } catch {
+              // 释放失败只影响内存，下一次重算会重建。
+            }
+          }
+        } catch (error) {
+          const unknown = unknownNamesIn(error, candidate)
+          const remaining = candidate.filter((name) => !unknown.includes(name))
+          if (unknown.length === 0 || remaining.length === 0) {
+            warnOnce(
+              'restrict-failed',
+              '施加限制失败，本会话保持原状（agent=' + state.agent.id + '）：' + String(error),
+            )
+            return null
+          }
+          candidate = remaining
+          stuckNow = [...new Set([...stuckNow, ...unknown])]
+          ctx.logger.warn('dsh-plugin-pack: 以下名字无法限制，已跳过：' + unknown.join(', '))
         }
-        applied = remaining
-        state.stuck = [...new Set([...state.stuck, ...unknown])]
-        ctx.logger.warn('dsh-plugin-pack: 以下名字无法限制，已跳过：' + unknown.join(', '))
       }
-    }
-    if (dispose === undefined) return
-    state.dispose = () => {
-      try {
-        dispose?.()
-      } catch {
-        // 释放失败只影响内存，下一次重算会重建。
-      }
+      return null
+    })
+
+    // 被 release 或更新的一次顶掉：这一轮没有落地，一条记录都不要碰。
+    if (!ok) return
+    if (missing) return
+    if (planned === null) {
+      // 宿主整批拒绝：退回「没有限制」，下次事件重试。
+      state.key = ''
+      state.denied = []
+      state.stuck = stuckNow
+      return
     }
     state.key = key
-    state.denied = applied
+    state.denied = planned
+    state.stuck = stuckNow
 
     // 复验：限制只作用于继承来的全局工具，agent 作用域自己注册的同名工具不受影响。
     try {
@@ -486,15 +502,18 @@ export function installHooks(ctx: PluginContext, options?: HooksOptions): HooksH
   }
 
   const onCreated = async (payload: unknown): Promise<void> => {
-    const agent = asAgentLike(asRecord(payload)?.['agent'])
-    if (agent === null) {
-      ctx.logger.warn('dsh-plugin-pack: agent/created 负载形状不符，跳过')
-      return
-    }
-    const state: AgentState = { agent, dispose: null, key: '', stuck: [], denied: [], snapshot: null }
-    states.set(agent.id, state)
+    // 整个监听器包 try/catch：这个事件的监听器抛错会让会话创建失败，这是仓库红线。
     try {
-      // 这个事件的监听器抛错会让会话创建失败，所以一律吞掉降级。
+      const agent = asAgentLike(asRecord(payload)?.['agent'])
+      if (agent === null) {
+        ctx.logger.warn('dsh-plugin-pack: agent/created 负载形状不符，跳过')
+        return
+      }
+      // 同一 id 再装配一次：先放掉上一轮。新 state 的 key 是空的，若不留这一步，
+      // 新计划又恰好为空时「没变就跳过」会直接返回，旧掩码永远留在宿主上。
+      if (states.has(agent.id)) reconcile.release(agent.id)
+      const state: AgentState = { agent, key: '', stuck: [], denied: [], snapshot: null }
+      states.set(agent.id, state)
       await applyOne(state)
     } catch (error) {
       ctx.logger.warn('dsh-plugin-pack: agent/created 施加失败，本会话按空策略运行：' + String(error))
@@ -502,24 +521,20 @@ export function installHooks(ctx: PluginContext, options?: HooksOptions): HooksH
   }
 
   const onDisposed = (payload: unknown): void => {
-    const agent = asAgentLike(asRecord(payload)?.['agent'])
-    if (agent === null) return
-    const state = states.get(agent.id)
-    if (state !== undefined) {
-      if (state.dispose !== null) {
-        try {
-          state.dispose()
-        } catch {
-          // 释放失败无副作用：Agent 已经消失。
-        }
-      }
+    try {
+      const agent = asAgentLike(asRecord(payload)?.['agent'])
+      if (agent === null) return
       states.delete(agent.id)
+      // 释放失败由 reconcile 记 warn，Agent 已经消失，这里没有别的要收尾。
+      reconcile.release(agent.id)
+      // `byId` 是强引用表：只加不减的话，每开过一个会话就永久留下两条记录
+      // （agent id 与 session id），进程活多久就涨多久。删掉即「查不到就不动」，
+      // 与装配侧「宁可放开，也不要误删」的兜底是同一套语义。
+      byId.delete(agent.id)
+      byId.delete(agent.session.id)
+    } catch (error) {
+      ctx.logger.warn('dsh-plugin-pack: agent/disposed 清理失败：' + String(error))
     }
-    // `byId` 是强引用表：只加不减的话，每开过一个会话就永久留下两条记录
-    // （agent id 与 session id），进程活多久就涨多久。删掉即「查不到就不动」，
-    // 与装配侧「宁可放开，也不要误删」的兜底是同一套语义。
-    byId.delete(agent.id)
-    byId.delete(agent.session.id)
   }
 
   /**
@@ -595,15 +610,8 @@ export function installHooks(ctx: PluginContext, options?: HooksOptions): HooksH
         // 退订失败不影响后续释放。
       }
     }
-    for (const state of states.values()) {
-      if (state.dispose !== null) {
-        try {
-          state.dispose()
-        } catch {
-          // 同上。
-        }
-      }
-    }
+    // states 是键表，资源在 reconciler 里；逐个释放，失败只 warn。
+    for (const id of [...states.keys()]) reconcile.release(id)
     states.clear()
     byId.clear()
   }
@@ -629,7 +637,7 @@ export function installHooks(ctx: PluginContext, options?: HooksOptions): HooksH
     for (const entry of list) {
       const agent = asAgentLike(entry)
       if (agent === null || states.has(agent.id) || cwdOf(agent) === null) continue
-      const state: AgentState = { agent, dispose: null, key: '', stuck: [], denied: [], snapshot: null }
+      const state: AgentState = { agent, key: '', stuck: [], denied: [], snapshot: null }
       states.set(agent.id, state)
       try {
         await applyOne(state)
