@@ -199,3 +199,17 @@ test('addExtra / removeExtra：规范化、去重、与 bindings 互不影响', 
   onDisk = JSON.parse(await readFile(workspacesPath()))
   assert.deepEqual(onDisk.extra, [b])
 })
+
+test('删除分组会清掉所有 pack 里该组的开关', async () => {
+  await freshHome()
+  await applyCommands(null, [
+    { op: 'createGroup', name: '一组' },
+    { op: 'packGroup', packId: 'default', groupId: 'g1', value: false },
+  ])
+  assert.deepEqual(JSON.parse(await readFile(groupsPath())).groups, [{ id: 'g1', name: '一组' }])
+
+  await applyCommands(null, [{ op: 'deleteGroup', groupId: 'g1' }])
+  // 空的 groups 表不落键：序列化只在有内容时写这一层。
+  assert.equal(JSON.parse(await readFile(packsPath())).packs.default.groups, undefined)
+  assert.deepEqual(JSON.parse(await readFile(groupsPath())).groups, [])
+})

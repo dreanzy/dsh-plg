@@ -36,31 +36,11 @@ export interface SnapshotDeps {
   readonly fingerprint?: (cwd: string | null) => Promise<string>
 }
 
-/** 自检计数。`reads` 是唯一能证明「没有再读盘」的数字。 */
-export interface SnapshotStats {
-  /** `read()` 命中次数。 */
-  readonly hits: number
-  /** `read()` 未命中次数（还没算过，或刚被失效）。 */
-  readonly misses: number
-  /** 真正执行过一次读盘的次数。 */
-  readonly reads: number
-  /** `refresh()` 被调用次数，含被指纹短路的那部分。 */
-  readonly refreshes: number
-  /** 当前缓存条目数。 */
-  readonly size: number
-}
-
 export interface ScopeSnapshot {
-  /**
-   * 同步读缓存。**零 IO**：系统提示的 `section.text` 是同步求值的，这里不能等。
-   * 返回 `null` 表示这一格还没算过，调用方应先 `refresh()`。
-   */
-  read(cwd: string | null, scope?: unknown): SnapshotValue | null
   /** 异步求值。指纹没变就直接复用，变了才读盘；同键并发只算一次。 */
   refresh(cwd: string | null, scope?: unknown, options?: { readonly force?: boolean }): Promise<SnapshotValue>
   /** 打掉缓存。省略 `cwd` 清全部；传 `null` 只清全局那一格。 */
   invalidate(cwd?: string | null): void
-  stats(): SnapshotStats
 }
 
 function cwdKeyOf(cwd: string | null): string {
@@ -135,10 +115,6 @@ export function createScopeSnapshot(deps: SnapshotDeps): ScopeSnapshot {
   /** cwd 键 → 该目录下所有 scope 的键。用于按目录失效。 */
   const keysByCwd = new Map<string, Set<string>>()
   const inflight = new Map<string, Promise<SnapshotValue>>()
-  let hits = 0
-  let misses = 0
-  let reads = 0
-  let refreshes = 0
 
   const remember = (cwdKey: string, key: string): void => {
     let keys = keysByCwd.get(cwdKey)
@@ -160,7 +136,6 @@ export function createScopeSnapshot(deps: SnapshotDeps): ScopeSnapshot {
     const stamp = await fingerprint(cwd)
     if (!force && cached !== undefined && cached.fingerprint === stamp) return cached.value
 
-    reads += 1
     // 两件事互不依赖：并行读，串行等会白付一次往返。
     const [policy, inventory] = await Promise.all([deps.loadPolicy(cwd), deps.readInventory(cwd, scope)])
     const resolver = createResolver({
@@ -188,23 +163,12 @@ export function createScopeSnapshot(deps: SnapshotDeps): ScopeSnapshot {
   }
 
   return {
-    read(cwd, scope) {
-      const key = `${cwdKeyOf(cwd)}|${scopeKeyOf(scope)}`
-      const entry = entries.get(key)
-      if (entry === undefined) {
-        misses += 1
-        return null
-      }
-      hits += 1
-      return entry.value
-    },
     async refresh(cwd, scope, options = {}) {
       const cwdKey = cwdKeyOf(cwd)
       const key = `${cwdKey}|${scopeKeyOf(scope)}`
       // 单飞：并发刷新同一格时共用一次计算，避免把一次保存放大成 N 次读盘。
       const running = inflight.get(key)
       if (running !== undefined) return await running
-      refreshes += 1
       const task = compute(cwd, cwdKey, scope, key, options.force === true)
       inflight.set(key, task)
       try {
@@ -224,9 +188,6 @@ export function createScopeSnapshot(deps: SnapshotDeps): ScopeSnapshot {
       if (keys === undefined) return
       for (const key of keys) entries.delete(key)
       keysByCwd.delete(cwdKey)
-    },
-    stats() {
-      return { hits, misses, reads, refreshes, size: entries.size }
     },
   }
 }

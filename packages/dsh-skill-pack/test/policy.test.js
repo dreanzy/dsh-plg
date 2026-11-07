@@ -292,3 +292,16 @@ test('normalizeCwd 在 Windows 上大小写与尾斜杠落到同一个键', { sk
 test('normalizeCwd 保留盘符根目录的尾斜杠', () => {
   assert.equal(normalizeCwd('C:\\'), process.platform === 'win32' ? 'c:/' : 'C:/')
 })
+
+test('groups / bindings 超过上限时截断并留 warning', () => {
+  const many = Array.from({ length: 2001 }, (_, index) => ({ id: `g${index}`, name: `组${index}` }))
+  const parsed = parseGroups(JSON.stringify({ groups: many }))
+  assert.equal(parsed.value.groups.length, 2000)
+  assert.equal(parsed.warnings.some((line) => line.includes('超过 2000')), true)
+
+  const bindings = {}
+  for (let index = 0; index < 2001; index += 1) bindings[`d:/p${index}`] = 'p1'
+  const parsedBindings = parseBindings(JSON.stringify({ bindings }))
+  assert.equal(Object.keys(parsedBindings.value.bindings).length, 2000)
+  assert.equal(parsedBindings.warnings.some((line) => line.includes('超过 2000')), true)
+})

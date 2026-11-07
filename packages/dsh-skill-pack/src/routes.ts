@@ -79,6 +79,8 @@ export interface GlobalView {
   readonly skills: readonly SkillRow[]
   readonly complete: boolean
   readonly warnings: readonly string[]
+  /** 已注册遮蔽但复验仍可见的名字。全局面板也要能提示「关不掉」。 */
+  readonly stuck: readonly string[]
 }
 
 export interface WorkspaceView extends GlobalView {
@@ -189,7 +191,12 @@ function originOf(row: SkillSummaryLike): string {
   const nodeModules = segments.lastIndexOf('node_modules')
   if (nodeModules >= 0 && nodeModules + 1 < segments.length) {
     const pkg = segments[nodeModules + 1]
-    if (pkg !== undefined && pkg !== '' && pkg !== 'skills') return pkg
+    if (pkg !== undefined && pkg !== '' && pkg !== 'skills') {
+      // scoped 包占两段：`node_modules/@scope/pkg/skills/x` 的包名是 `@scope/pkg`。
+      const inner = segments[nodeModules + 2]
+      if (pkg.startsWith('@') && inner !== undefined && inner !== '') return `${pkg}/${inner}`
+      return pkg
+    }
   }
   return segments[segments.length - 1] ?? ''
 }
@@ -339,6 +346,7 @@ export async function handleGlobal(
         skills: buildRows(view.rows, state, 'global'),
         complete: view.complete,
         warnings: view.warnings,
+        stuck: deps.stuck(),
       },
     }
   } catch (error) {

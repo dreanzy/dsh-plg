@@ -44,7 +44,7 @@ dsh plugin --profile <profile> add @dreanzy/dsh-skill-pack
 
 - 设置 → Skill Pack 分三页：`分组` / `分包` / `工作区`。
 - 「分组」按组折叠展示成员，展开后在行内改归属；搜索同时匹配技能名与分组名。
-- 「分包」编辑 pack 名册与包内开关。选中 `default` 时开关只有开与关——它是求值链的终点，没有上一层。
+- 「分包」编辑 pack 名册与包内开关。选中「默认」时开关只有开与关——它是求值链的终点，没有上一层。
 - 「工作区」列出开过会话的目录与手动添加的路径，每行一个 pack 下拉。
 
 ## 文件
@@ -67,7 +67,7 @@ dsh plugin --profile <profile> add @dreanzy/dsh-skill-pack
 
 - **只管 skill**。MCP 的按工作区开关不在本包范围（MCP 一侧在 DSH 里没有干净的收窄点）。见 [docs/adr/0004-skill-only-scope.md](docs/adr/0004-skill-only-scope.md)。
 - 会话中途切换工作目录不会重算策略，重开会话即恢复。
-- 同层 first-wins：若别的插件先把同名 skill 注册进同一层，那条关不掉，面板会标灰并说明原因。
+- 同层 first-wins：若别的插件先把同名 skill 注册进同一层，那条关不掉，面板会在该行标出「关不掉」。
 - 官方 `@deepseek-ai` 技能默认不在面板出现（判定见 `src/inventory.ts`），但模型仍可调用；打开「显示官方技能」后可逐项关闭。
 
 ## 与 dsh-skill-scope 的关系

@@ -104,15 +104,21 @@ export interface PolicyState {
 
 export async function loadState(cwd: string | null): Promise<PolicyState> {
   const warnings: string[] = []
-  const parsedPacks = parsePacks(await readText(packsPath()))
+  // 三份文件互不依赖：并行读。串行会白付两次往返，而这条路径每次新会话都走。
+  const [packsText, groupsText, workspacesText] = await Promise.all([
+    readText(packsPath()),
+    readText(groupsPath()),
+    readText(workspacesPath()),
+  ])
+  const parsedPacks = parsePacks(packsText)
   warnings.push(...parsedPacks.warnings)
   const { packs } = parsedPacks.value.book
 
-  const groupsParsed = parseGroups(await readText(groupsPath()))
+  const groupsParsed = parseGroups(groupsText)
   warnings.push(...groupsParsed.warnings)
 
   const cwdKey = normalizeCwd(cwd)
-  const parsedBindings = parseBindings(await readText(workspacesPath()))
+  const parsedBindings = parseBindings(workspacesText)
   warnings.push(...parsedBindings.warnings)
   const bindings: Bindings = parsedBindings.value
 
@@ -186,6 +192,15 @@ function applyToPacks(current: string | undefined, commands: readonly Command[])
         delete packs[command.packId]
         break
       }
+      case 'deleteGroup': {
+        // 组没了，它的开关就没有意义：一并从每张 pack 里删掉。
+        // 留成 orphan 会在同一个 id 被复用时突然生效，而 id 是按现有数量生成的。
+        for (const [id, pack] of Object.entries(packs)) {
+          if (pack.groups[command.groupId] === undefined) continue
+          packs[id] = { ...pack, groups: setKey(pack.groups, command.groupId, null) }
+        }
+        break
+      }
       case 'packItem': {
         const pack = findPack(packs, command.packId)
         packs[command.packId] = { ...pack, items: setKey(pack.items, command.name, command.value) }
@@ -241,8 +256,8 @@ function applyToGroups(current: string | undefined, commands: readonly Command[]
     if (command.op === 'deleteGroup') {
       if (!known().has(command.groupId)) throw new Error(`未知分组：${command.groupId}`)
       groups = groups.filter((group) => group.id !== command.groupId)
-      // 成员回到未分组。各 pack 残留的组开关决定保留：组重建后语义不恢复（id 已变），
-      // 但它们不影响求值——孤儿 gid 永远不会被任何项命中。
+      // 成员回到未分组。各 pack 里该组的开关由 applyToPacks 同批清除：
+      // id 按现有数量生成，删除后可能被复用，留着 orphan 会让新组继承旧决定。
       for (const [name, groupId] of Object.entries(assignments)) {
         if (groupId === command.groupId) delete assignments[name]
       }
@@ -369,8 +384,9 @@ function targets(commands: readonly Command[]): Targets {
       default:
         break
     }
-    // deletePack 还要清绑定，所以同时命中两个文件。
+    // deletePack 还要清绑定，deleteGroup 还要清各 pack 里的组开关。
     if (command.op === 'deletePack') bindings = true
+    if (command.op === 'deleteGroup') packs = true
   }
   return { packs, groups, bindings }
 }

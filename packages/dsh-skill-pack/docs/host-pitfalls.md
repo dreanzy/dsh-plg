@@ -28,6 +28,12 @@
 
 该事件是 serial 派发，监听器抛错会让**会话创建失败**。所以这一层所有失败路径都必须是 `warn` + 降级，不能 `throw`。同理，任何挂在 waterfall 事件（`agent/pre-step`、`system-prompt/assemble`）上的监听器必须 `await next()` 并透传返回值。
 
+## `skills/change` 不改策略文件，指纹挡不住
+
+`ScopeSnapshot` 只按三份状态文件的指纹短路。用户在外部安装或卸载 skill 时，三份
+文件都没变，宿主只发 `skills/change`；不显式 `invalidate()` 的话，重新落地会一直
+读到旧清单。`hooks.ts` 的 `onChange` 因此在每个清单事件到来时先失效缓存。
+
 ## 插件重载会清空进程内的会话表
 
 `states` 只存在于插件实例里。disable/enable 之后，**已经存在的会话不会再收到 `agent/created`**，于是一直停在「没有遮蔽」的状态，直到用户重开会话。这就是 `bootstrap()` 存在的原因：`apply` 结束时主动枚举一次 live Agent 补落地。

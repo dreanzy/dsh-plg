@@ -186,7 +186,12 @@ export function parseBindings(text: string | undefined): ParseResult<Bindings> {
     if (!isRecord(rawBindings)) {
       warnings.push('bindings 不是对象，已忽略')
     } else {
-      for (const key of Object.keys(rawBindings).sort()) {
+      const keys = Object.keys(rawBindings).sort()
+      if (keys.length > MAX_NAMES) {
+        warnings.push(`bindings 超过 ${MAX_NAMES} 项，已只保留前 ${MAX_NAMES} 项`)
+        keys.length = MAX_NAMES
+      }
+      for (const key of keys) {
         const value = rawBindings[key]
         if (typeof value !== 'string' || value === '') {
           warnings.push(`bindings.${key} 不是 pack id，已忽略`)
@@ -208,9 +213,17 @@ export function parseBindings(text: string | undefined): ParseResult<Bindings> {
     if (!Array.isArray(rawExtra)) {
       warnings.push('extra 不是数组，已忽略')
     } else {
+      let capped = false
       for (const entry of rawExtra) {
         if (typeof entry !== 'string') {
           warnings.push('extra 里有非字符串元素，已忽略')
+          continue
+        }
+        if (extra.length >= MAX_NAMES) {
+          if (!capped) {
+            warnings.push(`extra 超过 ${MAX_NAMES} 项，已只保留前 ${MAX_NAMES} 项`)
+            capped = true
+          }
           continue
         }
         const normalized = normalizeCwd(entry)
@@ -242,6 +255,10 @@ export function parseGroups(text: string | undefined): ParseResult<GroupRegistry
     if (!Array.isArray(rawGroups)) {
       warnings.push('groups 不是数组，已忽略')
     } else {
+      if (rawGroups.length > MAX_NAMES) {
+        warnings.push(`groups 超过 ${MAX_NAMES} 个，已只保留前 ${MAX_NAMES} 个`)
+        rawGroups.length = MAX_NAMES
+      }
       for (const entry of rawGroups) {
         if (!isRecord(entry)) {
           warnings.push('groups 里有非对象元素，已忽略')
@@ -269,7 +286,13 @@ export function parseGroups(text: string | undefined): ParseResult<GroupRegistry
     if (!isRecord(rawAssignments)) {
       warnings.push('assignments 不是对象，已忽略')
     } else {
-      for (const [name, groupId] of Object.entries(rawAssignments)) {
+      const names = Object.keys(rawAssignments).sort()
+      if (names.length > MAX_NAMES) {
+        warnings.push(`assignments 超过 ${MAX_NAMES} 项，已只保留前 ${MAX_NAMES} 项`)
+        names.length = MAX_NAMES
+      }
+      for (const name of names) {
+        const groupId = rawAssignments[name]
         if (typeof groupId !== 'string' || groupId === '') {
           warnings.push(`assignments.${name} 不是分组 id，已忽略`)
           continue

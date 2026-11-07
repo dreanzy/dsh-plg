@@ -390,3 +390,20 @@ test('工作区视图返回绑定与每项的来源 pack', async () => {
   assert.equal(beta.decidedBy, 'default')
   assert.equal(beta.decidedVia, 'builtin')
 })
+
+test('第三方 scoped 包的来源标签带包名', async () => {
+  await freshHome()
+  const scoped = [
+    {
+      name: 'x',
+      description: 'd',
+      provider: 'filesystem',
+      source: 'custom',
+      path: '/p/node_modules/@acme/tool/skills/x/SKILL.md',
+      invocation: { modelInvocable: true, userInvocable: true },
+    },
+  ]
+  const skills = fakeSkills(scoped)
+  const view = await handleGlobal(fakeCtx(skills), depsWith(skills))
+  assert.equal(view.value.skills[0].origin, '@acme/tool')
+})

@@ -288,7 +288,6 @@ test('多个会话的重新落地并发执行', async () => {
   let active = 0
   let peak = 0
   const snapshot = {
-    read: () => value,
     async refresh() {
       active += 1
       peak = Math.max(peak, active)
@@ -298,7 +297,6 @@ test('多个会话的重新落地并发执行', async () => {
       return value
     },
     invalidate() {},
-    stats: () => ({ hits: 0, misses: 0, reads: 0, refreshes: 0, size: 0 }),
   }
   const hooks = installHooks(ctx, { snapshot })
   await ctx.emit('agent/created', { agent: agentFor(cwd, skills, 'agent-1') })
@@ -339,4 +337,76 @@ test('agent/disposed 释放遮蔽副本并摘掉状态', async () => {
 
   ctx.emitSync('agent/disposed', { agent })
   assert.equal(skills.registered.length, 0)
+})
+
+test('落地期间到达的清单变化会在结束后补跑一次', async () => {
+  const { cwd } = await makeWorkspace({
+    packs: { default: { name: 'default', items: { alpha: false, gamma: false }, groups: {} } },
+  })
+  const gamma = {
+    name: 'gamma',
+    description: 'g',
+    provider: 'filesystem',
+    source: 'custom',
+    path: '/x/gamma/SKILL.md',
+    invocation: { modelInvocable: true, userInvocable: true },
+  }
+  const skills = fakeSkills(rows)
+  const ctx = fakeCtx()
+  installHooks(ctx)
+  // 注册遮蔽的那一刻，模拟另一个进程装了一个已被告知要关掉的新 skill。
+  const register = skills.register
+  skills.register = (skill) => {
+    const dispose = register.call(skills, skill)
+    if (skill.name === 'alpha') {
+      skills.snapshot = async () => ({ skills: [...rows, gamma], complete: true })
+      ctx.emitSync('skills/change', {})
+    }
+    return dispose
+  }
+
+  await ctx.emit('agent/created', { agent: agentFor(cwd, skills) })
+  // 补跑是异步发起的。
+  await new Promise((resolve) => setTimeout(resolve, 50))
+  assert.deepEqual(
+    skills.registered.map((skill) => skill.name).sort(),
+    ['alpha', 'gamma'],
+  )
+})
+
+test('同一 agent id 再次 created 会先释放旧遮蔽', async () => {
+  const { cwd } = await makeWorkspace({
+    packs: { default: { name: 'default', items: { alpha: false }, groups: {} } },
+  })
+  const skills = fakeSkills(rows)
+  const ctx = fakeCtx()
+  installHooks(ctx)
+  const agent = agentFor(cwd, skills)
+
+  await ctx.emit('agent/created', { agent })
+  assert.equal(skills.registered.length, 1)
+  await ctx.emit('agent/created', { agent })
+  assert.equal(skills.registered.length, 1)
+})
+
+test('agent/disposed 打掉该目录的求值缓存', async () => {
+  const { cwd } = await makeWorkspace({ packs: { default: emptyPack() } })
+  const skills = fakeSkills(rows)
+  const ctx = fakeCtx()
+  const invalidated = []
+  const value = { rows, complete: true, hidden: [], policy: {}, warnings: [] }
+  const snapshot = {
+    async refresh() {
+      return value
+    },
+    invalidate(target) {
+      invalidated.push(target)
+    },
+  }
+  installHooks(ctx, { snapshot })
+  const agent = agentFor(cwd, skills)
+
+  await ctx.emit('agent/created', { agent })
+  ctx.emitSync('agent/disposed', { agent })
+  assert.deepEqual(invalidated, [cwd])
 })

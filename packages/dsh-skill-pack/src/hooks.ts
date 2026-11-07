@@ -238,13 +238,21 @@ export function installHooks(
    * 用计数而非布尔：落地期间可能嵌套一次真正的外部变化。
    */
   let applying = 0
+  /** 落地期间到达的清单变化。直接丢掉会让遮蔽停在上一个版本，所以记下来补跑。 */
+  let dirty = false
 
-  const guarded = async (operation: () => Promise<void>): Promise<void> => {
+  async function guarded(operation: () => Promise<void>): Promise<void> {
     applying += 1
     try {
       await operation()
     } finally {
       applying -= 1
+      if (applying === 0 && dirty) {
+        dirty = false
+        void onChange().catch((error: unknown) => {
+          ctx.logger.warn(`dsh-skill-pack: 补跑清单变化失败：${String(error)}`)
+        })
+      }
     }
   }
 
@@ -305,6 +313,16 @@ export function installHooks(
       return
     }
     const state: AgentState = { agent, dispose: null, key: '', stuck: [] }
+    // 宿主可能对同一个 agent id 再发一次 created（会话恢复、重连）。
+    // 覆盖前必须释放旧遮蔽，否则注册表里留下没人能释放的第二份副本。
+    const previous = states.get(agent.id)
+    if (previous !== undefined && previous.dispose !== null) {
+      try {
+        previous.dispose()
+      } catch {
+        // 旧遮蔽释放失败不影响新的一轮。
+      }
+    }
     states.set(agent.id, state)
     if (typeof agent.raw === 'object' && agent.raw !== null) agentByScope.set(agent.raw, agent)
     try {
@@ -330,10 +348,20 @@ export function installHooks(
       }
     }
     states.delete(agent.id)
+    // 这一格已经没有消费者；不清理会让缓存按开过的会话数单调增长。
+    // 同目录还有活会话时会被一并打掉，代价是它们下一轮重读一次。
+    const cwd = cwdOf(agent)
+    if (cwd !== null) snapshot.invalidate(cwd)
   }
 
-  const onChange = async (): Promise<void> => {
-    if (applying > 0) return
+  async function onChange(): Promise<void> {
+    if (applying > 0) {
+      // 自己注册遮蔽触发的 skills/change 会走这里；外部变化也走这里，不能丢。
+      dirty = true
+      return
+    }
+    // 清单变化不改三份策略文件，指纹挡不住；不主动打掉就会一直读到旧清单。
+    snapshot.invalidate()
     await guarded(async () => {
       // 并发而不是串行：不同 agent 落在各自的 scope 上，互不依赖；同键的刷新由
       // `ScopeSnapshot` 单飞合并，所以并发不会把一次变更放大成 N 次读盘。
@@ -361,9 +389,8 @@ export function installHooks(
    * 保存成功后由路由显式调用这里，否则同一会话里改策略要等新会话才生效。
    */
   const reapply = async (): Promise<void> => {
-    // 策略刚被写盘：显式失效，不靠 mtime 精度。同毫秒内的两次写在 Windows 上
-    // 可能得到同一个时间戳，靠指纹会漏掉第二次。
-    snapshot.invalidate()
+    // 策略刚被写盘：onChange 里的显式失效不靠 mtime 精度。同毫秒内的两次写在
+    // Windows 上可能得到同一个时间戳，靠指纹会漏掉第二次。
     await onChange()
   }
 
@@ -385,6 +412,7 @@ export function installHooks(
       }
     }
     states.clear()
+    snapshot.invalidate()
   }
 
   ctx.effect(() => stopAll)

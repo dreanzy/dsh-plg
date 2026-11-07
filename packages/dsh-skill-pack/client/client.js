@@ -87,8 +87,6 @@ window.__ModuleLoader__.load({
         'var(--dsw-alias-bg-layer-1, Canvas)',
       border: 'var(--dsw-alias-border-l1, rgba(127,127,127,0.35))',
       borderStrong: 'var(--dsw-alias-border-l2, rgba(127,127,127,0.55))',
-      // 同理不依赖品牌变量：变量在主题里存在但取值不明时，开态可能和关态撞色。
-      accent: '#2f6fed',
       // 不用 --dsw-alias-state-idle-primary：暗色主题下它解析成接近白色，
       // 与白色圆点叠成一条纯白胶囊，开/关完全看不出来。这里用固定的半透明灰，
       // 再给轨道加一圈内描边，暗色与亮色下都有轮廓。
@@ -148,20 +146,6 @@ window.__ModuleLoader__.load({
         color: T.dim,
         whiteSpace: 'nowrap',
       },
-      reset: {
-        padding: 0,
-        margin: 0,
-        border: 'none',
-        background: 'transparent',
-        font: 'inherit',
-        color: 'inherit',
-        cursor: 'pointer',
-        textAlign: 'left',
-        display: 'inline-flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        boxSizing: 'border-box',
-      },
       row: {
         display: 'flex',
         alignItems: 'center',
@@ -218,9 +202,6 @@ window.__ModuleLoader__.load({
         transition: 'left 140ms ease, background 140ms ease',
       }),
       reset: { border: 0, background: 'transparent', cursor: 'pointer', color: T.dim, fontSize: '12px', padding: '2px 4px' },
-      // 选项用系统色而不是主题 token：弹出列表由浏览器原生绘制，
-      // `Canvas`/`CanvasText` 会按当前 `color-scheme` 解析成一对高对比度配色，
-      // 而主题 token 在原生弹层里不一定生效。
       /*
        * 自绘下拉。原生 <select> 的弹出层由系统绘制，不跟主题：暗色下一点开是一块
        * 蓝底浮层，与官方设置页的语言选择器完全不是一个观感。这里改成按钮 + 浮层。
@@ -268,18 +249,6 @@ window.__ModuleLoader__.load({
         cursor: 'pointer',
         background: active || hover ? 'rgba(127, 127, 127, 0.18)' : 'transparent',
       }),
-      option: { color: 'CanvasText', background: 'Canvas' },
-      select: {
-        fontSize: '11px',
-        padding: '2px 4px',
-        borderRadius: '4px',
-        border: '1px solid ' + T.border,
-        background: 'transparent',
-        color: T.text,
-        // 弹出的选项列表由浏览器原生绘制，不跟随页面配色。不声明 color-scheme 时，
-        // 选项会继承这里的浅色文字，却铺在系统默认的浅色底上——浅字浅底。
-        colorScheme: 'light dark',
-      },
       error: { color: T.error, fontSize: '12px', marginBottom: '8px' },
       empty: { color: T.faint, padding: '12px 4px', fontSize: '12px' },
       modalBack: {
@@ -343,7 +312,6 @@ window.__ModuleLoader__.load({
       const listeners = new Set()
       return {
         read: () => value,
-        get: () => value,
         set: (next) => {
           if (value === next) return
           value = next
@@ -363,7 +331,6 @@ window.__ModuleLoader__.load({
      * `chipName` 是 chip 上显示的 pack 名。
      */
     const env = {
-      showChip: true,
       onChipChange: null,
       sessionId: undefined,
     }
@@ -422,7 +389,7 @@ window.__ModuleLoader__.load({
     const TRI_STATE = [
       { value: 'on', label: '开', title: '显式打开（压过组）' },
       { value: 'off', label: '关', title: '显式关闭（压过组）' },
-      { value: 'follow', label: '跟随', title: '不记录，按组与 default 求值' },
+      { value: 'follow', label: '跟随', title: '不记录，按组与默认求值' },
     ]
 
     function triStateOf(value, allowInherit) {
@@ -710,6 +677,12 @@ window.__ModuleLoader__.load({
       return null
     }
 
+    /** 内置 pack 的显示名。数据里仍是 `default`，不写盘，也不参与重名校验。 */
+    function packLabel(pack) {
+      if (pack === null || pack === undefined) return ''
+      return pack.builtin === true || pack.id === DEFAULT_PACK_ID ? '默认' : pack.name
+    }
+
     /** pack 里的项级显式值；没有键返回 null（跟随）。 */
     function itemValue(pack, name) {
       const value = pack && pack.items ? pack.items[name] : undefined
@@ -745,22 +718,13 @@ window.__ModuleLoader__.load({
     /**
      * 生效值。链与 `src/policy.ts` 一致：
      * `pack.items ?? pack.groups ?? default.items ?? default.groups ?? true`。
-     * `draft` 为未保存的改动（`null` 表示删键、`undefined` 表示没动）。
      */
-    function resolveItem(pack, defaultPack, assignments, name, draft) {
-      const stagedItem = draft ? draft.items[name] : undefined
-      if (stagedItem === null) {
-        // 已删键：往下看组与 default。
-      } else if (stagedItem !== undefined) {
-        return stagedItem
-      } else {
-        const own = itemValue(pack, name)
-        if (own !== null) return own
-      }
+    function resolveItem(pack, defaultPack, assignments, name) {
+      const own = itemValue(pack, name)
+      if (own !== null) return own
       const gid = assignments[name] || null
       if (gid !== null) {
-        const stagedGroup = draft ? draft.groups[gid] : undefined
-        const group = stagedGroup === null ? null : stagedGroup !== undefined ? stagedGroup : groupValue(pack, gid)
+        const group = groupValue(pack, gid)
         if (group !== null) return group
       }
       const fallbackItem = itemValue(defaultPack, name)
@@ -840,46 +804,44 @@ window.__ModuleLoader__.load({
 
     function useGlobalView() {
       const [state, setState] = useState({ loading: true, error: null, data: null })
+      // 单调序号：连点时多个请求同时在途，旧响应可能后到；只认最后一次。
+      const seq = useRef(0)
 
       const load = useCallback(async () => {
+        const mine = (seq.current += 1)
         try {
-          const data = await api.global()
-          setState({ loading: false, error: null, data: data })
+          // 带当前会话：服务端用它的 scope 读清单，否则会退回到 list() 的第一个。
+          const data = await api.global(env.sessionId)
+          if (mine === seq.current) setState({ loading: false, error: null, data: data })
           return data
         } catch (error) {
-          setState({ loading: false, error: String(error.message || error), data: null })
+          if (mine === seq.current) {
+            setState({ loading: false, error: String(error.message || error), data: null })
+          }
           return null
         }
       }, [])
 
       useEffect(() => {
-        let alive = true
-        setState((prev) => ({ loading: prev.data === null, error: null, data: prev.data }))
-        // 面板可能被渲染在任意路由下，但这是一次显式的全量读取，不需要防抖。
-        api.global().then(
-          (data) => {
-            if (alive) setState({ loading: false, error: null, data: data })
-          },
-          (error) => {
-            if (alive) setState({ loading: false, error: String(error.message || error), data: null })
-          },
-        )
-        return () => {
-          alive = false
-        }
+        void load()
       }, [load])
 
       const run = useCallback(
         async (commands) => {
+          const mine = (seq.current += 1)
           try {
             const data = await api.apply(commands)
-            setState({ loading: false, error: null, data: data })
-            // 绑定改了要把 chip 上的 pack 名一起更新：chip 直接读当前会话的工作区视图，
-            // 与设置页之间没有通道，只能在这里主动重读一次。
-            if (commands.some((command) => command.op === 'bind')) refreshChipName(env.sessionId)
+            if (mine === seq.current) {
+              setState({ loading: false, error: null, data: data })
+              // 绑定改了要把 chip 上的 pack 名一起更新：chip 直接读当前会话的工作区视图，
+              // 与设置页之间没有通道，只能在这里主动重读一次。
+              if (commands.some((command) => command.op === 'bind')) refreshChipName(env.sessionId)
+            }
             return true
           } catch (error) {
-            setState((prev) => ({ ...prev, error: String(error.message || error) }))
+            if (mine === seq.current) {
+              setState((prev) => ({ ...prev, error: String(error.message || error) }))
+            }
             await load()
             return false
           }
@@ -959,9 +921,9 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * chip 的弹层：这张 pack 与默认配置差在哪，就地切换。
+     * chip 的弹层：这张 pack 与默认差在哪，就地切换。
      *
-     * 选「默认配置」发 `packId: null`（解除绑定），不是写一个 default 的 id——
+     * 选「默认」发 `packId: null`（解除绑定），不是写一个 default 的 id——
      * 未绑定与悬空引用在服务端是同一种状态。
      */
     function ChipModal(props) {
@@ -997,7 +959,7 @@ window.__ModuleLoader__.load({
         api.apply([{ op: 'bind', cwd: cwd, packId: value === DEFAULT_PACK_ID ? null : value }], sessionId).then(
           (view) => {
             setState({ loading: false, error: null, data: view })
-            chipName.set(view && view.binding !== null ? view.packName : null)
+            chipName.set(view && view.packId !== DEFAULT_PACK_ID ? view.packName : null)
           },
           (error) => setState((prev) => ({ ...prev, error: String(error.message || error) })),
         )
@@ -1021,7 +983,7 @@ window.__ModuleLoader__.load({
           h(
             'div',
             { style: { display: 'flex', alignItems: 'baseline', gap: '10px', marginTop: '2px' } },
-            h('div', { style: S.title }, data === null ? '读取中' : usingDefault ? '默认配置' : data.packName),
+            h('div', { style: S.title }, data === null ? '读取中' : usingDefault ? '默认' : data.packName),
             h('span', { style: { ...S.hint, marginLeft: 'auto' } }, '当前工作区'),
           ),
           state.error ? h('div', { style: { ...S.error, marginTop: '8px' } }, state.error) : null,
@@ -1031,11 +993,11 @@ window.__ModuleLoader__.load({
                 'div',
                 { style: { marginTop: '10px' } },
                 usingDefault
-                  ? h('div', { style: S.hint }, '这个目录没有指定 pack，按默认配置运行。')
+                  ? h('div', { style: S.hint }, '这个目录没有指定 pack，按默认运行。')
                   : h(
                       'div',
                       null,
-                      h('div', { style: { ...S.hint, marginBottom: '4px' } }, '与默认配置相比'),
+                      h('div', { style: { ...S.hint, marginBottom: '4px' } }, '与默认相比'),
                       rows.length === 0
                         ? h('div', { style: S.hint }, '没有任何改动。')
                         : rows.map((row) =>
@@ -1070,14 +1032,18 @@ window.__ModuleLoader__.load({
                 h(Picker, {
                   value: bound,
                   options: [
-                    { value: DEFAULT_PACK_ID, label: '默认配置' },
+                    { value: DEFAULT_PACK_ID, label: '默认' },
                     ...data.packs
                       .filter((pack) => pack.id !== DEFAULT_PACK_ID)
                       .map((pack) => ({ value: pack.id, label: pack.name })),
                   ],
                   onChange: (next) => bindTo(next),
                 }),
-                h('div', { style: { ...S.hint, marginTop: '6px' } }, '只影响这个目录里新开的会话。'),
+                h(
+                  'div',
+                  { style: { ...S.hint, marginTop: '6px' } },
+                  '保存后，这个目录里已开着的会话也会在下一个回合边界重新求值。',
+                ),
               ),
           h(
             'div',
@@ -1177,7 +1143,7 @@ window.__ModuleLoader__.load({
         h(
           'div',
           { style: { ...S.hint, marginTop: '4px' } },
-          '一张 pack 是一套具名策略：工作区绑到哪个 pack，就按哪套开关生效；未绑定按 default。',
+          '一张 pack 是一套具名策略：工作区绑到哪个 pack，就按哪套开关生效；未绑定按默认。',
         ),
         h(
           'div',
@@ -1223,7 +1189,6 @@ window.__ModuleLoader__.load({
                   onChange: (value) =>
                     run([{ op: 'showChip', value: value }]).then((ok) => {
                       if (!ok) return
-                      env.showChip = value
                       if (env.onChipChange) env.onChipChange(value)
                     }),
                 }),
@@ -1474,6 +1439,8 @@ window.__ModuleLoader__.load({
       const pack = packById(packs, selected)
       /** `default` 没有上一层，未记录直接显示成「开」，排序也按开算。 */
       const isDefault = pack === null || pack.id === DEFAULT_PACK_ID
+      /** 已注册遮蔽但复验仍可见：同层被别的插件先占了，这条关不掉。 */
+      const stuck = new Set(Array.isArray(data.stuck) ? data.stuck : [])
 
       const items = useMemo(() => {
         const needle = query.trim().toLowerCase()
@@ -1499,12 +1466,12 @@ window.__ModuleLoader__.load({
           const left = rankOf(
             itemValue(pack, a.name),
             isDefault,
-            resolveItem(pack, defaultPack, data.groups.assignments, a.name, null),
+            resolveItem(pack, defaultPack, data.groups.assignments, a.name),
           )
           const right = rankOf(
             itemValue(pack, b.name),
             isDefault,
-            resolveItem(pack, defaultPack, data.groups.assignments, b.name, null),
+            resolveItem(pack, defaultPack, data.groups.assignments, b.name),
           )
           if (left !== right) return left - right
           return a.name.localeCompare(b.name, 'zh')
@@ -1582,8 +1549,7 @@ window.__ModuleLoader__.load({
                       }
                     },
                   })
-                : h('span', { style: S.groupName }, entry.name),
-              entry.builtin ? h('span', { style: S.badge }, '默认') : null,
+                : h('span', { style: S.groupName }, packLabel(entry)),
               h('span', { style: S.badge }, overrides(entry) + ' 条覆盖'),
               // `default` 没有改名与删除入口：它是求值链终点，删掉或改个名都会让
               // 「未绑定即 default」失去指代。
@@ -1605,7 +1571,7 @@ window.__ModuleLoader__.load({
               entry.builtin
                 ? null
                 : h(ConfirmButton, {
-                    title: '删除 pack（指向它的绑定会变成悬空引用，按 default 求值）',
+                    title: '删除 pack（指向它的绑定会变成悬空引用，按默认求值）',
                     onConfirm: () => {
                       run([{ op: 'deletePack', packId: entry.id }])
                       if (entry.id === selected) setSelected(DEFAULT_PACK_ID)
@@ -1641,7 +1607,7 @@ window.__ModuleLoader__.load({
         h(
           'div',
           { style: S.block },
-          h('div', { style: S.blockTitle }, '包内开关：' + pack.name),
+          h('div', { style: S.blockTitle }, '包内开关：' + packLabel(pack)),
           h(
             'div',
             { style: { ...S.hint, marginBottom: '8px' } },
@@ -1690,7 +1656,7 @@ window.__ModuleLoader__.load({
             : items.map((row) => {
                 const value = itemValue(pack, row.name)
                 const gid = groupIdOf(row)
-                const inherited = resolveItem(pack, defaultPack, data.groups.assignments, row.name, null)
+                const inherited = resolveItem(pack, defaultPack, data.groups.assignments, row.name)
                 return h(
                   'div',
                   {
@@ -1712,6 +1678,16 @@ window.__ModuleLoader__.load({
                     h('div', { style: S.rowDesc, title: row.description }, row.description),
                   ),
                   h('span', { style: S.badge }, gid === null ? '未分组' : groupNameOf(data.groups.groups, gid)),
+                  stuck.has(row.name)
+                    ? h(
+                        'span',
+                        {
+                          style: { ...S.badge, color: T.error, borderColor: T.error },
+                          title: '同层已被别的插件先注册，关闭不生效',
+                        },
+                        '关不掉',
+                      )
+                    : null,
                   value === null && !isDefault
                     ? h('span', { style: { ...S.hint, whiteSpace: 'nowrap' } }, inherited ? '跟随（开）' : '跟随（关）')
                     : null,
@@ -1730,8 +1706,8 @@ window.__ModuleLoader__.load({
      * 「工作区」页：会话 cwd 去重 + 手动添加的路径，每行一个 pack 下拉。
      *
      * 顺序是「说明 → 手动添加 → 列表」：手动添加是入口，放到列表底下等于没有。
-     * 绑定只影响该目录下**新开**的会话：策略在会话创建时求值并注册遮蔽副本，
-     * 已经开着的会话不会因为这里改了绑定就换一套 pack。
+     * 绑定保存时就会对所有 live 会话重新求值（`reapply`），不是只影响新会话：
+     * 每个 Agent 按自己的 cwd 重新读绑定，改动落在下一个回合边界。
      */
     function WorkspacePage(props) {
       const data = props.data
@@ -1785,7 +1761,7 @@ window.__ModuleLoader__.load({
         h(
           'div',
           { style: { ...S.hint, marginBottom: '8px' } },
-          '绑定只影响该目录下新开的会话；已经开着的会话不换 pack。未绑定即跟随 default。',
+          '保存后立即生效：该目录下已开着的会话也在下一个回合边界重新求值。未绑定即跟随默认。',
         ),
         h(
           'div',
@@ -1816,7 +1792,7 @@ window.__ModuleLoader__.load({
             : paths.map((cwd) => {
                 const isExtra = extras.indexOf(cwd) >= 0
                 const bound = bindingOf(data.bindings, cwd)
-                // 悬空引用（pack 已删）显示成「跟随 default」，与服务端读侧的行为一致。
+                // 悬空引用（pack 已删）显示成「跟随默认」，与服务端读侧的行为一致。
                 const value = bound !== null && hasPack(data.packs, bound) ? bound : ''
                 return h(
                   'div',
@@ -1842,8 +1818,12 @@ window.__ModuleLoader__.load({
                     h(Picker, {
                       value: value === '' ? '' : value,
                       options: [
-                        { value: '', label: '默认配置' },
-                        ...data.packs.map((pack) => ({ value: pack.id, label: pack.name })),
+                        { value: '', label: '默认' },
+                        // 内置 default 与「默认」等价（服务端把 bind default 当解绑），
+                        // 列出来只会让人以为有两个不同的选择。
+                        ...data.packs
+                          .filter((pack) => pack.id !== DEFAULT_PACK_ID)
+                          .map((pack) => ({ value: pack.id, label: pack.name })),
                       ],
                       onChange: (next) => run([{ op: 'bind', cwd: cwd, packId: next === '' ? null : next }]),
                     }),
@@ -1869,7 +1849,7 @@ window.__ModuleLoader__.load({
       }
       api.workspace(sessionId).then(
         (view) => {
-          chipName.set(view && view.binding !== null ? view.packName : null)
+          chipName.set(view && view.packId !== DEFAULT_PACK_ID ? view.packName : null)
         },
         () => {
           // 读不到就退回 Default：chip 本身不能因此消失。
@@ -2014,11 +1994,9 @@ window.__ModuleLoader__.load({
             (view) => {
               const ui = uiOf(view)
               const chip = !ui || ui.showChip !== false
-              env.showChip = chip
               env.onChipChange(chip)
             },
             () => {
-              env.showChip = true
               env.onChipChange(true)
             },
           )
@@ -2026,6 +2004,8 @@ window.__ModuleLoader__.load({
           console.error('dsh-skill-pack: 客户端初始化失败', error)
         }
       },
+      /** 仅测试使用：核对浏览器侧求值链与服务端 `src/policy.ts` 一致。宿主加载器忽略未知字段。 */
+      __test: { resolveItem, normalizeCwd, groupValue, itemValue },
     }
   },
 })

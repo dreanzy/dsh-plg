@@ -3,7 +3,8 @@ import assert from 'node:assert/strict'
 import { createScopeSnapshot } from '../lib/snapshot.js'
 
 /**
- * 本文件只为 `PolicyState` 换了新形状（pack 名册 + 绑定），缓存行为与旧用例一致。
+ * 缓存行为：指纹短路、单飞、显式失效。
+ * 「读盘几次」用依赖的调用计数判断，不再暴露只给测试用的计数接口。
  */
 function policyOf(items = {}, overrides = {}) {
   const defaultPack = {
@@ -59,22 +60,12 @@ function fixture(options = {}) {
   }
 }
 
-test('read 未命中返回 null，且不触发任何依赖', () => {
-  const f = fixture()
-  assert.equal(f.snapshot.read('/proj'), null)
-  assert.deepEqual({ ...f.calls }, { loadPolicy: 0, readInventory: 0, fingerprint: 0 })
-  assert.equal(f.snapshot.stats().misses, 1)
-  assert.equal(f.snapshot.stats().hits, 0)
-})
-
 test('同键二次刷新被指纹短路，不重读磁盘', async () => {
   const f = fixture()
   await f.snapshot.refresh('/proj')
-  assert.equal(f.snapshot.stats().reads, 1)
-  await f.snapshot.refresh('/proj')
-  assert.equal(f.snapshot.stats().reads, 1)
   assert.equal(f.calls.readInventory, 1)
-  assert.equal(f.snapshot.stats().refreshes, 2)
+  await f.snapshot.refresh('/proj')
+  assert.equal(f.calls.readInventory, 1)
 })
 
 test('指纹变化触发重读', async () => {
@@ -82,16 +73,15 @@ test('指纹变化触发重读', async () => {
   await f.snapshot.refresh('/proj')
   f.setStamp('1')
   await f.snapshot.refresh('/proj')
-  assert.equal(f.snapshot.stats().reads, 2)
+  assert.equal(f.calls.readInventory, 2)
 })
 
 test('显式失效后下一次刷新重读', async () => {
   const f = fixture()
   await f.snapshot.refresh('/proj')
   f.snapshot.invalidate('/proj')
-  assert.equal(f.snapshot.read('/proj'), null)
   await f.snapshot.refresh('/proj')
-  assert.equal(f.snapshot.stats().reads, 2)
+  assert.equal(f.calls.readInventory, 2)
 })
 
 test('并发刷新同一格只算一次', async () => {
@@ -111,17 +101,23 @@ test('同 cwd 不同 scope 互不命中', async () => {
   f.setItems({})
   const b = await f.snapshot.refresh('/proj', scopeB)
   assert.deepEqual(b.hidden, [])
-  assert.equal(f.snapshot.stats().reads, 2)
-  assert.deepEqual(f.snapshot.read('/proj', scopeA).hidden, ['off-a'])
+  assert.equal(f.calls.readInventory, 2)
+  // 指纹没变：A 仍然命中自己的那一格，不会读到 B 的清单。
+  const again = await f.snapshot.refresh('/proj', scopeA)
+  assert.deepEqual(again.hidden, ['off-a'])
+  assert.equal(f.calls.readInventory, 2)
 })
 
 test('按目录失效不影响别的目录', async () => {
   const f = fixture()
   await f.snapshot.refresh('/a')
   await f.snapshot.refresh('/b')
+  assert.equal(f.calls.readInventory, 2)
   f.snapshot.invalidate('/a')
-  assert.equal(f.snapshot.read('/a'), null)
-  assert.notEqual(f.snapshot.read('/b'), null)
+  await f.snapshot.refresh('/a')
+  assert.equal(f.calls.readInventory, 3)
+  await f.snapshot.refresh('/b')
+  assert.equal(f.calls.readInventory, 3)
 })
 
 test('清单不完整时不算隐藏集', async () => {
@@ -133,9 +129,10 @@ test('清单不完整时不算隐藏集', async () => {
 
 test('不传 cwd 的调用落在全局那一格', async () => {
   const f = fixture()
-  await f.snapshot.refresh(null)
-  assert.notEqual(f.snapshot.read(null), null)
-  assert.equal(f.snapshot.stats().reads, 1)
+  const first = await f.snapshot.refresh(null)
+  const second = await f.snapshot.refresh(null)
+  assert.equal(first, second)
+  assert.equal(f.calls.readInventory, 1)
 })
 
 test('绑定 pack 的开关参与求值，未被覆盖的项跟随 default', async () => {
@@ -156,6 +153,6 @@ test('绑定 pack 的开关参与求值，未被覆盖的项跟随 default', asy
 test('Windows 上同一目录的两种写法命中同一格', { skip: process.platform !== 'win32' }, async () => {
   const f = fixture()
   await f.snapshot.refresh('D:/Projects/Sample')
-  assert.notEqual(f.snapshot.read('d:\\projects\\sample\\'), null)
-  assert.equal(f.snapshot.stats().reads, 1)
+  await f.snapshot.refresh('d:\\projects\\sample\\')
+  assert.equal(f.calls.readInventory, 1)
 })
