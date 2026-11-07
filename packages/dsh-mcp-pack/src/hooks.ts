@@ -1,6 +1,7 @@
 import { INVENTORY_SECTION } from './inventory-section.js'
 import { denyNamesFor } from './shield.js'
 import type { Pool } from './pool.js'
+import { createReconciler } from './reconcile.js'
 import { createInventoryState, sectionText, type InventoryState } from './state.js'
 import { createScopeSnapshot, type ScopeSnapshot } from './snapshot.js'
 import { readOwned } from './servers.js'
@@ -52,6 +53,20 @@ function toolsOf(agent: AgentLike): { view?: unknown; restrict?: unknown } | nul
   }
 }
 
+/**
+ * 该 agent 这一轮要罩住的工具名：按全局工具表里可限制的名字算 deny。
+ *
+ * scope 传 agent 本体：dsh-scope 按对象身份索引，传 ctx 或替身都查不到 agent 层。
+ */
+function denyFor(agent: AgentLike, servers: readonly string[]): readonly string[] {
+  if (servers.length === 0) return []
+  const tools = toolsOf(agent)
+  const view = tools?.view
+  if (tools === null || typeof view !== 'function') return []
+  const resolved = view.call(tools, agent) as { restrictableNames?: Iterable<string> } | undefined
+  return denyNamesFor(resolved?.restrictableNames ?? [], servers)
+}
+
 function promptOf(agent: AgentLike): Record<string, unknown> | null {
   const get = agent.ctx?.get
   if (typeof get !== 'function') return null
@@ -68,11 +83,10 @@ export interface AgentScope {
   readonly agent: AgentLike
   readonly cwd: string
   readonly inventory: InventoryState
-  disposeSection: (() => void) | null
   /** 段注册失败的原因；null 表示没失败。 */
   sectionError: string | null
-  /** 罩住全局工具的 disposer；null 表示这次没有需要罩住的。 */
-  disposeRestrict: (() => void) | null
+  /** 段这一刻是否已注册上。释放由 `reconcile.ts` 记账，这里只留诊断。 */
+  readonly hasSection: boolean
 }
 
 export interface HookDeps {
@@ -134,7 +148,7 @@ export interface Hooks {
  * 三条纪律：
  * 1. `agent/created` 是 serial 派发，监听器抛错会让**会话创建失败**，所以这一层
  *    所有失败路径都是 warn + 降级。
- * 2. 重算必须幂等：重复事件只重建一次，旧的段与旧的 state 先释放。
+ * 2. 重算必须幂等：重复事件只重建一次，旧的段与旧的掩码先释放。
  * 3. 不在 `agent/pre-step` 或 `system-prompt/assemble` 上做异步工作。
  */
 export function installHooks(deps: HookDeps): Hooks {
@@ -152,89 +166,95 @@ export function installHooks(deps: HookDeps): Hooks {
   // WeakMap 不可枚举，但自检需要「现在有哪些 agent 落了地」，所以并行维护一份按 id 的索引。
   const byId = new Map<string, AgentScope>()
   const offs: Array<() => void> = []
-  /** 同一 agent 的重算串行化：两轮交错会互相释放对方刚注册的段，段句柄就此丢失。 */
-  const queues = new WeakMap<object, Promise<unknown>>()
-
-  function reconcile(agent: AgentLike, cwd: string): Promise<AgentScope | null> {
-    const key = agent as object
-    const previous = queues.get(key) ?? Promise.resolve()
-    const next = previous.then(
-      () => reconcileOnce(agent, cwd),
-      () => reconcileOnce(agent, cwd),
-    )
-    queues.set(key, next.then(() => undefined, () => undefined))
-    return next
-  }
+  /**
+   * 同一 agent 的装配记账：串行、先释放后落地、失败退回无资源。
+   *
+   * 队列与两个 disposer 字段以前住在这里，靠调用处的顺序维持不变式；现在按
+   * agent.id 收进 `reconcile.ts`，和另外两个包的形状一致。
+   */
+  const reconciler = createReconciler((message) => {
+    deps.context.logger.warn(`dsh-mcp-pack: ${message}`)
+  })
 
   async function reconcileOnce(agent: AgentLike, cwd: string): Promise<AgentScope | null> {
     // 求值按 cwd + scope 共享：托管定义、pack 策略、行发现结果只读一次。
     const inventory = createInventoryState(snapshot, cwd, agent)
     await inventory.refresh()
 
-    // 先释放上一轮的段：宿主在同一层内禁止同名段重复注册，顺序反了必然抛
-    // 「already registered in this scope」，而且会把旧 disposer 丢掉。
-    const previous = scopes.get(agent as object)
-    if (previous !== undefined && previous.disposeSection !== null) {
-      try {
-        previous.disposeSection()
-      } catch {
-        // 旧段释放失败不影响新段。
-      }
-    }
-
-    let disposeSection: (() => void) | null = null
-    let sectionError: string | null = null
-    const prompt = promptOf(agent)
-    const section = prompt?.['section']
-    if (prompt === null) {
-      sectionError = 'agent.ctx.get("systemPrompt") 拿不到服务'
-    }
-    if (typeof section === 'function') {
-      try {
-        const disposer = (section as (spec: unknown) => unknown).call(prompt, {
-          name: INVENTORY_SECTION,
-          order: typeof prompt?.['getSectionOrder'] === 'function'
-            ? (prompt['getSectionOrder'] as (key: string) => unknown).call(prompt, 'MCP_SERVERS')
-            : 3100,
-          interpolate: false,
-          text: () => sectionText(inventory),
-        })
-        if (typeof disposer === 'function') disposeSection = disposer as () => void
-      } catch (error) {
-        sectionError = String(error)
-        deps.context.logger.warn(`dsh-mcp-pack: 为 ${agent.id} 注册名册段失败：${String(error)}`)
-      }
-    }
-
     // 罩住全局层的那一份：`mcp-client` 挂的工具对模型隐藏，进程照旧。
-    let disposeRestrict: (() => void) | null = null
+    // 这两步都要 await，而落地必须同步，所以先在 build 之外算完。
+    let deny: readonly string[] = []
     try {
-      const servers = await deps.shieldedServers(agent, cwd)
-      if (servers.length > 0) {
-        const tools = toolsOf(agent)
-        const view = tools?.view
-        if (tools !== null && typeof view === 'function') {
-          // scope 传 agent 本体：dsh-scope 按对象身份索引，传 ctx 或替身都查不到 agent 层。
-          const resolved = view.call(tools, agent) as { restrictableNames?: Iterable<string> } | undefined
-          const deny = denyNamesFor(resolved?.restrictableNames ?? [], servers)
-          if (deny.length > 0 && typeof tools.restrict === 'function') {
-            const disposer = tools.restrict.call(tools, { deny })
-            if (typeof disposer === 'function') disposeRestrict = disposer as () => void
-          }
-        }
-      }
+      deny = denyFor(agent, await deps.shieldedServers(agent, cwd))
     } catch (error) {
       deps.context.logger.warn(`dsh-mcp-pack: 为 ${agent.id} 罩住 MCP 工具失败：${String(error)}`)
     }
 
-    if (previous !== undefined) {
-      try {
-        previous.disposeRestrict?.()
-      } catch {
-        // 同上。
+    let sectionError: string | null = null
+    let hasSection = false
+    // 段与掩码合成一个 dispose：模块只有这一个释放口子。释放上一轮也由模块做。
+    const ok = await reconciler.apply(agent.id, () => {
+      let disposeSection: (() => void) | null = null
+      const prompt = promptOf(agent)
+      const section = prompt?.['section']
+      sectionError = null
+      hasSection = false
+      if (prompt === null) {
+        sectionError = 'agent.ctx.get("systemPrompt") 拿不到服务'
       }
-    }
-    const scope: AgentScope = { agent, cwd, inventory, disposeSection, sectionError, disposeRestrict }
+      if (typeof section === 'function') {
+        try {
+          const disposer = (section as (spec: unknown) => unknown).call(prompt, {
+            name: INVENTORY_SECTION,
+            order: typeof prompt?.['getSectionOrder'] === 'function'
+              ? (prompt['getSectionOrder'] as (key: string) => unknown).call(prompt, 'MCP_SERVERS')
+              : 3100,
+            interpolate: false,
+            text: () => sectionText(inventory),
+          })
+          if (typeof disposer === 'function') {
+            disposeSection = disposer as () => void
+            hasSection = true
+          }
+        } catch (error) {
+          sectionError = String(error)
+          deps.context.logger.warn(`dsh-mcp-pack: 为 ${agent.id} 注册名册段失败：${String(error)}`)
+        }
+      }
+
+      let disposeRestrict: (() => void) | null = null
+      if (deny.length > 0) {
+        try {
+          const tools = toolsOf(agent)
+          const restrict = tools?.restrict
+          if (tools !== null && typeof restrict === 'function') {
+            // deny 已在 build 之前算好（那时旧罩子还生效），这里只落地。
+            const disposer = restrict.call(tools, { deny })
+            if (typeof disposer === 'function') disposeRestrict = disposer as () => void
+          }
+        } catch (error) {
+          deps.context.logger.warn(`dsh-mcp-pack: 为 ${agent.id} 罩住 MCP 工具失败：${String(error)}`)
+        }
+      }
+
+      return () => {
+        try {
+          disposeSection?.()
+        } catch {
+          // 释放失败只影响这一份。
+        }
+        try {
+          disposeRestrict?.()
+        } catch {
+          // 同上。
+        }
+      }
+    })
+
+    // 落地没成（排队期间被销毁，或被更新的一轮顶掉）：不推进记录，下次事件再试。
+    if (!ok) return null
+
+    const scope: AgentScope = { agent, cwd, inventory, sectionError, hasSection }
     scopes.set(agent as object, scope)
     byId.set(agent.id, scope)
     try {
@@ -246,55 +266,53 @@ export function installHooks(deps: HookDeps): Hooks {
   }
 
   const onCreated = async (payload: unknown): Promise<void> => {
-    const agent = agentOf(payload)
-    if (agent === null) return
-    const cwd = cwdOf(agent)
-    if (cwd === null) return
     try {
-      await reconcile(agent, cwd)
+      const agent = agentOf(payload)
+      if (agent === null) return
+      const cwd = cwdOf(agent)
+      if (cwd === null) return
+      try {
+        await reconcileOnce(agent, cwd)
+      } catch (error) {
+        // 绝不抛：这个监听器在会话创建路径上。
+        deps.context.logger.warn(`dsh-mcp-pack: 为 ${agent.id} 落地工作区策略失败：${String(error)}`)
+      }
+      /**
+       * `mcp-client` 是异步连上之后才注册工具的，而 `agent/created` 那一刻全局工具表
+       * 常常还是空的——此时 `restrict({ deny })` 没有名字可罩。所以补一次重算：
+       * 只补一次，不订阅 `tools/change`（那会让每次注册都触发一轮重算）。
+       */
+      const retry = setTimeout(() => {
+        if (!scopes.has(agent as object)) return
+        void reconcileOnce(agent, cwd).catch((error) => {
+          deps.context.logger.warn(`dsh-mcp-pack: 延迟罩住失败（agent=${agent.id}）：${String(error)}`)
+        })
+      }, 1500)
+      if (typeof retry === 'object' && typeof (retry as { unref?: () => void }).unref === 'function') {
+        (retry as { unref: () => void }).unref()
+      }
     } catch (error) {
-      // 绝不抛：这个监听器在会话创建路径上。
-      deps.context.logger.warn(`dsh-mcp-pack: 为 ${agent.id} 落地工作区策略失败：${String(error)}`)
-    }
-    /**
-     * `mcp-client` 是异步连上之后才注册工具的，而 `agent/created` 那一刻全局工具表
-     * 常常还是空的——此时 `restrict({ deny })` 没有名字可罩。所以补一次重算：
-     * 只补一次，不订阅 `tools/change`（那会让每次注册都触发一轮重算）。
-     */
-    const retry = setTimeout(() => {
-      if (!scopes.has(agent as object)) return
-      void reconcile(agent, cwd).catch((error) => {
-        deps.context.logger.warn(`dsh-mcp-pack: 延迟罩住失败（agent=${agent.id}）：${String(error)}`)
-      })
-    }, 1500)
-    if (typeof retry === 'object' && typeof (retry as { unref?: () => void }).unref === 'function') {
-      (retry as { unref: () => void }).unref()
+      // 双保险：整条监听器在会话创建路径上，任何意外都不许冒泡。
+      deps.context.logger.warn(`dsh-mcp-pack: 处理 agent/created 失败：${String(error)}`)
     }
   }
 
   const onDisposed = (payload: unknown): void => {
-    const agent = agentOf(payload)
-    if (agent === null) return
-    const scope = scopes.get(agent as object)
-    if (scope !== undefined) {
-      try {
-        scope.disposeSection?.()
-      } catch {
-        // 同上。
-      }
-      try {
-        scope.disposeRestrict?.()
-      } catch {
-        // 同上。
-      }
+    try {
+      const agent = agentOf(payload)
+      if (agent === null) return
+      // 段与掩码由 reconciler 按 key 释放；排队中的那一轮会被世代号作废，不再落地。
+      reconciler.release(agent.id)
+      scopes.delete(agent as object)
+      byId.delete(agent.id)
+      // 快照缓存按 cwd + scope 索引，会话结束后没人再读它，留着只是内存。
+      // 必须带 agent：只按 cwd 清会连带打掉同目录下其他会话（子代理与父会话同 cwd）
+      // 的那一格，它们的 target() 立刻读不到缓存。
+      snapshot.invalidate(cwdOf(agent), agent)
+      releaseAgent(agent as object, deps.pool)
+    } catch (error) {
+      deps.context.logger.warn(`dsh-mcp-pack: 处理 agent/disposed 失败：${String(error)}`)
     }
-    scopes.delete(agent as object)
-    byId.delete(agent.id)
-    // 快照缓存按 cwd + scope 索引，会话结束后没人再读它，留着只是内存。
-    // 必须带 agent：只按 cwd 清会连带打掉同目录下其他会话（子代理与父会话同 cwd）
-    // 的那一格，它们的 target() 立刻读不到缓存。
-    snapshot.invalidate(cwdOf(agent), agent)
-    releaseAgent(agent as object, deps.pool)
   }
 
   /**
@@ -313,7 +331,7 @@ export function installHooks(deps: HookDeps): Hooks {
     const cwd = cwdOf(agent)
     if (cwd === null) return
     try {
-      await reconcile(agent, cwd)
+      await reconcileOnce(agent, cwd)
     } catch (error) {
       deps.context.logger.warn(`dsh-mcp-pack: 切目录后重算失败（agent=${agent.id}）：${String(error)}`)
     }
@@ -348,7 +366,7 @@ export function installHooks(deps: HookDeps): Hooks {
         const cwd = cwdOf(agent)
         if (cwd === null) continue
         try {
-          await reconcile(agent, cwd)
+          await reconcileOnce(agent, cwd)
         } catch (error) {
           deps.context.logger.warn(`dsh-mcp-pack: 补落地失败（agent=${agent.id}）：${String(error)}`)
         }
@@ -357,7 +375,7 @@ export function installHooks(deps: HookDeps): Hooks {
     async reconcileAll() {
       for (const scope of [...byId.values()]) {
         try {
-          await reconcile(scope.agent, scope.cwd)
+          await reconcileOnce(scope.agent, scope.cwd)
         } catch (error) {
           deps.context.logger.warn(`dsh-mcp-pack: 重算失败（agent=${scope.agent.id}）：${String(error)}`)
         }
@@ -377,7 +395,7 @@ export function installHooks(deps: HookDeps): Hooks {
           id: scope.agent.id,
           cwd: scope.cwd,
           rows: scope.inventory.snapshot().length,
-          hasSection: scope.disposeSection !== null,
+          hasSection: scope.hasSection,
           sectionError: scope.sectionError,
         })),
       }
