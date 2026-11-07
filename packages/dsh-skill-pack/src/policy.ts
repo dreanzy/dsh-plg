@@ -424,12 +424,3 @@ export function createResolver(input: ResolverInput): Resolver {
   }
   return { isOpen: (name) => decide(name).value, groupOf, decide }
 }
-
-/** 从清单里挑出被关掉的名字，排序后返回（用于比较是否变化）。 */
-export function hiddenNames(names: readonly string[], resolver: Resolver): string[] {
-  const hidden: string[] = []
-  for (const name of names) {
-    if (!resolver.isOpen(name)) hidden.push(name)
-  }
-  return hidden.sort()
-}

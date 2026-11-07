@@ -3,7 +3,6 @@ import assert from 'node:assert/strict'
 import {
   createResolver,
   defaultPackOf,
-  hiddenNames,
   normalizeCwd,
   parseBindings,
   parseGroups,
@@ -118,11 +117,6 @@ test('组决策也带来源 pack 与级别', () => {
     'p1',
   )
   assert.deepEqual(r.decide('blender-core'), { value: false, packId: 'p1', via: 'group' })
-})
-
-test('hiddenNames 只返回关掉的并排序', () => {
-  const r = withPolicy(null, { items: { b: false, a: false } })
-  assert.deepEqual(hiddenNames(['a', 'b', 'c'], r), ['a', 'b'])
 })
 
 test('求值链解析组归属', () => {
