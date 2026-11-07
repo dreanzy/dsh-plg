@@ -496,11 +496,13 @@ export async function handleGlobal(
   ctx: RouteContext,
   body: Record<string, unknown> | null,
   deps: RouteDeps,
+  /** 刚写完的状态：`apply` 传进来，写入失败的说明才能随视图回到面板。 */
+  applied?: PolicyState,
 ): Promise<Envelope<PluginView>> {
   try {
     const sessionId = readString(body, 'sessionId')
     const target = sessionId === null ? null : await resolveSession(ctx, sessionId).catch(() => null)
-    const loaded = await loadState(null)
+    const loaded = applied ?? (await loadState(null))
     const found = await currentCatalog(ctx, deps)
     return {
       ok: true,
@@ -524,8 +526,10 @@ async function buildWorkspaceView(
   agent: unknown,
   live: boolean,
   deps: RouteDeps,
+  /** 刚写完的状态；用法同 `handleGlobal` 的同名参数。 */
+  applied?: PolicyState,
 ): Promise<Envelope<WorkspaceView>> {
-  const loaded = await loadState(cwd)
+  const loaded = applied ?? (await loadState(cwd))
   const found = await currentCatalog(ctx, deps)
   const base = buildPluginView({
     loaded,
@@ -743,7 +747,8 @@ export async function handleApply(
       }
     }
 
-    await applyCommands(target?.cwd ?? null, parsed.commands)
+    // 写侧不抛：失败说明在返回状态的 warnings 里。
+    const state = await applyCommands(target?.cwd ?? null, parsed.commands)
     // 策略写入不产生宿主事件，这条显式调用是「同一会话内改策略立刻生效」的唯一来源。
     // 失败只降级，不能让写成功的保存报错。
     try {
@@ -752,9 +757,12 @@ export async function handleApply(
       ctx.logger.warn('dsh-plugin-pack: 保存后重新施加失败（策略已写入）：' + String(error))
     }
 
-    if (target === null) return await handleGlobal(ctx, body, deps)
-    return await buildWorkspaceView(ctx, target.cwd, target.agent, target.live, deps)
+    // 写入失败仍返回 ok：`error.code` 只留给命令解析失败与未知会话。
+    // 面板要的是「最新状态 + 为什么没写进去」，报错信封反而会把状态一起丢掉。
+    if (target === null) return await handleGlobal(ctx, body, deps, state)
+    return await buildWorkspaceView(ctx, target.cwd, target.agent, target.live, deps, state)
   } catch (error) {
-    return { ok: false, error: { code: 'internal', message: '写入策略失败：' + String(error) } }
+    // 写入路径已经不会走到这里，只剩视图侧的意外（读盘、目录扫描）。
+    return { ok: false, error: { code: 'internal', message: '读取插件策略失败：' + String(error) } }
   }
 }

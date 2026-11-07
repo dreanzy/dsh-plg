@@ -755,6 +755,50 @@ window.__ModuleLoader__.load({
       )
     }
 
+    /**
+     * 策略文件告警：读侧降级（坏文件、缺字段）与写侧拒写（读不出来、内容坏、命令被拒）都在这一处，默认折叠。
+     *
+     * 首要信息只是「有几条」，但写失败的原因必须能展开看到：只显示一句摘要时，
+     * 「点了保存却没生效」在界面上找不到任何解释。样式沿用 probeWarn + hint + badge。
+     */
+    function WarningsNotice(props) {
+      const [open, setOpen] = useState(false)
+      const all = (Array.isArray(props.warnings) ? props.warnings : []).filter(
+        (line) => typeof line === 'string' && line !== '',
+      )
+      if (all.length === 0) return null
+      return h(
+        'div',
+        { style: S.probeWarn },
+        h(
+          'div',
+          null,
+          '策略文件有告警 ',
+          h('span', { style: S.badge }, all.length + ' 条'),
+        ),
+        open
+          ? h(
+              'div',
+              { style: { marginTop: '4px' } },
+              all.map((line, index) =>
+                h(
+                  'div',
+                  { key: 'warn-' + index, style: { ...S.hint, marginTop: '2px', wordBreak: 'break-word' } },
+                  line,
+                ),
+              ),
+            )
+          : h('div', { style: { ...S.hint, marginTop: '4px', wordBreak: 'break-word' } }, all[0] + (all.length > 1 ? ' …' : '')),
+        all.length > 1
+          ? h(
+              'button',
+              { type: 'button', style: { ...S.action, marginTop: '6px' }, onClick: () => setOpen(!open) },
+              open ? '收起' : '展开全部 ' + all.length + ' 条',
+            )
+          : null,
+      )
+    }
+
     // ---------- 宿主与求值 ----------
 
     /**
@@ -1402,9 +1446,7 @@ window.__ModuleLoader__.load({
           ? h('div', { style: S.hint }, '正在识别插件归属（首次约 1 秒，之后读缓存）…')
           : null,
         h(OutOfScopeNotice, { names: data.outOfScope }),
-        (data.warnings || []).length > 0
-          ? h('div', { style: S.probeWarn }, '策略文件有告警：' + data.warnings.slice(0, 4).join('；'))
-          : null,
+        h(WarningsNotice, { warnings: data.warnings }),
 
         h(
           'div',

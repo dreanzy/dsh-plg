@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { dirname, join } from 'node:path'
-import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import {
   applyCommands,
@@ -79,12 +79,14 @@ test('packItem / packGroup 的三态：null 删键回到跟随', async () => {
 
 test('默认 pack 不可删除、不可改名；未知 pack 的写入被拒', async () => {
   await freshHome()
-  await assert.rejects(applyCommands(null, [{ op: 'deletePack', packId: 'default' }]), /默认 pack 不可删除/)
-  await assert.rejects(applyCommands(null, [{ op: 'renamePack', packId: 'default', name: 'x' }]), /默认 pack 不可改名/)
-  await assert.rejects(
-    applyCommands(null, [{ op: 'packItem', packId: 'missing', name: 'plug-a', value: false }]),
-    /未知 pack/,
-  )
+  // 写入失败不抛错：说明进 warnings，且这一批不落盘。
+  const deleted = await applyCommands(null, [{ op: 'deletePack', packId: 'default' }])
+  assert.ok(deleted.warnings.some((line) => line.includes('默认 pack 不可删除')))
+  const renamed = await applyCommands(null, [{ op: 'renamePack', packId: 'default', name: 'x' }])
+  assert.ok(renamed.warnings.some((line) => line.includes('默认 pack 不可改名')))
+  const missing = await applyCommands(null, [{ op: 'packItem', packId: 'missing', name: 'plug-a', value: false }])
+  assert.ok(missing.warnings.some((line) => line.includes('未知 pack')))
+  assert.equal(await fileExists(packsPath()), false)
 })
 
 test('bind 与 bind null：绑定键是规范化后的 cwd', async () => {
@@ -220,4 +222,78 @@ test('addExtra / removeExtra：规范化、去重、与 bindings 互不影响', 
   await applyCommands(null, [{ op: 'removeExtra', cwd: a }])
   onDisk = await readJson(workspacesPath())
   assert.deepEqual(onDisk.extra, [b])
+})
+
+/**
+ * 防覆盖默认：写之前的三种坏情况各留一条。
+ *
+ * 这三条的共同点都不是「报错」，而是**什么都不做**——拒写之后磁盘上必须还是原来那份，
+ * 读写失败的说明只能出现在返回状态的 warnings 里。
+ */
+
+const NEWLINE = String.fromCharCode(10)
+
+function goldenPacks() {
+  return [
+    '{',
+    '  "version": 1,',
+    '  "ui": {',
+    '    "showOfficialPlugins": false,',
+    '    "showChip": true,',
+    '    "defaultTab": "groups"',
+    '  },',
+    '  "packs": {',
+    '    "default": {',
+    '      "name": "默认",',
+    '      "items": {',
+    '        "a": true,',
+    '        "b": false',
+    '      }',
+    '    }',
+    '  }',
+    '}',
+    '',
+  ].join(NEWLINE)
+}
+
+test('成功路径输出逐字节不变：键序、缩进、结尾换行都不动', async () => {
+  await freshHome()
+  const commands = [
+    { op: 'packItem', packId: 'default', name: 'b', value: false },
+    { op: 'packItem', packId: 'default', name: 'a', value: true },
+  ]
+  await applyCommands(null, commands)
+  const first = await readFile(packsPath(), 'utf8')
+  assert.equal(first, goldenPacks())
+
+  await applyCommands(null, commands)
+  assert.equal(await readFile(packsPath(), 'utf8'), first)
+})
+
+test('内容坏掉时拒写：原文件字节不变，warnings 说明原因', async () => {
+  await freshHome()
+  await mkdir(dirname(packsPath()), { recursive: true })
+
+  const truncated = '{ "version": 1, "packs": { "default": '
+  await writeFile(packsPath(), truncated)
+  const state = await applyCommands(null, [{ op: 'createPack', name: '工作' }])
+  assert.ok(state.warnings.some((line) => line.includes('拒写')))
+  assert.equal(await readFile(packsPath(), 'utf8'), truncated)
+  // 解析降级出的空名册绝不能被写回去。
+  assert.equal(state.packs.packs.p1, undefined)
+
+  const notObject = '[1, 2]'
+  await writeFile(packsPath(), notObject)
+  const second = await applyCommands(null, [{ op: 'createPack', name: '工作' }])
+  assert.ok(second.warnings.some((line) => line.includes('顶层不是对象')))
+  assert.equal(await readFile(packsPath(), 'utf8'), notObject)
+})
+
+test('非 ENOENT 的读失败跳过写入，不覆盖也不凭空建文件', async () => {
+  await freshHome()
+  // 目录顶替文件：readFile 报 EISDIR，正是「读不出来」的那类失败。
+  await mkdir(packsPath(), { recursive: true })
+  const state = await applyCommands(null, [{ op: 'createPack', name: '工作' }])
+  assert.ok(state.warnings.some((line) => line.includes('读取失败')))
+  assert.equal((await stat(packsPath())).isDirectory(), true)
 })

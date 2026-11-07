@@ -53,21 +53,89 @@ async function readText(path: string): Promise<string | undefined> {
   }
 }
 
+function reasonOf(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
+}
+
+/**
+ * 写入前的完整性检查：坏掉的文本必须拒写。
+ *
+ * 解析函数把坏文件降级成空名册，那只适合读。写路径若照此序列化回去，
+ * 一次保存就会拿空名册覆盖掉用户的全部决定，且这种损失在界面上无从挽回。
+ * 与「文件不存在」区分开：缺席是可写的新起点，坏文件不是。
+ */
+function brokenReason(text: string | undefined): string | null {
+  if (text === undefined || text.trim() === '') return null
+  let raw: unknown
+  try {
+    raw = JSON.parse(text)
+  } catch (error) {
+    return `内容不是合法 JSON（${String(error)}）`
+  }
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return '顶层不是对象'
+  return null
+}
+
 /**
  * 一次写事务：建父目录 → 拿跨进程锁 → 读 → 改 → 原子覆盖写。
  *
  * 父目录必须在拿锁之前建好：`withFileLock` 用 `wx` 直接建 `<file>.lock`，
  * 它不会建父目录。`writeFileAtomic` 自己会 mkdir，但那是拿锁之后的事。
+ *
+ * 返回 `false` 表示文件没写成（读失败、内容坏、命令被拒、落盘失败），调用方据此
+ * 停下这一批剩下的文件。写侧一律不抛：失败说明进 `warnings`，因为「保存没生效」
+ * 只能从这里读到。
  */
-async function transact(path: string, mutate: (current: string | undefined) => string | null): Promise<void> {
-  await mkdir(dirname(path), { recursive: true, mode: 0o700 })
-  await withFileLock(path, async () => {
-    const current = await readText(path)
-    const next = mutate(current)
-    // `null` 表示这一批命令没有实际改变：不落盘，不留空转的空文件。
-    if (next === null) return
-    await writeFileAtomic(path, next, { mode: 0o600, dirMode: 0o700 })
-  })
+async function transact(
+  path: string,
+  label: string,
+  mutate: (current: string | undefined) => string | null,
+  warnings: string[],
+): Promise<boolean> {
+  try {
+    await mkdir(dirname(path), { recursive: true, mode: 0o700 })
+  } catch (error) {
+    warnings.push(`${label} 无法创建所在目录，已跳过本次写入：${reasonOf(error)}`)
+    return false
+  }
+
+  let written = true
+  try {
+    await withFileLock(path, async () => {
+      let current: string | undefined
+      try {
+        current = await readText(path)
+      } catch (error) {
+        // 读不出来就不知道现有内容，照着想象中的空策略写下去等于清空。
+        warnings.push(`${label} 读取失败，已跳过本次写入：${reasonOf(error)}`)
+        written = false
+        return
+      }
+      const broken = brokenReason(current)
+      if (broken !== null) {
+        warnings.push(`${label} ${broken}，已拒写以免覆盖：${path}`)
+        written = false
+        return
+      }
+      let next: string | null
+      try {
+        next = mutate(current)
+      } catch (error) {
+        // 命令本身不合法（未知 pack、默认 pack 不可删）：整批不写，与「写一半」相比更容易解释。
+        warnings.push(`${label} 未写入：${reasonOf(error)}`)
+        written = false
+        return
+      }
+      // `null` 表示这一批命令没有实际改变：不落盘，不留空转的空文件。
+      if (next === null) return
+      await writeFileAtomic(path, next, { mode: 0o600, dirMode: 0o700 })
+    })
+  } catch (error) {
+    // 拿锁或落盘失败：目录只读、锁被占着、磁盘满。
+    warnings.push(`${label} 写入失败：${reasonOf(error)}`)
+    return false
+  }
+  return written
 }
 
 function setKey(
@@ -404,28 +472,64 @@ function targets(commands: readonly Command[]): Targets {
 }
 
 /**
+ * 名册里的 pack id：绑定合法性只能在 pack 写完之后判（同一批命令里可能刚建/删 pack）。
+ * 读不到名册就判不了，返回 `null` 让调用方整批跳过绑定写入。
+ */
+async function loadPackIds(warnings: string[]): Promise<ReadonlySet<string> | null> {
+  try {
+    return new Set(Object.keys((await loadPacks()).book.packs))
+  } catch (error) {
+    warnings.push(`packs.json 读取失败，已跳过绑定写入：${reasonOf(error)}`)
+    return null
+  }
+}
+
+/** 收尾走读侧：写失败不能变成异常，读失败也不能；两种情况都只留一条 warning。 */
+async function settled(cwd: string | null, warnings: readonly string[]): Promise<PolicyState> {
+  try {
+    const state = await loadState(cwd)
+    return warnings.length === 0 ? state : { ...state, warnings: [...warnings, ...state.warnings] }
+  } catch (error) {
+    return { ...emptyState(), warnings: [...warnings, `读取策略状态失败：${reasonOf(error)}`] }
+  }
+}
+
+/**
  * 应用一批意图并返回写入后的完整状态。
  *
  * 不比对任何版本：命令是绝对状态，幂等、可交换，写同一键即后点者赢。
  * 三个文件各自一把锁，固定顺序（pack → 组定义 → 绑定）避免交叉等待；
  * 一个命令命中两个文件时顺序写，不引入跨文件事务。
+ *
+ * **永不抛**：命令被拒、文件读不出、内容坏掉、落盘失败，全部记进返回状态的
+ * `warnings`。一处失败就停下这一批剩下的文件——半批落盘比整批不动更难解释，
+ * 而且下一批命令会接着把差异补齐。
  */
 export async function applyCommands(cwd: string | null, commands: readonly Command[]): Promise<PolicyState> {
   const plan = targets(commands)
+  const warnings: string[] = []
 
   if (plan.packs) {
-    await transact(packsPath(), (current) => applyToPacks(current, commands))
+    const ok = await transact(packsPath(), 'packs.json', (current) => applyToPacks(current, commands), warnings)
+    if (!ok) return await settled(cwd, warnings)
   }
   if (plan.groups) {
-    await transact(groupsPath(), (current) => applyToGroups(current, commands))
+    const ok = await transact(groupsPath(), 'groups.json', (current) => applyToGroups(current, commands), warnings)
+    if (!ok) return await settled(cwd, warnings)
   }
   if (plan.bindings) {
-    // bind 的合法目标要在 pack 写完之后再读：同一批命令里可能有 createPack / deletePack。
-    const known = new Set(Object.keys((await loadPacks()).book.packs))
-    await transact(workspacesPath(), (current) => applyToBindings(current, commands, known))
+    const known = await loadPackIds(warnings)
+    if (known !== null) {
+      await transact(
+        workspacesPath(),
+        'workspaces.json',
+        (current) => applyToBindings(current, commands, known),
+        warnings,
+      )
+    }
   }
 
-  return await loadState(cwd)
+  return await settled(cwd, warnings)
 }
 
 /** 未落盘时的空状态，供读取失败的降级路径与测试使用。 */

@@ -322,17 +322,19 @@ test('createPack / renamePack / deletePack 走通，default 不可删、不可�
   assert.equal(renamed.ok, true)
   assert.equal((await readJson(packsFile(home))).packs.p1.name, '工作二')
 
+  // 写入被拒不是协议错误：仍是 ok，失败说明在视图的 warnings 里。
   const refusedRename = await handleApply(
     ctx,
     { commands: [{ op: 'renamePack', packId: 'default', name: 'x' }] },
     options,
   )
-  assert.equal(refusedRename.ok, false)
-  assert.match(refusedRename.error.message, /默认 pack 不可改名/)
+  assert.equal(refusedRename.ok, true)
+  assert.ok(refusedRename.value.warnings.some((line) => line.includes('默认 pack 不可改名')))
+  assert.equal((await readJson(packsFile(home))).packs.default.name, '默认')
 
   const refusedDelete = await handleApply(ctx, { commands: [{ op: 'deletePack', packId: 'default' }] }, options)
-  assert.equal(refusedDelete.ok, false)
-  assert.match(refusedDelete.error.message, /默认 pack 不可删除/)
+  assert.equal(refusedDelete.ok, true)
+  assert.ok(refusedDelete.value.warnings.some((line) => line.includes('默认 pack 不可删除')))
 
   const deleted = await handleApply(ctx, { commands: [{ op: 'deletePack', packId: 'p1' }] }, options)
   assert.equal(deleted.ok, true)
@@ -371,8 +373,8 @@ test('bind 未知 pack 被拒，且不写 workspaces.json', async () => {
     { commands: [{ op: 'bind', cwd: 'D:/proj', packId: 'missing' }] },
     deps({ catalog: feedFor(catalogFor(defaultPlugins)) }),
   )
-  assert.equal(result.ok, false)
-  assert.match(result.error.message, /未知 pack/)
+  assert.equal(result.ok, true)
+  assert.ok(result.value.warnings.some((line) => line.includes('未知 pack')))
   assert.equal(await fileExists(workspacesFile(home)), false)
 })
 
