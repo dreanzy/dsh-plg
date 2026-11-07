@@ -1,5 +1,5 @@
 import { loadCatalog, readCachedCatalog } from './catalog.js'
-import { createResolver, defaultPackOf, type Resolver } from './policy.js'
+import { effective, type Effective } from './effective.js'
 import { loadState, type PolicyState } from './store.js'
 import { LOCKED_TOOLS, type Catalog } from './types.js'
 
@@ -154,7 +154,7 @@ interface Snapshot {
 
 const EMPTY_SNAPSHOT: Snapshot = { sections: new Set<string>() }
 
-function buildSnapshot(catalog: Catalog | null, resolver: Resolver): Snapshot {
+function buildSnapshot(catalog: Catalog | null, resolver: Effective): Snapshot {
   if (catalog === null) return EMPTY_SNAPSHOT
   const sections = new Set<string>()
   for (const plugin of catalog.plugins) {
@@ -177,7 +177,7 @@ function buildSnapshot(catalog: Catalog | null, resolver: Resolver): Snapshot {
  */
 function denyFor(
   catalog: Catalog,
-  resolver: Resolver,
+  resolver: Effective,
   visible: ReadonlySet<string>,
   deniedBefore: readonly string[],
 ): string[] {
@@ -378,18 +378,18 @@ export function installHooks(ctx: PluginContext, options?: HooksOptions): HooksH
       return
     }
 
-    // 求值链：工作区绑定的 pack → default pack → 内置缺省（开）。
+    // 求值链只在这里组装一次：段通道与工具掩码读的是同一份结论。
     // 绑定悬空或未绑定时 `loaded.pack` 为 `null`，求值自然退回 default；
     // 绑定表的键是规范化后的 cwd，归一在 `loadState` 内部完成。
-    const resolver = createResolver({
-      pack: loaded.pack,
-      packId: loaded.packId,
-      defaultPack: defaultPackOf(loaded.packs),
-      assignments: loaded.groups.assignments,
+    const answer = effective({
+      policy: loaded,
+      names: catalog.plugins.map((plugin) => plugin.pkg),
+      scope: 'workspace',
+      complete: catalog.complete,
     })
 
     // 段通道先更新：它不依赖工具清单，即使后面清单读不到也照样能剔段。
-    state.snapshot = buildSnapshot(catalog, resolver)
+    state.snapshot = buildSnapshot(catalog, answer)
     publish(state)
 
     let visible: Set<string>
@@ -405,7 +405,7 @@ export function installHooks(ctx: PluginContext, options?: HooksOptions): HooksH
       return
     }
 
-    const hidden = denyFor(catalog, resolver, visible, state.denied)
+    const hidden = denyFor(catalog, answer, visible, state.denied)
     const key = hidden.join(',')
     if (key === state.key) return
 
@@ -433,15 +433,15 @@ export function installHooks(ctx: PluginContext, options?: HooksOptions): HooksH
     // 掩码可能含「两次重算之间被卸载」的名字，宿主对整批校验，任一未知名都会让
     // 全部限制失败。剔除未知名后重试一次：其余工具照样关闭，被剔的名字进 stuck，
     // 由面板显示为「关不掉」，而不是静默失效。
-    let effective = hidden
+    let applied = hidden
     let dispose: (() => unknown) | undefined
     for (let attempt = 0; attempt < 2; attempt += 1) {
       try {
-        dispose = restrict.call(tools, { deny: effective })
+        dispose = restrict.call(tools, { deny: applied })
         break
       } catch (error) {
-        const unknown = unknownNamesIn(error, effective)
-        const remaining = effective.filter((name) => !unknown.includes(name))
+        const unknown = unknownNamesIn(error, applied)
+        const remaining = applied.filter((name) => !unknown.includes(name))
         if (unknown.length === 0 || remaining.length === 0) {
           state.denied = []
           state.key = ''
@@ -451,7 +451,7 @@ export function installHooks(ctx: PluginContext, options?: HooksOptions): HooksH
           )
           return
         }
-        effective = remaining
+        applied = remaining
         state.stuck = [...new Set([...state.stuck, ...unknown])]
         ctx.logger.warn('dsh-plugin-pack: 以下名字无法限制，已跳过：' + unknown.join(', '))
       }
@@ -465,7 +465,7 @@ export function installHooks(ctx: PluginContext, options?: HooksOptions): HooksH
       }
     }
     state.key = key
-    state.denied = effective
+    state.denied = applied
 
     // 复验：限制只作用于继承来的全局工具，agent 作用域自己注册的同名工具不受影响。
     try {

@@ -87,6 +87,10 @@ function workspacesFile(home) {
   return join(home, 'packs', 'plugin', 'workspaces.json')
 }
 
+function groupsFile(home) {
+  return join(home, 'packs', 'plugin', 'groups.json')
+}
+
 async function writeJson(path, value) {
   await mkdir(join(path, '..'), { recursive: true })
   await writeFile(path, `${JSON.stringify(value, null, 2)}${NEWLINE}`)
@@ -456,11 +460,103 @@ test('工作区视图带 cwd、绑定、生效 pack 名与 stuck', async () => {
   assert.equal(view.value.packName, '工作')
   assert.equal(view.value.live, true)
   assert.deepEqual(view.value.stuck, ['alpha'])
-  // 行的求值字段已移除：视图只负责绑定与清单，开关由客户端按 pack 自己算。
   assert.deepEqual(
     view.value.plugins.map((entry) => entry.pkg),
     ['@deepseek-ai/dsh-thing', 'plug-a'],
   )
+
+  // 行上的求值字段由宿主算：p1 项级关掉 plug-a，另一行两层都没有记录。
+  const byPkg = new Map(view.value.plugins.map((row) => [row.pkg, row]))
+  const overridden = byPkg.get('plug-a')
+  assert.deepEqual(
+    [overridden.open, overridden.itemWorkspace, overridden.itemGlobal, overridden.decidedBy, overridden.decidedVia],
+    [false, false, null, 'p1', 'item'],
+  )
+  // 跟随到内置缺省：两层都没有记录，值是「开」。
+  const builtin = byPkg.get('@deepseek-ai/dsh-thing')
+  assert.deepEqual(
+    [builtin.open, builtin.itemWorkspace, builtin.itemGlobal, builtin.decidedBy, builtin.decidedVia],
+    [true, null, null, 'default', 'builtin'],
+  )
+  assert.equal(builtin.groupId, null)
+})
+
+test('组级覆盖落在 pack 的组记录上，decidedVia 是 group', async () => {
+  const home = await freshHome()
+  const cwd = await mkdtemp(join(tmpdir(), 'dpp-ws-'))
+  await writeJson(packsFile(home), {
+    version: 1,
+    ui: { showOfficialPlugins: true },
+    packs: {
+      default: { name: 'default' },
+      p1: { name: '工作', groups: { g1: false } },
+    },
+  })
+  await writeJson(workspacesFile(home), {
+    version: 1,
+    bindings: { [normalizeCwd(cwd)]: 'p1' },
+    extra: [],
+  })
+  await writeJson(groupsFile(home), {
+    version: 1,
+    groups: [{ id: 'g1', name: '组一' }],
+    assignments: { 'plug-a': 'g1' },
+  })
+
+  const agent = { id: 'agent-1', session: { id: 'session-1', header: { cwd } } }
+  const ctx = fakeCtx(fakeTools(), { agents: { get: () => agent } })
+  const view = await handleWorkspace(ctx, { sessionId: 'session-1' }, deps({ catalog: feedFor(catalogFor(defaultPlugins)) }))
+
+  assert.equal(view.ok, true)
+  const row = view.value.plugins.find((entry) => entry.pkg === 'plug-a')
+  assert.deepEqual([row.open, row.itemWorkspace, row.itemGlobal], [false, null, null])
+  assert.deepEqual([row.decidedBy, row.decidedVia, row.groupId], ['p1', 'group', 'g1'])
+})
+
+test('pack 没有记录时跟到 default 的项级记录', async () => {
+  const home = await freshHome()
+  const cwd = await mkdtemp(join(tmpdir(), 'dpp-ws-'))
+  await writeJson(packsFile(home), {
+    version: 1,
+    ui: { showOfficialPlugins: true },
+    packs: {
+      default: { name: 'default', items: { 'plug-a': false } },
+      p1: { name: '工作' },
+    },
+  })
+  await writeJson(workspacesFile(home), {
+    version: 1,
+    bindings: { [normalizeCwd(cwd)]: 'p1' },
+    extra: [],
+  })
+
+  const agent = { id: 'agent-1', session: { id: 'session-1', header: { cwd } } }
+  const ctx = fakeCtx(fakeTools(), { agents: { get: () => agent } })
+  const view = await handleWorkspace(ctx, { sessionId: 'session-1' }, deps({ catalog: feedFor(catalogFor(defaultPlugins)) }))
+
+  assert.equal(view.ok, true)
+  const row = view.value.plugins.find((entry) => entry.pkg === 'plug-a')
+  // itemWorkspace 是 null（这一层没记录），itemGlobal 保留 default 的那条。
+  assert.deepEqual([row.open, row.itemWorkspace, row.itemGlobal], [false, null, false])
+  assert.deepEqual([row.decidedBy, row.decidedVia], ['default', 'item'])
+})
+
+test('目录残缺时 open 为 null，但仍保留两层原始记录', async () => {
+  await freshHome()
+  await writeJson(packsFile(process.env['DSH_HOME']), {
+    version: 1,
+    ui: { showOfficialPlugins: true },
+    packs: { default: { name: 'default', items: { 'plug-a': false } } },
+  })
+  const catalog = { ...catalogFor(defaultPlugins), complete: false }
+  const view = await handleGlobal(fakeCtx(), null, deps({ catalog: feedFor(catalog) }))
+
+  assert.equal(view.ok, true)
+  const row = view.value.plugins.find((entry) => entry.pkg === 'plug-a')
+  assert.equal(row.open, null)
+  assert.equal(row.itemWorkspace, null)
+  assert.equal(row.itemGlobal, false)
+  assert.deepEqual([row.decidedBy, row.decidedVia], ['default', 'item'])
 })
 
 test('悬空绑定在工作区视图里退回 default，binding 仍保留原始 id', async () => {

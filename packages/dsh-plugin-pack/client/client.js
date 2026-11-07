@@ -10,9 +10,9 @@
  *      失效的措辞按这条如实写，不套用「模型看不见」这种笼统说法。插件进程本身
  *      不会被卸载。
  *
- * 求值链全部在服务端；这里只负责把 pack 的决定读出来、画出来、按命令写回去：
- *
- *   pack.items[项] ?? pack.groups[组] ?? default.items[项] ?? default.groups[组] ?? true
+ * 求值链只有服务端一份（`src/effective.ts`）：行上带 `open` / `itemWorkspace` /
+ * `itemGlobal` / `decidedBy`。这里不重算链，只把各层原始记录拼成显示态
+ * （覆盖 / 跟随）并画出来，命令仍只发原始三态值。
  *
  * 「跟随」与「写了个同值」是两件事：跟随看的是 pack 里有没有这条键，不是值比没比平。
  */
@@ -905,39 +905,40 @@ window.__ModuleLoader__.load({
      * `default` 没有上一层，它的「未记录」就等于开，所以直接归 0——否则同一屏会
      * 出现「排在跟随档、按钮却亮在开上」的错位。
      */
-    function rankOf(value, isDefault, inherit) {
+    function rankOf(value, isDefault, inherited) {
       if (value === true) return 0
       if (value === false) return 1
       if (isDefault) return 0
-      return inherit ? 2 : 3
+      // 落点未知（目录没扫全）按跟随档排：档位只是视觉分段，不拿它表达不确定性。
+      if (inherited !== true && inherited !== false) return 2
+      return inherited ? 2 : 3
     }
 
     /**
-     * 生效值。链与 `src/policy.ts` 一致：
-     * `pack.items ?? pack.groups[该插件的组] ?? default.items ?? default.groups ?? true`。
+     * 求值用的组 id：优先取宿主下发的 `groupId`，它不校验组是否还在注册表里——
+     * 悬空引用在宿主侧照样会命中组级记录。行上没有这个字段时才退回本地查表。
      */
-    function resolveItem(pack, defaultPack, assignments, name) {
-      const own = itemValue(pack, name)
-      if (own !== null) return own
-      const gid = assignments[name] || null
-      if (gid !== null) {
-        const fromPack = groupValue(pack, gid)
-        if (fromPack !== null) return fromPack
-      }
-      const fallbackItem = itemValue(defaultPack, name)
-      if (fallbackItem !== null) return fallbackItem
-      if (gid !== null) {
-        const fallbackGroup = groupValue(defaultPack, gid)
-        if (fallbackGroup !== null) return fallbackGroup
-      }
-      return true
+    function rowGroupOf(groups, row) {
+      const gid = row && typeof row.groupId === 'string' ? row.groupId : ''
+      return gid !== '' ? gid : groupOfRow(groups, row)
     }
 
-    function groupInherit(pack, defaultPack, groupId) {
-      const fromPack = groupValue(pack, groupId)
-      if (fromPack !== null) return fromPack
-      const fromDefault = groupValue(defaultPack, groupId)
-      return fromDefault === null ? true : fromDefault
+    /**
+     * 这一行在某张 pack 下的显示态：项级记录 → 组级记录 → 宿主下发的答案。
+     *
+     * 链的尾部（default pack → 内置缺省）由服务端算好放在行的 `open` 上；这里只
+     * 拼各层原始记录，不重算链——求值链只有 `src/effective.ts` 一份。答案缺失
+     * （目录残缺）时返回 null。
+     */
+    function rowOpen(pack, groups, row, inherited) {
+      const own = itemValue(pack, itemKey(row))
+      if (own !== null) return own
+      const gid = rowGroupOf(groups, row)
+      if (gid !== null) {
+        const byGroup = groupValue(pack, gid)
+        if (byGroup !== null) return byGroup
+      }
+      return inherited === true || inherited === false ? inherited : null
     }
 
     function groupNameOf(groups, groupId) {
@@ -1662,6 +1663,13 @@ window.__ModuleLoader__.load({
                           itemKey(row),
                           h('span', { style: S.badge }, sectionTitleOf(row)),
                           row.protected ? h('span', { style: S.badgeWarn }, '受保护') : null,
+                          row.open === null
+                            ? h(
+                                'span',
+                                { style: S.badge, title: '插件目录没扫全，这一行的生效状态此刻判断不了' },
+                                '未生效',
+                              )
+                            : null,
                         ),
                         h(
                           'div',
@@ -1695,7 +1703,6 @@ window.__ModuleLoader__.load({
       const plugins = props.plugins
       const run = props.run
       const defaultPack = defaultPackOf(packs)
-      const assignments = groups.assignments || {}
       const [selected, setSelected] = useState(DEFAULT_PACK_ID)
       const [query, setQuery] = useState('')
       const [newName, setNewName] = useState('')
@@ -1726,30 +1733,22 @@ window.__ModuleLoader__.load({
         // 顺序是「开 > 关 > 跟随(开) > 跟随(关)」：显式决定过的排在前面，
         // 跟随项再按它实际会落到开还是关分档。同档按包名排。
         return visible.sort((a, b) => {
-          const left = rankOf(
-            itemValue(pack, itemKey(a)),
-            isDefault,
-            resolveItem(pack, defaultPack, groups.assignments || {}, itemKey(a)),
-          )
-          const right = rankOf(
-            itemValue(pack, itemKey(b)),
-            isDefault,
-            resolveItem(pack, defaultPack, groups.assignments || {}, itemKey(b)),
-          )
+          const left = rankOf(itemValue(pack, itemKey(a)), isDefault, rowOpen(pack, groups, a, a.open))
+          const right = rankOf(itemValue(pack, itemKey(b)), isDefault, rowOpen(pack, groups, b, b.open))
           if (left !== right) return left - right
           return itemKey(a).localeCompare(itemKey(b), 'zh')
         })
-      }, [plugins, groups, query, pack, defaultPack, isDefault])
+      }, [plugins, groups, query, pack, isDefault])
 
       /** 分组同样「开 > 关 > 跟随(开) > 跟随(关)」。 */
       const orderedGroups = useMemo(() => {
         return [...groups.groups].sort((a, b) => {
-          const left = rankOf(groupValue(pack, a.id), isDefault, groupInherit(pack, defaultPack, a.id))
-          const right = rankOf(groupValue(pack, b.id), isDefault, groupInherit(pack, defaultPack, b.id))
+          const left = rankOf(groupValue(pack, a.id), isDefault, groupValue(defaultPack, a.id) ?? true)
+          const right = rankOf(groupValue(pack, b.id), isDefault, groupValue(defaultPack, b.id) ?? true)
           if (left !== right) return left - right
           return a.name.localeCompare(b.name, 'zh')
         })
-      }, [groups.groups, pack, isDefault])
+      }, [groups.groups, pack, defaultPack, isDefault])
 
       const groupCounts = useMemo(() => {
         const counts = {}
@@ -1772,14 +1771,14 @@ window.__ModuleLoader__.load({
         let volume = 0
         if (pack === null) return { count: 0, volume: 0 }
         for (const row of plugins) {
-          const name = itemKey(row)
-          if (name === '') continue
-          if (resolveItem(pack, defaultPack, assignments, name)) continue
+          if (itemKey(row) === '') continue
+          // 只数「确定关掉」的行：落点未知时按开算，宁可少报省下的量。
+          if (rowOpen(pack, groups, row, row.open) !== false) continue
           count += 1
           volume += weightOf(row)
         }
         return { count: count, volume: Math.round(volume) }
-      }, [plugins, pack, defaultPack, assignments])
+      }, [plugins, pack, groups])
 
       if (pack === null) return h('div', { style: S.hint }, '没有可用的 pack')
 
@@ -1924,7 +1923,8 @@ window.__ModuleLoader__.load({
             ? h('div', { style: S.hint }, '还没有分组。到「分组」页新建，或直接在下面逐项设置。')
             : orderedGroups.map((group) => {
                 const value = groupValue(pack, group.id)
-                const inherited = groupInherit(pack, defaultPack, group.id)
+                // 组的落点：这张 pack 没记录时看 default 的组记录，再退到内置缺省（开）。
+                const inherited = groupValue(defaultPack, group.id) ?? true
                 return h(
                   'div',
                   {
@@ -1970,7 +1970,9 @@ window.__ModuleLoader__.load({
                 const name = itemKey(row)
                 const value = itemValue(pack, name)
                 const gid = groupOfRow(groups, row)
-                const inherited = resolveItem(pack, defaultPack, assignments, name)
+                const inherited = rowOpen(pack, groups, row, row.open)
+                // 落点未知时只写「跟随」：写成开或关都是替宿主编答案。
+                const followLabel = inherited === null ? '跟随' : inherited ? '跟随（开）' : '跟随（关）'
                 return h(
                   'div',
                   {
@@ -1992,6 +1994,13 @@ window.__ModuleLoader__.load({
                       name,
                       h('span', { style: S.badge }, sectionTitleOf(row)),
                       row.protected ? h('span', { style: S.badgeWarn }, '受保护') : null,
+                      row.open === null
+                        ? h(
+                            'span',
+                            { style: S.badge, title: '插件目录没扫全，这一行的生效状态此刻判断不了' },
+                            '未生效',
+                          )
+                        : null,
                       row.sectionKnown === false
                         ? h(
                             'span',
@@ -2004,11 +2013,7 @@ window.__ModuleLoader__.load({
                   ),
                   h('span', { style: S.badge }, gid === null ? '未分组' : groupNameOf(groups.groups, gid)),
                   value === null && !isDefault
-                    ? h(
-                        'span',
-                        { style: { ...S.hint, whiteSpace: 'nowrap' } },
-                        inherited ? '跟随（开）' : '跟随（关）',
-                      )
+                    ? h('span', { style: { ...S.hint, whiteSpace: 'nowrap' } }, followLabel)
                     : null,
                   h(TriState, {
                     value: value,

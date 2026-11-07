@@ -1,3 +1,4 @@
+import { effective, type EffectiveRow } from './effective.js'
 import {
   defaultCatalogFeed,
   type CatalogFeed,
@@ -61,6 +62,21 @@ export interface PluginRow {
   readonly sectionKnown: boolean
   /** 关闭前需要二次确认：关掉它，模型基本失去工作能力，或本插件自己失效。 */
   readonly protected: boolean
+  /** 所属分组 id；未分组为 `null`。 */
+  readonly groupId: string | null
+  /**
+   * 生效值；目录残缺时为 `null`，面板据此显示「未生效」。
+   *
+   * 求值链只在宿主侧算这一次（见 effective.ts），前端不再重算。
+   */
+  readonly open: boolean | null
+  /** 工作区绑定的 pack 里这一项的项级记录；未绑定或跟随为 `null`。 */
+  readonly itemWorkspace: boolean | null
+  /** `default` pack 里这一项的项级记录；跟随为 `null`。 */
+  readonly itemGlobal: boolean | null
+  /** 做出决定的 pack id；落到内置缺省时是 `default`。 */
+  readonly decidedBy: string
+  readonly decidedVia: 'item' | 'group' | 'builtin'
 }
 
 /** 一个 pack 的面板投影。 */
@@ -313,6 +329,19 @@ function buildPluginView(input: BuildInput): PluginView {
     left.pkg < right.pkg ? -1 : left.pkg > right.pkg ? 1 : 0,
   )
 
+  // 求值用全量包名：面板是否列官方插件只影响列表，不该连带改变它们的开关。
+  // 目录残缺时 `open` 为 `null`，行上显示「未生效」——比硬报开或关诚实。
+  const answers = new Map<string, EffectiveRow>(
+    effective({
+      policy: loaded,
+      names: plugins.map((plugin) => plugin.pkg),
+      // 全局视图的 `loadState(null)` 里 `pack` 本来就是 `null`，同一段代码对两种视图都对：
+      // 没有绑定时链自然只剩 default 层。
+      scope: 'workspace',
+      complete: catalog !== null && catalog.complete !== false,
+    }).rows.map((row) => [row.name, row] as const),
+  )
+
   const showOfficial = loaded.ui.showOfficialPlugins === true
   const officialTotal = plugins.filter((plugin) => plugin.pkg.startsWith(OFFICIAL_SCOPE)).length
   const rows: PluginRow[] = []
@@ -326,6 +355,9 @@ function buildPluginView(input: BuildInput): PluginView {
       toolVolume = 0
       for (const name of present) toolVolume += volumes.get(name) ?? 0
     }
+    const answer = answers.get(plugin.pkg)
+    // 名字表就是这张目录，取不到只会是同一包名重复出现：求值那边只有一份答案。
+    if (answer === undefined) continue
     rows.push({
       pkg: plugin.pkg,
       origin: plugin.pkg.startsWith(OFFICIAL_SCOPE) ? 'official' : 'profile',
@@ -335,6 +367,12 @@ function buildPluginView(input: BuildInput): PluginView {
       sectionChars: plugin.sectionChars,
       sectionKnown: plugin.sectionsKnown,
       protected: PROTECTED_PACKAGES.has(plugin.pkg),
+      groupId: answer.groupId,
+      open: answer.open,
+      itemWorkspace: answer.itemWorkspace,
+      itemGlobal: answer.itemGlobal,
+      decidedBy: answer.decidedBy,
+      decidedVia: answer.decidedVia,
     })
   }
 
