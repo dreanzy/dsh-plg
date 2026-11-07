@@ -203,20 +203,6 @@ window.__ModuleLoader__.load({
         color: T.dim,
         whiteSpace: 'nowrap',
       },
-      reset: {
-        padding: 0,
-        margin: 0,
-        border: 'none',
-        background: 'transparent',
-        font: 'inherit',
-        color: 'inherit',
-        cursor: 'pointer',
-        textAlign: 'left',
-        display: 'inline-flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        boxSizing: 'border-box',
-      },
       stat: {
         fontSize: '12px',
         color: T.text,
@@ -282,7 +268,6 @@ window.__ModuleLoader__.load({
         boxShadow: '0 1px 2px rgba(0, 0, 0, 0.28)',
         transition: 'left 140ms ease, background 140ms ease',
       }),
-      reset: { border: 0, background: 'transparent', cursor: 'pointer', color: T.dim, fontSize: '12px', padding: '2px 4px' },
       /*
        * 自绘下拉。原生 <select> 的弹出层由系统绘制，不跟主题：暗色下一点开是一块
        * 蓝底浮层，与官方设置页的语言选择器完全不是一个观感。这里改成按钮 + 浮层。
@@ -479,7 +464,6 @@ window.__ModuleLoader__.load({
       const listeners = new Set()
       return {
         read: () => value,
-        get: () => value,
         set: (next) => {
           if (value === next) return
           value = next
@@ -495,11 +479,10 @@ window.__ModuleLoader__.load({
     /**
      * 跨组件共享的界面状态。
      *
-     * `showChip` 由 `apply` 订阅：设置页拨动后立刻挂上或摘下槽位。
+     * `onChipChange` 由 `apply` 订阅：设置页拨动后立刻挂上或摘下槽位。
      * `chipName` 是 chip 上显示的 pack 名。
      */
     const env = {
-      showChip: true,
       onChipChange: null,
       sessionId: undefined,
     }
@@ -511,6 +494,8 @@ window.__ModuleLoader__.load({
      * 不让 chip 因为一个文案取不到而消失。
      */
     const chipFallback = createSignal('Default')
+    /** chip 弹层订阅的会话 id：弹层只订阅 chipOpen 时，切会话后它仍绑着旧目录。 */
+    const chipSessionId = createSignal(undefined)
 
     // ---------- 基础组件 ----------
 
@@ -634,7 +619,7 @@ window.__ModuleLoader__.load({
     /**
      * 下拉选择器。
      *
-     * `options` 是 `[{ value, label }]`。点外部或按 Esc 关闭：监听挂在文档上，
+     * `options` 是 `[{ value, label, disabled? }]`。点外部或按 Esc 关闭：监听挂在文档上，
      * 不依赖父级的点击处理，所以嵌在可点击的列表行里也不会误触。
      */
     function Picker(props) {
@@ -696,11 +681,17 @@ window.__ModuleLoader__.load({
                     key: option.value,
                     role: 'option',
                     'aria-selected': option.value === props.value,
-                    style: S.pickerItem(option.value === props.value, hover === option.value),
+                    'aria-disabled': option.disabled === true,
+                    style:
+                      option.disabled === true
+                        ? { ...S.pickerItem(option.value === props.value, hover === option.value), opacity: 0.45, cursor: 'not-allowed' }
+                        : S.pickerItem(option.value === props.value, hover === option.value),
                     onMouseEnter: () => setHover(option.value),
                     onMouseLeave: () => setHover(null),
                     onClick: (event) => {
                       event.stopPropagation()
+                      // 禁用项只是「还没选」的提示：点了不关闭浮层，也不回传值。
+                      if (option.disabled === true) return
                       setOpen(false)
                       props.onChange(option.value)
                     },
@@ -730,7 +721,13 @@ window.__ModuleLoader__.load({
       }, [props.value])
       const commit = () => {
         if (text === props.value) return
-        props.onCommit(text)
+        // 提交被拒时把输入框退回外部值：否则被拒的文本留在框里，看着像已保存。
+        const settled = props.onCommit(text)
+        if (settled && typeof settled.then === 'function') {
+          void settled.then((ok) => {
+            if (ok === false) setText(props.value)
+          })
+        }
       }
       return h('input', {
         style: props.style || S.input,
@@ -869,12 +866,13 @@ window.__ModuleLoader__.load({
       return false
     }
 
+    /** 查不到就返回 null：回退到第一个包会让编辑目标悄悄换成另一张 pack。 */
     function packById(packs, id) {
       if (!Array.isArray(packs)) return null
       for (const pack of packs) {
         if (pack.id === id) return pack
       }
-      return packs.length > 0 ? packs[0] : null
+      return null
     }
 
     function defaultPackOf(packs) {
@@ -1118,31 +1116,52 @@ window.__ModuleLoader__.load({
 
     // ---------- 面板 ----------
 
+    /**
+     * 单调递增的请求号：晚到的旧响应不许落回界面。
+     *
+     * 写失败后会自动重读一次，两条请求同时在飞；没有这个号，旧响应会把新视图顶掉。
+     */
+    let requestSeq = 0
+    const nextRequestId = () => {
+      requestSeq += 1
+      return requestSeq
+    }
+
     /** 一次全量读取 + 一次写命令的落回。所有页面共用同一份视图。 */
     function useGlobalView() {
-      const [state, setState] = useState({ loading: true, error: null, data: null })
+      const [state, setState] = useState({ loading: true, data: null })
+      // 错误不跟 data 走：重读成功会把 data 里的错误一起清掉，提示就再也看不见了。
+      const [errorState, setErrorState] = useState(null)
 
       const load = useCallback(async () => {
+        const id = nextRequestId()
         try {
           const data = await api.global(env.sessionId)
-          setState({ loading: false, error: null, data: data })
+          if (id !== requestSeq) return null
+          setState({ loading: false, data: data })
           return data
         } catch (error) {
-          setState({ loading: false, error: String(error.message || error), data: null })
+          if (id !== requestSeq) return null
+          setErrorState(String(error.message || error))
+          setState({ loading: false, data: null })
           return null
         }
       }, [])
 
       useEffect(() => {
         let alive = true
-        setState((prev) => ({ loading: prev.data === null, error: null, data: prev.data }))
+        const id = nextRequestId()
+        setState((prev) => ({ loading: prev.data === null, data: prev.data }))
         // 面板可能被渲染在任意路由下，但这是一次显式的全量读取，不需要防抖。
         api.global(env.sessionId).then(
           (data) => {
-            if (alive) setState({ loading: false, error: null, data: data })
+            if (alive && id === requestSeq) setState({ loading: false, data: data })
           },
           (error) => {
-            if (alive) setState({ loading: false, error: String(error.message || error), data: null })
+            if (alive && id === requestSeq) {
+              setErrorState(String(error.message || error))
+              setState({ loading: false, data: null })
+            }
           },
         )
         return () => {
@@ -1152,15 +1171,18 @@ window.__ModuleLoader__.load({
 
       const run = useCallback(
         async (commands) => {
+          const id = nextRequestId()
           try {
             const data = await api.apply(commands)
-            setState({ loading: false, error: null, data: data })
+            // 写入成功是唯一该让旧错误消失的时刻。
+            setErrorState(null)
+            if (id === requestSeq) setState({ loading: false, data: data })
             // 绑定改了要把 chip 上的 pack 名一起更新：chip 直接读当前会话的工作区视图，
             // 与设置页之间没有通道，只能在这里主动重读一次。
             if (commands.some((command) => command.op === 'bind')) refreshChipName(env.sessionId)
             return true
           } catch (error) {
-            setState((prev) => ({ ...prev, error: String(error.message || error) }))
+            if (id === requestSeq) setErrorState(String(error.message || error))
             await load()
             return false
           }
@@ -1168,7 +1190,8 @@ window.__ModuleLoader__.load({
         [load],
       )
 
-      return { state: state, run: run, reload: load }
+      // 错误拆在外面，出口仍是 state.error：两处调用点一行都不用改。
+      return { state: { loading: state.loading, data: state.data, error: errorState }, run: run, reload: load }
     }
 
     /** 新建分组。组定义跨工作区共享，建一次处处可用。 */
@@ -1208,6 +1231,8 @@ window.__ModuleLoader__.load({
     function diffOf(data) {
       const packs = Array.isArray(data.packs) ? data.packs : []
       const pack = packById(packs, data.packId)
+      // 生效 pack 查不到时无从比较：返回空差异，不假造条目。
+      if (pack === null) return []
       const fallback = defaultPackOf(packs)
       const groups = groupsOf(data)
       const rows = []
@@ -1217,7 +1242,7 @@ window.__ModuleLoader__.load({
         if (own === null) continue
         const base = groupValueOf(fallback, group.id)
         if (own === (base === null ? true : base)) continue
-        rows.push({ key: 'group:' + group.id, isGroup: true, name: group.name, on: own, fields: [] })
+        rows.push({ key: 'group:' + group.id, isGroup: true, name: group.name, on: own })
       }
       for (const row of rowsOf(data)) {
         const rowKey = rowKeyOf(row)
@@ -1225,50 +1250,19 @@ window.__ModuleLoader__.load({
         const entry = policyOf(pack, rowKey)
         if (entry === null) continue
         const baseEntry = policyOf(fallback, rowKey)
-        const item = { key: 'row:' + rowKey, isGroup: false, name: rowNameOf(row), on: null, fields: [] }
+        const item = { key: 'row:' + rowKey, isGroup: false, name: rowNameOf(row), on: null }
         if (typeof entry.enabled === 'boolean') {
           const baseEnabled = baseEntry && typeof baseEntry.enabled === 'boolean' ? baseEntry.enabled : true
           if (entry.enabled !== baseEnabled) item.on = entry.enabled
         }
-        // 行级还有三档字段：只要有一个与 default 不同，就把字段名标出来。
-        // `null` 与缺席同义（服务端删键后可能留下 null），都不算记录过。
-        if (hasKey(entry, 'mode') && entry.mode !== baseModeOf(baseEntry)) item.fields.push('mode')
-        if (hasKey(entry, 'tools') && !sameRules(entry.tools, baseRulesOf(baseEntry))) item.fields.push('tools')
-        if (hasKey(entry, 'description') && (entry.description || '') !== baseDescriptionOf(baseEntry)) {
-          item.fields.push('description')
-        }
-        if (item.on === null && item.fields.length === 0) continue
+        // `mode` / `tools` / `description` 只在内置 `default` 里求值，分包不读它们。
+        // 把它们标成「差异」会让用户以为那条键有效，实际不影响任何结果。
+        if (item.on === null) continue
         rows.push(item)
       }
       return rows
     }
 
-    /** 字段有没有被记录过；`null` 与 `undefined` 都按「没记录」处理。 */
-    function hasKey(entry, key) {
-      return entry !== null && entry[key] !== undefined && entry[key] !== null
-    }
-
-    function baseModeOf(entry) {
-      return entry && typeof entry.mode === 'string' && entry.mode !== '' ? entry.mode : DEFAULT_MODE
-    }
-
-    function baseRulesOf(entry) {
-      return entry && Array.isArray(entry.tools) ? entry.tools : []
-    }
-
-    function baseDescriptionOf(entry) {
-      return entry && typeof entry.description === 'string' ? entry.description : ''
-    }
-
-    function sameRules(left, right) {
-      const a = Array.isArray(left) ? left : []
-      const b = Array.isArray(right) ? right : []
-      if (a.length !== b.length) return false
-      for (let index = 0; index < a.length; index += 1) {
-        if (a[index] !== b[index]) return false
-      }
-      return true
-    }
 
     /**
      * chip 的弹层：这张 pack 与默认差在哪，就地切换。
@@ -1369,9 +1363,6 @@ window.__ModuleLoader__.load({
                               row.on !== null
                                 ? h('span', { style: row.on ? S.badge : { ...S.badge, color: T.text } }, row.on ? '开' : '关')
                                 : null,
-                              row.fields.map((field) =>
-                                h('span', { key: field, style: { ...S.badge, ...S.mono } }, field),
-                              ),
                             ),
                           ),
                     ),
@@ -1534,7 +1525,6 @@ window.__ModuleLoader__.load({
                   onChange: (value) =>
                     run([{ op: 'showChip', value: value }]).then((ok) => {
                       if (!ok) return
-                      env.showChip = value
                       if (env.onChipChange) env.onChipChange(value)
                     }),
                 }),
@@ -1580,6 +1570,9 @@ window.__ModuleLoader__.load({
       )
     }
 
+    /** 批量归组下拉里的「还没选」哨兵：得是一个既不是分组 id、也不是 `''` 的值。 */
+    const BULK_NONE = '__bulk_none'
+
     /**
      * 「分组」页：只做结构，不做策略。
      *
@@ -1597,8 +1590,8 @@ window.__ModuleLoader__.load({
       const [query, setQuery] = useState('')
       const [collapsed, setCollapsed] = useState({})
       const [editing, setEditing] = useState(null)
-      /** 批量归组的目标分组；`''` 表示未分组。 */
-      const [bulkGroup, setBulkGroup] = useState('')
+      /** 批量归组的目标分组；`null` 表示还没选，`''` 表示未分组。 */
+      const [bulkGroup, setBulkGroup] = useState(null)
 
       const registry = groups.groups
       const needle = query.trim().toLowerCase()
@@ -1652,6 +1645,14 @@ window.__ModuleLoader__.load({
           })),
         )
       }
+      const bulkReady = bulkGroup !== null && matched.length > 0
+      const applyStyle = {
+        ...S.segItem(false),
+        border: '1px solid ' + T.border,
+        borderRadius: '6px',
+        opacity: bulkReady ? 1 : 0.45,
+        cursor: bulkReady ? 'pointer' : 'not-allowed',
+      }
 
       return h(
         'div',
@@ -1681,30 +1682,30 @@ window.__ModuleLoader__.load({
             'div',
             { style: { flex: '0 0 auto', minWidth: '130px' } },
             h(Picker, {
-              value: bulkGroup,
+              value: bulkGroup === null ? BULK_NONE : bulkGroup,
               options: [
+                { value: BULK_NONE, label: '选择分组…', disabled: true },
                 { value: '', label: '未分组' },
                 ...registry.map((group) => ({ value: group.id, label: group.name })),
               ],
               onChange: (next) => setBulkGroup(next),
             }),
           ),
-          h(
-            'button',
-            {
-              type: 'button',
-              disabled: matched.length === 0,
-              style: {
-                ...S.segItem(false),
-                border: '1px solid ' + T.border,
-                borderRadius: '6px',
-                opacity: matched.length === 0 ? 0.45 : 1,
-                cursor: matched.length === 0 ? 'not-allowed' : 'pointer',
-              },
-              onClick: assignAll,
-            },
-            '应用',
-          ),
+          // 「未分组」会清掉这些行的归属，所以要第二次确认；选具体分组只是覆盖。
+          bulkGroup === ''
+            ? h(ConfirmButton, {
+                label: '应用',
+                confirmLabel: '确认清空归属',
+                title: '把这些行移出所在分组（只清归属，不删 server）',
+                disabled: !bulkReady,
+                style: applyStyle,
+                onConfirm: assignAll,
+              })
+            : h(
+                'button',
+                { type: 'button', disabled: !bulkReady, style: applyStyle, onClick: assignAll },
+                '应用',
+              ),
         ),
         buckets.map((bucket) => {
           const key = bucket.id === null ? '__loose' : bucket.id
@@ -1869,6 +1870,7 @@ window.__ModuleLoader__.load({
       const defaultPack = props.defaultPack
       const run = props.run
       const [open, setOpen] = useState(false)
+      const [removeError, setRemoveError] = useState(null)
       const rowKey = rowKeyOf(row)
       const entry = defaultEntryOf(row, defaultPack)
       const resolved = resolvedOf(row)
@@ -1879,12 +1881,11 @@ window.__ModuleLoader__.load({
       const toolCount = resolved.tools.length
       const patch = (delta) => run([{ op: 'packRow', packId: DEFAULT_PACK_ID, rowKey: rowKey, patch: delta }])
       // 托管服务器的连接定义可以就地删掉；只关开关定义仍然在，与删除是两件事。
-      const removeOwned = (event) => {
-        event.stopPropagation()
+      const removeOwned = () => {
         if (!isOwned(row)) return
         api.servers({ op: 'remove', name: rowNameOf(row) }).then(
           () => props.reload(),
-          () => {},
+          (error) => setRemoveError(String(error.message || error)),
         )
       }
 
@@ -1931,6 +1932,8 @@ window.__ModuleLoader__.load({
               })
             : null,
         ),
+        // 失败必须留在这一行上：ConfirmButton 的失败回调原来吞掉了错误。
+        removeError ? h('div', { style: { ...S.error, paddingLeft: '22px' } }, removeError) : null,
         open
           ? h(
               'div',
@@ -2224,6 +2227,8 @@ window.__ModuleLoader__.load({
       const [newName, setNewName] = useState('')
       const [editing, setEditing] = useState(null)
       const pack = packById(packs, selected)
+      /** 选中的 pack 已不在名册里：这时不能退回第一个包，否则开关会落到别的 pack 上。 */
+      const packMissing = pack === null && packs.length > 0
       /** `default` 没有上一层，未记录直接显示成「开」，排序也按开算。 */
       const isDefault = pack === null || pack.id === DEFAULT_PACK_ID
 
@@ -2289,7 +2294,9 @@ window.__ModuleLoader__.load({
         return counts
       }, [rows, groups.groups, groups.assignments])
 
-      if (pack === null) return h('div', { style: S.hint }, '没有可用的 pack')
+      if (pack === null) {
+        return h('div', { style: S.hint }, packMissing ? '该 pack 已不存在' : '没有可用的 pack')
+      }
 
       const createPack = () => {
         const trimmed = newName.trim()
@@ -2597,11 +2604,14 @@ window.__ModuleLoader__.load({
         chipName.set(null)
         return
       }
+      const id = nextRequestId()
       api.workspace(sessionId).then(
         (view) => {
+          if (id !== requestSeq) return
           chipName.set(view && view.binding !== null ? view.packName : null)
         },
         () => {
+          if (id !== requestSeq) return
           // 读不到就退回 Default：chip 本身不能因此消失。
           chipName.set(null)
         },
@@ -2667,6 +2677,7 @@ window.__ModuleLoader__.load({
             const isOpen = useSyncExternalStore(subscribeChip, readChipOpen, readChipOpen)
             const fallback = useSyncExternalStore(chipFallback.subscribe, chipFallback.read, chipFallback.read)
             useEffect(() => {
+              chipSessionId.set(sessionId)
               refreshChipName(sessionId)
             }, [sessionId])
             const label = name || fallback
@@ -2695,9 +2706,10 @@ window.__ModuleLoader__.load({
 
           const ChipOverlay = () => {
             const isOpen = useSyncExternalStore(subscribeChip, readChipOpen, readChipOpen)
+            const sessionId = useSyncExternalStore(chipSessionId.subscribe, chipSessionId.read, chipSessionId.read)
             return h(ChipModal, {
               open: isOpen,
-              sessionId: env.sessionId,
+              sessionId: sessionId,
               onClose: () => {
                 chipOpen = false
                 notifyChip()
@@ -2741,12 +2753,9 @@ window.__ModuleLoader__.load({
           // 读一次 UI 开关决定挂不挂 chip。失败按缺省（显示）处理，不让入口整体缺失。
           api.global(env.sessionId).then(
             (view) => {
-              const ui = uiOf(view)
-              env.showChip = ui.showChip
-              env.onChipChange(ui.showChip)
+              env.onChipChange(uiOf(view).showChip)
             },
             () => {
-              env.showChip = true
               env.onChipChange(true)
             },
           )
