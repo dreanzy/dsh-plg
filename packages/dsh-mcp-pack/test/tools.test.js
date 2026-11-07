@@ -110,14 +110,29 @@ test('注册失败整代回滚并释放连接', async () => {
   assert.deepEqual(ctx.poolState.state.released, ['global:srv'])
 })
 
-test('重复加载先释放上一代', async () => {
+test('重复加载：不重复注册，但释放上一代连接引用', async () => {
   const ctx = build()
   const agent = fakeAgent(ctx.tools)
   await ctx.load.execute({ server: 'srv' }, { agent })
   await ctx.load.execute({ server: 'srv' }, { agent })
-  assert.equal(ctx.tools.registered.length, 4)
-  assert.deepEqual(ctx.tools.disposed, ['mcp__srv__read_file', 'mcp__srv__delete_file'])
+  assert.equal(ctx.tools.registered.length, 2)
+  assert.deepEqual(ctx.tools.disposed, [])
   assert.deepEqual(ctx.poolState.state.released, ['global:srv'])
+})
+
+test('重复加载只增不减，不丢已注册工具', async () => {
+  const { load, tools, poolState } = build()
+  const agent = fakeAgent(tools)
+  const first = await load.execute({ server: 'srv' }, { agent })
+  assert.deepEqual(first.loaded, ['mcp__srv__read_file', 'mcp__srv__delete_file'])
+  const second = await load.execute({ server: 'srv', query: 'read' }, { agent })
+  assert.deepEqual(second.loaded, [], '已加载的工具不应重复注册')
+  assert.deepEqual(tools.registered.map((item) => item.name), ['mcp__srv__read_file', 'mcp__srv__delete_file'])
+  assert.deepEqual(tools.disposed, [], '重载不该撤销已注册的工具')
+  const third = await load.execute({ server: 'srv', query: 'nothing-matches-this' }, { agent })
+  assert.deepEqual(third.loaded, [])
+  assert.deepEqual(tools.disposed, [], '无命中的查询也不该清空工具')
+  assert.equal(poolState.state.released.length, 2, '每次 load 各自释放上一代的连接引用')
 })
 
 test('unload 释放并幂等', async () => {

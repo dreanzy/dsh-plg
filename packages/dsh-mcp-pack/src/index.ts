@@ -3,12 +3,11 @@ import { createGate, suppressedServers } from './gate.js'
 import { mountMcpServer, type MountHandle } from './mount.js'
 import { installHooks } from './hooks.js'
 import { scanRows } from './inventory.js'
-import { INVENTORY_SECTION } from './inventory-section.js'
 import { writeFileAtomic } from '@deepseek-ai/dsh-atomic-write'
 import { createPool } from './pool.js'
 import { readOwned, type OwnedServers } from './servers.js'
 import { handleApply, handleGlobal, handleServers, handleWorkspace, lastAppliedCommands, type Envelope, type RouteContext, type RouteDeps } from './routes.js'
-import { createInventoryState, sectionText, type InventoryState } from './state.js'
+import { createInventoryState, sectionText } from './state.js'
 import { createScopeSnapshot, fingerprintOf, type ScopeSnapshot } from './snapshot.js'
 import { diagPath, loadState } from './store.js'
 import { createOnDemandTools } from './tools.js'
@@ -27,7 +26,6 @@ export const inject = ['loader'] as const
 
 /** 宿主按完整 pathname 匹配，`/api` 前缀不能省。 */
 const ROUTES = {
-  rows: '/api/mcp-pack/rows',
   global: '/api/mcp-pack/global',
   workspace: '/api/mcp-pack/workspace',
   apply: '/api/mcp-pack/apply',
@@ -130,34 +128,6 @@ function createStore(context: PluginContext): ScopeSnapshot {
     },
     fingerprint: fingerprintOf,
   })
-}
-
-function registerInventorySection(context: PluginContext, state: InventoryState): boolean {
-  const prompt = context.get('systemPrompt') as Record<string, unknown> | undefined
-  const section = prompt?.['section']
-  const getSectionOrder = prompt?.['getSectionOrder']
-  if (typeof section !== 'function' || typeof getSectionOrder !== 'function') {
-    context.logger.warn(`${name}: systemPrompt 在册但缺 section/getSectionOrder，名册段未注册`)
-    return false
-  }
-  const order = (getSectionOrder as (key: string) => unknown).call(prompt, 'MCP_SERVERS')
-  if (typeof order !== 'number') {
-    context.logger.warn(`${name}: 取不到 MCP_SERVERS 的序位，名册段未注册`)
-    return false
-  }
-  try {
-    ;(section as (spec: unknown) => unknown).call(prompt, {
-      name: INVENTORY_SECTION,
-      order,
-      // 描述是用户文本，{{...}} 必须原样保留。
-      interpolate: false,
-      text: () => sectionText(state),
-    })
-    return true
-  } catch (error) {
-    context.logger.warn(`${name}: 注册名册段失败：${String(error)}`)
-    return false
-  }
 }
 
 export function apply(ctx: unknown): void {
@@ -290,13 +260,11 @@ export function apply(ctx: unknown): void {
   /**
    * 刷新自检快照。
    *
-   * `knownRows` 由 hooks 从共享快照里带过来：以前每个 agent 落地都要再扫一遍
-   * Loader，只为数一个行数。
+   * `rowsSeen` 是「发现的行数」（含托管行），与面板列出的行一致；不是名册行数。
    */
-  const noteRows = (knownRows?: number) => {
+  const noteRows = () => {
     try {
-      // 含托管行：托管定义不在 Loader 的 entry 树里，只扫 Loader 会漏掉它们。
-      diag.rowsSeen = (knownRows ?? scanOf(context).rows.length) + diag.owned.length
+      diag.rowsSeen = snapshot.read(null)?.rows.length ?? 0
     } catch {
       // 诊断失败不影响主路径。
     }
@@ -330,7 +298,7 @@ export function apply(ctx: unknown): void {
     scan: () => scanOf(context),
     snapshot,
     // 每个 agent 落地后刷新自检快照，省得排查时还要用户手动点开面板。
-    onSettled: ({ rows }) => noteRows(rows),
+    onSettled: () => noteRows(),
     // 按该 agent 的 cwd 求值，返回需要罩住的 server 名（dynamic/lazy 行）。
     shieldedServers: async (agent, cwd) => {
       // 用同一份快照：这里以前自己扫一遍 Loader，既重复又漏掉托管行。
@@ -424,7 +392,8 @@ export function apply(ctx: unknown): void {
 register(ROUTES.diag, async () => {
       // 实时重算：`noteRows` 只在启动与写入后跑，拿不到「现在」的闸门状态。
       try {
-        diag.rowsSeen = scanOf(context).rows.length + diag.owned.length
+        await state.refresh()
+        diag.rowsSeen = snapshot.read(null)?.rows.length ?? 0
         diag.suppressed = [...suppressedServers(context.get('loader'))]
       } catch {
         // 诊断失败不影响响应。
@@ -443,7 +412,6 @@ register(ROUTES.diag, async () => {
         },
       }
     })
-    register(ROUTES.rows, () => handleGlobal(routeCtx, deps))
     register(ROUTES.global, () => handleGlobal(routeCtx, deps))
     register(ROUTES.servers, (body) =>
       handleServers(routeCtx, body, {

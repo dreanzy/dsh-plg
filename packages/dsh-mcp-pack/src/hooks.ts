@@ -83,7 +83,7 @@ export interface HookDeps {
    *
    * 附带名册行数：诊断不必为了一个数字再去扫一遍 Loader。
    */
-  readonly onSettled?: (info: { readonly agentId: string; readonly rows: number }) => void
+  readonly onSettled?: (info: { readonly agentId: string }) => void
   /** Loader 扫描，同步。 */
   readonly scan: () => RowScan
   /**
@@ -152,9 +152,21 @@ export function installHooks(deps: HookDeps): Hooks {
   // WeakMap 不可枚举，但自检需要「现在有哪些 agent 落了地」，所以并行维护一份按 id 的索引。
   const byId = new Map<string, AgentScope>()
   const offs: Array<() => void> = []
-  let applying = 0
+  /** 同一 agent 的重算串行化：两轮交错会互相释放对方刚注册的段，段句柄就此丢失。 */
+  const queues = new WeakMap<object, Promise<unknown>>()
 
-  async function reconcile(agent: AgentLike, cwd: string): Promise<AgentScope | null> {
+  function reconcile(agent: AgentLike, cwd: string): Promise<AgentScope | null> {
+    const key = agent as object
+    const previous = queues.get(key) ?? Promise.resolve()
+    const next = previous.then(
+      () => reconcileOnce(agent, cwd),
+      () => reconcileOnce(agent, cwd),
+    )
+    queues.set(key, next.then(() => undefined, () => undefined))
+    return next
+  }
+
+  async function reconcileOnce(agent: AgentLike, cwd: string): Promise<AgentScope | null> {
     // 求值按 cwd + scope 共享：托管定义、pack 策略、行发现结果只读一次。
     const inventory = createInventoryState(snapshot, cwd, agent)
     await inventory.refresh()
@@ -226,7 +238,7 @@ export function installHooks(deps: HookDeps): Hooks {
     scopes.set(agent as object, scope)
     byId.set(agent.id, scope)
     try {
-      deps.onSettled?.({ agentId: agent.id, rows: inventory.snapshot().length })
+      deps.onSettled?.({ agentId: agent.id })
     } catch {
       // 自检刷新失败不影响落地。
     }
@@ -238,14 +250,11 @@ export function installHooks(deps: HookDeps): Hooks {
     if (agent === null) return
     const cwd = cwdOf(agent)
     if (cwd === null) return
-    applying += 1
     try {
       await reconcile(agent, cwd)
     } catch (error) {
       // 绝不抛：这个监听器在会话创建路径上。
       deps.context.logger.warn(`dsh-mcp-pack: 为 ${agent.id} 落地工作区策略失败：${String(error)}`)
-    } finally {
-      applying -= 1
     }
     /**
      * `mcp-client` 是异步连上之后才注册工具的，而 `agent/created` 那一刻全局工具表
@@ -281,6 +290,8 @@ export function installHooks(deps: HookDeps): Hooks {
     }
     scopes.delete(agent as object)
     byId.delete(agent.id)
+    // 快照缓存按 agent 索引，会话结束后没人再读它，留着只是内存。
+    snapshot.invalidate(cwdOf(agent))
     releaseAgent(agent as object, deps.pool)
   }
 

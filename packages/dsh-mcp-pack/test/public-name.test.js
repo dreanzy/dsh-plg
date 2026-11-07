@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { publicToolName, isPublicNameOf } from '../lib/public-name.js'
+import { publicToolName } from '../lib/public-name.js'
 
 test('干净情况下就是 mcp__server__tool', () => {
   assert.equal(publicToolName('playwright', 'click'), 'mcp__playwright__click')
@@ -27,9 +27,4 @@ test('不同身份不会塌成同一个名字', () => {
 
 test('同一身份稳定', () => {
   assert.equal(publicToolName('srv', 'a.b'), publicToolName('srv', 'a.b'))
-})
-
-test('isPublicNameOf 只按前缀判断', () => {
-  assert.equal(isPublicNameOf('srv', 'mcp__srv__x'), true)
-  assert.equal(isPublicNameOf('srv', 'mcp__other__x'), false)
 })

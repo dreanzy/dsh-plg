@@ -35,21 +35,68 @@ export interface McpConnection {
   close(): Promise<void>
 }
 
-/** 凭证形状的环境变量名：绝不透传给子进程。 */
-const CREDENTIAL_SHAPED = /(KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|AUTH)/iu
-
 /**
- * 子进程环境：父进程里像凭证、或 `DSH_*` 的变量一律丢掉，再加上声明里显式给的。
+ * 子进程能继承的环境变量白名单。
  *
- * 理由：stdio server 是任意第三方程序，把宿主的密钥顺手递给它等于把凭据交给
- * 一个只承诺「做 MCP」的进程。显式声明要传的，由用户在配置里写。
+ * 以前按名字黑名单过滤（含 KEY/TOKEN 就丢），但 `DATABASE_URL` 这类带密码的连接串会原样
+ * 漏出去。stdio server 是任意第三方程序，只给启动必需项；别的由用户在配置的 env 里写。
+ *
+ * 代理与私有源（`HTTP_PROXY`、`UV_DEFAULT_INDEX` 一类）刻意不传：它们的值里常带凭据，
+ * 而「哪台 server 该走哪个代理」只有用户知道，走配置的 `env` 显式声明。
  */
+const PASSTHROUGH_ENV: ReadonlySet<string> = new Set([
+  'PATH',
+  'PATHEXT',
+  'COMSPEC',
+  'SYSTEMROOT',
+  'SYSTEMDRIVE',
+  'WINDIR',
+  'TEMP',
+  'TMP',
+  'HOME',
+  'USERPROFILE',
+  'HOMEDRIVE',
+  'HOMEPATH',
+  'APPDATA',
+  'LOCALAPPDATA',
+  'PROGRAMDATA',
+  'PROGRAMFILES',
+  'PROGRAMFILES(X86)',
+  'COMMONPROGRAMFILES',
+  'NUMBER_OF_PROCESSORS',
+  'PROCESSOR_ARCHITECTURE',
+  'OS',
+  'SHELL',
+  'USER',
+  'LOGNAME',
+  'LANG',
+  'LC_ALL',
+  'LC_CTYPE',
+  'TERM',
+  'TMPDIR',
+  'TZ',
+  // 启动器自己的安装位置：uvx / cargo / java / playwright 找不到这些就会去默认目录扑空。
+  'UV_CACHE_DIR',
+  'UV_PYTHON_INSTALL_DIR',
+  'UV_PYTHON_BIN_DIR',
+  'UV_TOOL_DIR',
+  'UV_TOOL_BIN_DIR',
+  'CARGO_HOME',
+  'RUSTUP_HOME',
+  'JAVA_HOME',
+  'GOPATH',
+  'GOROOT',
+  'PLAYWRIGHT_BROWSERS_PATH',
+  'NODE_EXTRA_CA_CERTS',
+  'SSL_CERT_FILE',
+  'SSL_CERT_DIR',
+])
+
 export function buildChildEnv(extra: Readonly<Record<string, string>> = {}): Record<string, string> {
   const env: Record<string, string> = {}
   for (const [name, value] of Object.entries(process.env)) {
     if (value === undefined) continue
-    if (name.startsWith('DSH_')) continue
-    if (CREDENTIAL_SHAPED.test(name)) continue
+    if (!PASSTHROUGH_ENV.has(name.toUpperCase())) continue
     env[name] = value
   }
   return { ...env, ...extra }
@@ -71,6 +118,16 @@ function createTransport(spec: ConnectionSpec) {
 
 function timeoutOf(ms: number | undefined, fallback: number): number {
   return ms !== undefined && Number.isFinite(ms) && ms > 0 ? ms : fallback
+}
+
+/**
+ * 从工具执行的 `exec` 里取取消信号。
+ *
+ * 宿主的 `exec` 形状没有公开契约；拿不到就返回空对象，调用照常进行。
+ */
+export function callOptionsFromExec(exec: unknown): { readonly signal?: AbortSignal } {
+  const signal = (exec as { signal?: unknown } | undefined)?.signal
+  return signal instanceof AbortSignal ? { signal } : {}
 }
 
 /**

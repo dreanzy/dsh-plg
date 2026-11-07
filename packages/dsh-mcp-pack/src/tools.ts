@@ -1,7 +1,8 @@
 import { buildNativeDefinitions, type DefinitionFactory } from './carrier.js'
 import { admits, filterTools, type ToolFilter } from './filter.js'
-import type { ConnectionSpec, McpConnection, McpToolInfo } from './mcp-connection.js'
+import { callOptionsFromExec, type ConnectionSpec, type McpConnection, type McpToolInfo } from './mcp-connection.js'
 import type { Pool, PoolHandle } from './pool.js'
+import { publicToolName } from './public-name.js'
 
 /** 一台可加载的 server：连接参数 + 该行的工具规则。 */
 export interface ToolTarget {
@@ -39,12 +40,22 @@ interface Loaded {
 /** 按 agent 对象身份记已加载的行：不同会话互不干扰。 */
 const loaded = new WeakMap<object, Map<string, Loaded>>()
 
+/**
+ * 同一张表按 agent.id 再挂一份。
+ *
+ * 工具执行时拿到的 agent 与 `agent/created` 里的未必是同一个对象（宿主行为，见
+ * docs/host-pitfalls.md），只按身份索引会让会话结束时的释放落空。
+ */
+const loadedById = new Map<string, Map<string, Loaded>>()
+
 function loadedOf(agent: object): Map<string, Loaded> {
   let map = loaded.get(agent)
   if (map === undefined) {
     map = new Map()
     loaded.set(agent, map)
   }
+  const id = (agent as { id?: unknown }).id
+  if (typeof id === 'string' && id !== '') loadedById.set(id, map)
   return map
 }
 
@@ -186,7 +197,10 @@ export function createOnDemandTools(deps: OnDemandDeps): { load: unknown; unload
         // lazy 不注册任何工具：工具列表保持恒定，请求前缀永不失效。
         const perAgent = loadedOf(agent)
         const previous = perAgent.get(target.rowKey)
-        perAgent.set(target.rowKey, { handle, disposers: [], toolNames: selected.map((tool) => tool.name) })
+        const names = selected.map((tool) => tool.name)
+        // 与 dynamic 同一语义：已加载的记下来，后续加载只增不减。
+        const merged = [...new Set([...(previous?.toolNames ?? []), ...names])]
+        perAgent.set(target.rowKey, { handle, disposers: [], toolNames: merged })
         if (previous !== undefined) {
           disposeAll(previous.disposers)
           deps.pool.release(previous.handle)
@@ -207,41 +221,46 @@ export function createOnDemandTools(deps: OnDemandDeps): { load: unknown; unload
 
       const tools = toolsOf(agent)
       if (tools === null) throw new Error('the calling agent has no tools service; cannot register MCP tools')
+      const perAgent = loadedOf(agent)
+      const previous = perAgent.get(target.rowKey)
+      // 重复调用只增不减：描述承诺 widen，收窄会让模型第二次调用后丢掉刚加载的工具。
+      const already = new Set(previous?.toolNames ?? [])
+      const fresh = selected.filter((tool) => !already.has(publicToolName(target.serverName, tool.name)))
       const factory = await deps.resolveFactory()
-      const { built, hidden: dynamicHidden } = buildNativeDefinitions({
+      const { built } = buildNativeDefinitions({
         factory,
         ctx: agent.ctx,
         connection: handle.connection,
         serverName: target.serverName,
-        tools: selected,
+        tools: fresh,
         filter: { keep: [], drop: [] },
       })
 
-      const perAgent = loadedOf(agent)
-      const previous = perAgent.get(target.rowKey)
-      const disposers: (() => unknown)[] = []
+      const added: (() => unknown)[] = []
       try {
         for (const item of built) {
-          disposers.push(tools.register(item.definition))
+          added.push(tools.register(item.definition))
         }
       } catch (error) {
-        disposeAll(disposers)
+        disposeAll(added)
         deps.pool.release(handle)
         throw new Error(`failed to register tools for "${target.serverName}": ${String(error)}`)
       }
 
-      if (previous !== undefined) {
-        disposeAll(previous.disposers)
-        deps.pool.release(previous.handle)
-      }
-      perAgent.set(target.rowKey, { handle, disposers, toolNames: built.map((item) => item.publicName) })
+      const loadedNames = built.map((item) => item.publicName)
+      perAgent.set(target.rowKey, {
+        handle,
+        disposers: [...(previous?.disposers ?? []), ...added],
+        toolNames: [...(previous?.toolNames ?? []), ...loadedNames],
+      })
+      if (previous !== undefined) deps.pool.release(previous.handle)
 
       return {
         server: target.serverName,
         mode: 'dynamic',
-        loaded: built.map((item) => item.publicName),
-        hidden: hidden + dynamicHidden,
-        note: built.length === 0 ? 'the tool filter admits nothing on this server' : '',
+        loaded: loadedNames,
+        hidden,
+        note: selected.length === 0 && previous === undefined ? 'the tool filter admits nothing on this server' : '',
       }
     },
   })
@@ -327,7 +346,7 @@ export function createOnDemandTools(deps: OnDemandDeps): { load: unknown; unload
       if (!admitted) {
         throw new Error(`MCP server "${target.serverName}" has no callable tool named "${tool}"`)
       }
-      const result = await entry.handle.connection.callTool(tool, payload)
+      const result = await entry.handle.connection.callTool(tool, payload, callOptionsFromExec(exec))
       const outcome = result as { isError?: unknown } | undefined
       if (outcome?.isError === true) throw new Error(resultText(result))
       return result
@@ -339,9 +358,11 @@ export function createOnDemandTools(deps: OnDemandDeps): { load: unknown; unload
 
 /** 释放某个 agent 的全部加载（会话结束或插件卸载时调用）。 */
 export function releaseAgent(agent: object, pool: Pool): void {
-  const perAgent = loaded.get(agent)
+  const id = (agent as { id?: unknown }).id
+  const perAgent = loaded.get(agent) ?? (typeof id === 'string' ? loadedById.get(id) : undefined)
   if (perAgent === undefined) return
   loaded.delete(agent)
+  if (typeof id === 'string') loadedById.delete(id)
   for (const entry of perAgent.values()) {
     disposeAll(entry.disposers)
     pool.release(entry.handle)

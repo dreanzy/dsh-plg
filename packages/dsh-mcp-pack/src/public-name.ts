@@ -22,8 +22,3 @@ export function publicToolName(serverName: string, rawName: string): string {
   const hash = createHash('sha256').update(`${serverName}\0${rawName}`).digest('hex').slice(0, HASH_LENGTH)
   return `${normalized.slice(0, MAX_PUBLIC_NAME_LENGTH - HASH_LENGTH - 1)}_${hash}`
 }
-
-/** 反查用：从公开名取回原始名不合法，所以调用方必须自己保存映射。 */
-export function isPublicNameOf(serverName: string, publicName: string): boolean {
-  return publicName.startsWith(`mcp__${serverName}__`)
-}

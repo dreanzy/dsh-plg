@@ -55,7 +55,7 @@ test('插件声明', () => {
   assert.deepEqual([...inject], ['loader'])
 })
 
-test('apply 注册四条路由，且不在 root 上注册名册段', () => {
+test('apply 注册五条路由，且不在 root 上注册名册段', () => {
   systemPrompt.__sections.length = 0
   connection.__routes.length = 0
   const ctx = fakeCtx({ loader: fakeLoader([mcpEntry({ id: 'a', serverName: 'playwright' })]), systemPrompt, connection: connection() })
@@ -68,7 +68,6 @@ test('apply 注册四条路由，且不在 root 上注册名册段', () => {
     '/api/mcp-pack/apply',
     '/api/mcp-pack/diag',
     '/api/mcp-pack/global',
-    '/api/mcp-pack/rows',
     '/api/mcp-pack/servers',
     '/api/mcp-pack/workspace',
   ])

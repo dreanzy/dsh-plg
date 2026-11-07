@@ -507,13 +507,14 @@ export interface ServersView {
   readonly conflicts: readonly string[]
 }
 
-function conflictsWithRows(ctx: RouteContext, name: string): boolean {
+/** 用户配置里已有行的 serverName 集合；一次扫描供整轮使用，loader 不可用时返回 null。 */
+function configuredServerNames(ctx: RouteContext): ReadonlySet<string> | null {
   const loader = ctx.get('loader')
-  if (loader === undefined) return false
+  if (loader === undefined) return null
   try {
-    return scanRows(loader).rows.some((row) => row.serverName === name && !row.owned)
+    return new Set(scanRows(loader).rows.filter((row) => !row.owned).map((row) => row.serverName))
   } catch {
-    return false
+    return null
   }
 }
 
@@ -534,6 +535,7 @@ export async function handleServers(
   const warnings: string[] = []
   const op = body === null ? null : readString(body, 'op')
   const name = body === null ? null : readString(body, 'name')
+  const configured = configuredServerNames(ctx)
   try {
     if (op === 'remove') {
       if (name === null) return { ok: false, error: { code: 'bad-request', message: '缺少 name' } }
@@ -557,7 +559,7 @@ export async function handleServers(
       if (def === null) {
         return { ok: false, error: { code: 'bad-request', message: '定义不完整：stdio 需要 command，http 需要合法 url' } }
       }
-      if (conflictsWithRows(ctx, name)) {
+      if (configured?.has(name) === true) {
         return {
           ok: false,
           error: {
@@ -581,7 +583,9 @@ export async function handleServers(
     }
     const owned = await readOwned()
     warnings.push(...owned.warnings)
-    const conflicts = Object.keys(owned.value.servers).filter((candidate) => conflictsWithRows(ctx, candidate))
+    const conflicts = configured === null
+      ? []
+      : Object.keys(owned.value.servers).filter((candidate) => configured.has(candidate))
     return { ok: true, value: { servers: owned.value.servers, warnings, conflicts } }
   } catch (error) {
     return { ok: false, error: { code: 'internal', message: `托管定义写入失败：${String(error)}` } }

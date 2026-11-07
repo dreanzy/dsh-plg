@@ -234,6 +234,33 @@ test('绑定表解析出的 extra 原样保留，写回时不清空', async () =
   assert.deepEqual(onDisk.bindings, { [normalizeCwd(cwd)]: 'p1' })
 })
 
+test('坏 packs.json 拒绝覆盖，原文件保持', async () => {
+  await freshHome()
+  await mkdir(dirname(packsPath()), { recursive: true })
+  const broken = '{ oops'
+  await writeFile(packsPath(), broken)
+  await assert.rejects(applyCommands(null, [{ op: 'showChip', value: false }]), /拒绝覆盖/u)
+  assert.equal(await readFile(packsPath(), 'utf8'), broken)
+})
+
+test('一批命令里有非法 bind 时一个文件都不写', async () => {
+  await freshHome()
+  await writeJson(packsPath(), {
+    version: 1,
+    ui: {},
+    packs: { default: { name: '默认' }, p1: { name: '一' } },
+  })
+  await assert.rejects(
+    applyCommands(null, [
+      { op: 'packRow', packId: 'p1', rowKey: 'global:a', patch: { mode: 'lazy' } },
+      { op: 'bind', cwd: 'D:/x', packId: 'nope' },
+    ]),
+    /未知 pack/u,
+  )
+  const onDisk = await readJson(packsPath())
+  assert.equal(onDisk.packs.p1.rows, undefined)
+})
+
 test('addExtra / removeExtra：规范化、去重、与 bindings 互不影响', async () => {
   await freshHome()
   const a = normalizeCwd('D:\\Extra\\')

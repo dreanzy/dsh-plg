@@ -1,4 +1,4 @@
-import type { McpConnection, McpToolInfo } from './mcp-connection.js'
+import { callOptionsFromExec, type McpConnection, type McpToolInfo } from './mcp-connection.js'
 import { filterTools, type ToolFilter } from './filter.js'
 import { publicToolName } from './public-name.js'
 
@@ -50,7 +50,7 @@ export function buildNativeDefinitions(options: {
       description: tool.description,
       inputSchema: tool.inputSchema,
       ...(tool.outputSchema === undefined ? {} : { outputSchema: tool.outputSchema }),
-      call: async (args) => await options.connection.callTool(tool.name, args),
+      call: async (args, exec) => await options.connection.callTool(tool.name, args, callOptionsFromExec(exec)),
     })
     built.push({ publicName, definition })
   }

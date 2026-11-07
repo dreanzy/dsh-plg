@@ -1,6 +1,6 @@
 import { stat } from 'node:fs/promises'
 import { parseToolFilter } from './filter.js'
-import { renderInventory, type InventoryRow } from './inventory-section.js'
+import type { InventoryRow } from './inventory-section.js'
 import type { ConnectionSpec } from './mcp-connection.js'
 import { defaultPackOf, normalizeCwd, resolveRow } from './policy.js'
 import { serversPath, type OwnedServers, type ServerDef } from './servers.js'
@@ -338,10 +338,4 @@ export function createScopeSnapshot(deps: SnapshotDeps): ScopeSnapshot {
       return { hits, misses, reads, refreshes, size: entries.size }
     },
   }
-}
-
-/** 名册段文本。同步路径，只读缓存。 */
-export function inventoryText(snapshot: ScopeSnapshot, cwd: string | null, scope?: unknown): string {
-  const value = snapshot.read(cwd, scope)
-  return value === null ? '' : renderInventory(value.inventory)
 }

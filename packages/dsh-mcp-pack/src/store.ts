@@ -15,8 +15,6 @@ import {
   DEFAULT_PACK_ID,
   EMPTY_BINDINGS,
   EMPTY_GROUPS,
-  EMPTY_PACK,
-  EMPTY_UI,
   type Bindings,
   type Command,
   type GroupRegistry,
@@ -57,6 +55,25 @@ async function readText(path: string): Promise<string | undefined> {
   } catch (error) {
     if ((error as { code?: string }).code === 'ENOENT') return undefined
     throw error
+  }
+}
+
+/**
+ * 写之前确认目标文件还能读懂。
+ *
+ * 读侧把坏文件降级成空策略；写侧若照抄那份空结果，一次手误编辑就会被下一次保存
+ * 覆盖成空文件。这里直接拒绝，让面板把错误显示出来。
+ */
+function assertWritable(current: string | undefined, label: string): void {
+  if (current === undefined || current.trim() === '') return
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(current)
+  } catch (error) {
+    throw new Error(`${label} 不是合法 JSON，拒绝覆盖：${String(error)}`)
+  }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    throw new Error(`${label} 顶层不是对象，拒绝覆盖`)
   }
 }
 
@@ -226,6 +243,7 @@ function nextPackId(packs: Readonly<Record<string, McpPack>>): string {
 
 /** 写 packs.json。文件缺席时从缺省名册起步。 */
 function applyToPacks(current: string | undefined, commands: readonly Command[]): string {
+  assertWritable(current, 'packs.json')
   const parsed = parsePacks(current).value
   const ui = { ...parsed.ui }
   const packs: Record<string, McpPack> = { ...parsed.book.packs }
@@ -278,8 +296,9 @@ function applyToPacks(current: string | undefined, commands: readonly Command[])
 }
 
 /** 写 groups.json。文件缺席时从空注册表起步。 */
-function applyToGroups(current: string | undefined, commands: readonly Command[], seed: GroupRegistry): string {
-  const parsed = current === undefined ? seed : parseGroups(current).value
+function applyToGroups(current: string | undefined, commands: readonly Command[]): string {
+  assertWritable(current, 'groups.json')
+  const parsed = current === undefined ? EMPTY_GROUPS : parseGroups(current).value
   const assignments = { ...parsed.assignments }
   let groups = [...parsed.groups]
   const known = () => new Set(groups.map((group) => group.id))
@@ -337,6 +356,7 @@ function applyToBindings(
   commands: readonly Command[],
   knownPacks: ReadonlySet<string>,
 ): string | null {
+  assertWritable(current, 'workspaces.json')
   const parsed = parseBindings(current)
   const bindings: Record<string, string> = { ...parsed.value.bindings }
   const extra = [...parsed.value.extra]
@@ -445,33 +465,44 @@ function targets(commands: readonly Command[]): Targets {
  */
 export async function applyCommands(cwd: string | null, commands: readonly Command[]): Promise<PolicyState> {
   const plan = targets(commands)
+  const known = new Set(Object.keys((await loadPacks()).book.packs))
+
+  // 写任何文件之前先把跨文件的前置条件验一遍：packs 写成功、bindings 抛错会留下半提交。
+  for (const command of commands) {
+    switch (command.op) {
+      case 'packRow':
+      case 'packGroup':
+        if (!known.has(command.packId)) throw new Error(`未知 pack：${command.packId}`)
+        break
+      case 'renamePack':
+        if (command.packId === DEFAULT_PACK_ID) throw new Error('默认 pack 不可改名')
+        if (!known.has(command.packId)) throw new Error(`未知 pack：${command.packId}`)
+        break
+      case 'deletePack':
+        if (command.packId === DEFAULT_PACK_ID) throw new Error('默认 pack 不可删除')
+        if (!known.has(command.packId)) throw new Error(`未知 pack：${command.packId}`)
+        known.delete(command.packId)
+        break
+      case 'bind':
+        if (command.packId !== null && command.packId !== DEFAULT_PACK_ID && !known.has(command.packId)) {
+          throw new Error(`未知 pack：${command.packId}`)
+        }
+        break
+      default:
+        break
+    }
+  }
 
   if (plan.packs) {
     await transact(packsPath(), (current) => applyToPacks(current, commands))
   }
   if (plan.groups) {
-    const seed = (await loadGroups()).value
-    await transact(groupsPath(), (current) => applyToGroups(current, commands, seed))
+    await transact(groupsPath(), (current) => applyToGroups(current, commands))
   }
   if (plan.bindings) {
     // bind 的合法目标要在 pack 写完之后再读：同一批命令里可能有 createPack / deletePack。
-    const known = new Set(Object.keys((await loadPacks()).book.packs))
     await transact(workspacesPath(), (current) => applyToBindings(current, commands, known))
   }
 
   return await loadState(cwd)
-}
-
-/** 未落盘时的空状态，供读取失败的降级路径与测试使用。 */
-export function emptyState(): PolicyState {
-  return {
-    packs: { packs: { [DEFAULT_PACK_ID]: EMPTY_PACK } },
-    ui: { ...EMPTY_UI },
-    binding: null,
-    packId: DEFAULT_PACK_ID,
-    pack: null,
-    groups: EMPTY_GROUPS,
-    bindings: EMPTY_BINDINGS,
-    warnings: [],
-  }
 }

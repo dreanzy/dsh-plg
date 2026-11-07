@@ -520,13 +520,3 @@ export function resolveRow(
     sources,
   }
 }
-
-/** 按 rowKey 集合求值全部行，保持传入顺序。 */
-export function resolveAll(
-  rowKeys: readonly string[],
-  pack: McpPack | null,
-  defaultPack: McpPack,
-  assignments: Readonly<Record<string, string>> = {},
-): readonly ResolvedRow[] {
-  return rowKeys.map((rowKey) => resolveRow(rowKey, pack, defaultPack, assignments))
-}

@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -68,6 +68,23 @@ test('updateOwned 写盘后可读回', async () => {
     assert.deepEqual(Object.keys(written.servers), ['unity'])
     const reread = await readOwned(dir)
     assert.equal(reread.value.servers['unity'].transport, 'streamable-http')
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('坏 servers.json 拒绝覆盖，原文件保持', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'mcp-servers-'))
+  try {
+    const path = join(dir, 'servers.json')
+    const broken = '{ not json'
+    await writeFile(path, broken)
+    const def = { transport: 'stdio', command: 'node', args: [], env: {}, cwd: '' }
+    await assert.rejects(
+      updateOwned(dir, (current) => upsertServer(current, 'x', def)),
+      /拒绝覆盖/u,
+    )
+    assert.equal(await readFile(path, 'utf8'), broken)
   } finally {
     await rm(dir, { recursive: true, force: true })
   }

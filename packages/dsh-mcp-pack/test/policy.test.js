@@ -6,7 +6,6 @@ import {
   parseBindings,
   parseGroups,
   parsePacks,
-  resolveAll,
   resolveRow,
   rowEntryOf,
   serializeBindings,
@@ -145,13 +144,6 @@ test('显式 false 与缺席是两件事', () => {
   assert.equal(rowEntryOf(pack, 'global:a').enabled, false)
   assert.equal(rowEntryOf(pack, 'global:b'), null)
   assert.equal(rowEntryOf(null, 'global:a'), null)
-})
-
-test('resolveAll 保持传入顺序且逐行求值', () => {
-  const pack = packOf({ 'global:b': { enabled: false } })
-  const rows = resolveAll(['global:b', 'global:a'], pack, emptyPack(), assignments)
-  assert.deepEqual(rows.map((row) => row.rowKey), ['global:b', 'global:a'])
-  assert.deepEqual(rows.map((row) => row.enabled), [false, true])
 })
 
 test('没有分组信息时组级两环自然跳过', () => {

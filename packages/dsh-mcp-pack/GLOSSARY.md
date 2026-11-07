@@ -44,11 +44,11 @@ _Avoid_: 冲突、强制、改写
 逐字段独立，四者互不影响：
 ```
 enabled:  pack.rows ?? pack.groups ?? default.rows ?? default.groups ?? 开
-mode:     pack.rows ?? default.rows ?? dynamic
-tools:    pack.rows ?? default.rows ?? []
-description: pack.rows ?? default.rows ?? ''
+mode:     default.rows ?? dynamic
+tools:    default.rows ?? []
+description: default.rows ?? ''
 ```
-组级只出现在 `enabled` 那条链上。前一环存在即不读后一环。
+组级只出现在 `enabled` 那条链上；`mode` / `tools` / `description` 只读内置 `default`——它们描述「这台 server 本身怎么加载」，天然是全局的，分包只覆盖开关。前一环存在即不读后一环。
 _Avoid_: 合并规则、优先级
 
 **三态（Tri-state）**:

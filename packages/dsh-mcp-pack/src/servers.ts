@@ -160,6 +160,21 @@ export async function readOwned(home?: string): Promise<{ readonly value: OwnedS
 }
 
 /**
+ * 读得懂才允许写：坏文件被读侧降级成空表后写回，等于删掉全部托管定义。
+ */
+function assertReadableOwned(text: string | undefined): void {
+  if (text === undefined || text.trim() === '') return
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(text)
+  } catch (error) {
+    throw new Error(`servers.json 不是合法 JSON，拒绝覆盖：${String(error)}`)
+  }
+  const record = asRecord(parsed)
+  if (record === null || record['version'] !== 1) throw new Error('servers.json 版本或形状不认识，拒绝覆盖')
+}
+
+/**
  * 改一次托管定义：建目录 → 拿锁 → 读 → 改 → 原子写。
  *
  * 与策略写入同一套事务形状（先建父目录，再拿锁）。
@@ -172,7 +187,9 @@ export async function updateOwned(
   await mkdir(dirname(path), { recursive: true, mode: 0o700 })
   let next: OwnedServers = EMPTY_OWNED
   await withFileLock(path, async () => {
-    const current = (await readOwned(home)).value
+    const text = await readText(path)
+    assertReadableOwned(text)
+    const current = parseOwned(text).value
     next = mutate(current)
     await writeFileAtomic(path, serializeOwned(next), { mode: 0o600, dirMode: 0o700 })
   })

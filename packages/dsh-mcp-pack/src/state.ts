@@ -38,8 +38,6 @@ export function createInventoryState(
       if (value === null) return null
       const trimmed = name.trim()
       if (trimmed === '') return null
-      const direct = value.targets.get(trimmed)
-      if (direct !== undefined) return direct
       for (const candidate of value.targets.values()) {
         if (candidate.serverName === trimmed) return candidate
       }

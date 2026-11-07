@@ -30,10 +30,12 @@ Trade-off: `dynamic` binds arguments best, but every `mcp_load` rewrites the too
 
   ```
   enabled:     pack.rows[row].enabled ?? pack.groups[group] ?? default.rows[row].enabled ?? default.groups[group] ?? true
-  mode:        pack.rows[row].mode ?? default.rows[row].mode ?? dynamic
-  tools:       pack.rows[row].tools ?? default.rows[row].tools ?? []
-  description: pack.rows[row].description ?? default.rows[row].description ?? ''
+  mode:        default.rows[row].mode ?? dynamic
+  tools:       default.rows[row].tools ?? []
+  description: default.rows[row].description ?? ''
   ```
+
+  `mode`, `tools` and `description` describe how the server loads, which is the same everywhere, so they are read from the built-in `default` pack only. A pack overrides `enabled` and nothing else.
 
   The group level carries a single on/off boolean. If a group could also set a mode, the next question would be "the group says dynamic, the row says disabled — which wins", and that merge rule has no cheap answer. So mode, tool rules and description stay at the row level.
 - State lives in three independently atomic files under `$DSH_HOME/packs/mcp/`: `packs.json`, `groups.json`, `workspaces.json`.

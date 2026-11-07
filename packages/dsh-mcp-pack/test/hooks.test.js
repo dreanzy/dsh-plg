@@ -185,6 +185,45 @@ test('shieldedServers 命中时按前缀算出 deny 并调用 restrict', async (
   hooks.dispose()
 })
 
+test('并发重算不会丢掉段句柄', async () => {
+  const evented = fakeEventContext()
+  const registered = new Set()
+  const agent = {
+    id: 'a1',
+    session: { header: { cwd: 'D:/proj' } },
+    ctx: {
+      get: (key) => (key === 'systemPrompt'
+        ? {
+            getSectionOrder: () => 3100,
+            section: (spec) => {
+              if (registered.has(spec.name)) throw new Error('already registered in this scope')
+              registered.add(spec.name)
+              return () => { registered.delete(spec.name) }
+            },
+          }
+        : undefined),
+    },
+  }
+  let shields = 0
+  const hooks = installHooks({
+    context: evented.context,
+    pool: fakePool().pool,
+    scan,
+    shieldedServers: async () => {
+      shields += 1
+      if (shields === 2) await new Promise((resolve) => setTimeout(resolve, 20))
+      return []
+    },
+  })
+  await evented.emit('agent/created', { agent })
+  await new Promise((resolve) => setTimeout(resolve, 30))
+  await Promise.all([hooks.reconcileAll(), hooks.reconcileAll()])
+  assert.equal(hooks.stats().agents[0].hasSection, true)
+  assert.equal(hooks.stats().agents[0].sectionError, null)
+  assert.deepEqual([...registered], ['mcp-manager:on-demand'])
+  hooks.dispose()
+})
+
 test('没有要罩的 server 时不调用 restrict', async () => {
   const evented = fakeEventContext()
   let calls = 0

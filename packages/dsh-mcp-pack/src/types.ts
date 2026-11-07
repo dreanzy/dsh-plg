@@ -152,7 +152,6 @@ export const DEFAULT_PACK_ID = 'default'
 export const DEFAULT_PACK_NAME = '默认'
 
 export const EMPTY_PACK: McpPack = { name: DEFAULT_PACK_NAME, groups: {}, rows: {} }
-export const EMPTY_PACK_BOOK: PackBook = { packs: { [DEFAULT_PACK_ID]: EMPTY_PACK } }
 export const EMPTY_BINDINGS: Bindings = { bindings: {}, extra: [] }
 export const EMPTY_UI: UiState = { showChip: true, defaultTab: 'groups' }
 export const EMPTY_GROUPS: GroupRegistry = { groups: [], assignments: {} }
