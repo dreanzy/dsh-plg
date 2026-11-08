@@ -69,8 +69,25 @@
 
 ## 安装
 
+需要 DSH `0.2.x`（`0.2.0-rc.2` 及以上）。
+
+**在 Web 界面安装**：设置 → 插件 → 添加插件 → 安装第三方插件，输入包名：
+
+```
+@dreanzy/dsh-model-pack
+```
+
+**命令行安装**：
+
 ```sh
-dsh plugin --profile <profile> add ./packages/dsh-model-pack
+dsh plugin --profile <profile> add @dreanzy/dsh-model-pack
 ```
 
 装完重启宿主。未绑定工作区时用 `default`，未配置 `default` 时插件不改变任何行为。
+
+从源码安装（需要 pnpm 允许该包执行构建）：
+
+```sh
+dsh plugin --profile <profile> add "github:dreanzy/dsh-plg#<sha>&path:/packages/dsh-model-pack"
+```
+

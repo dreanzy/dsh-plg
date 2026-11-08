@@ -47,9 +47,21 @@
 
 ## 安装
 
+需要 DSH `0.2.x`（`0.2.0-rc.2` 及以上）。
+
+**在 Web 界面安装**：设置 → 插件 → 添加插件 → 安装第三方插件，输入包名：
+
+```
+@dreanzy/dsh-mcp-pack
+```
+
+**命令行安装**：
+
 ```sh
 dsh plugin --profile <profile> add @dreanzy/dsh-mcp-pack
 ```
+
+装完重启 Host、刷新页面。
 
 从源码安装（需要 pnpm 允许该包执行构建）：
 

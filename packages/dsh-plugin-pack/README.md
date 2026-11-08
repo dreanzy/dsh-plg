@@ -27,11 +27,27 @@
 
 ## 安装
 
-```sh
-dsh plugin --profile <profile> add 'github:<owner>/<repo>#<sha>&path:/packages/dsh-plugin-pack'
+需要 DSH `0.2.x`（`0.2.0-rc.2` 及以上）。
+
+**在 Web 界面安装**：设置 → 插件 → 添加插件 → 安装第三方插件，输入包名：
+
+```
+@dreanzy/dsh-plugin-pack
 ```
 
-把 `<owner>/<repo>#<sha>` 换成实际仓库与提交（用提交而不是分支，安装结果才可复现）。装完重启 Host、刷新页面。
+**命令行安装**：
+
+```sh
+dsh plugin --profile <profile> add @dreanzy/dsh-plugin-pack
+```
+
+装完重启 Host、刷新页面。
+
+从源码安装（需要 pnpm 允许该包执行构建）：
+
+```sh
+dsh plugin --profile <profile> add "github:dreanzy/dsh-plg#<sha>&path:/packages/dsh-plugin-pack"
+```
 
 ## 文件
 
