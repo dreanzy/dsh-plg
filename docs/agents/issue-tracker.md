@@ -10,6 +10,25 @@ Issues and specs for this repo live as markdown files in `.scratch/`.
 - Triage state is recorded as a `Status:` line near the top of each issue file (see `triage-labels.md` for the role strings)
 - Comments and conversation history append to the bottom of the file under a `## Comments` heading
 
+## 脱敏
+
+`.scratch/` 会随仓库公开，调研笔记里引用本机文件时一律用占位符，不写真实路径：
+
+| 真实内容 | 占位符 |
+| --- | --- |
+| Windows 账户目录 `C:\Users\<name>` | `%USERPROFILE%` |
+| 本仓库的绝对路径 | `<repo>` |
+| 本机其他仓库副本 | `<local-copy>` |
+| 主机名 | `<host>` |
+
+提交前自查：
+
+```sh
+git grep -n -I -E 'C:\\Users|D:\\Projects|<你的用户名>|<你的主机名>' -- .scratch
+```
+
+命中即改。历史版本仍可经 API 侧取到，脱敏必须在首次提交前完成，不能靠事后编辑补救。
+
 ## When a skill says "publish to the issue tracker"
 
 Create a new file under `.scratch/<feature-slug>/` (creating the directory if needed).
