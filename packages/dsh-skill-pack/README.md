@@ -1,6 +1,6 @@
 # @dreanzy/dsh-skill-pack
 
-按工作区控制 skill 可见性的 DSH 插件。工作区只绑一个 pack，pack 是一张具名的开关表；未绑定按 `default` 求值。
+按工作区控制 skill 可用性的 DSH 插件。工作区只绑一个 pack，pack 是一张具名的开关表；未绑定按 `default` 求值。
 
 [English](README.en.md) | **简体中文**
 
@@ -8,7 +8,7 @@
 
 装得多之后，每一轮请求都要重新付一遍清单成本：skill 目录进上下文、候选太多让模型选错、A 项目的专用能力在 B 项目里一直占位。
 
-本插件把「模型此刻能自动调用哪些 skill」变成一组开关，并让工作区只做一次选择：
+本插件把「模型能否自动发现、用户能否用 `/name` 点名调用哪些 skill」变成一组开关，并让工作区只做一次选择：
 
 ```
 工作区绑定的 pack  ??  default pack  ??  默认开
@@ -84,7 +84,10 @@ dsh plugin --profile <profile> add "github:dreanzy/dsh-plg#<sha>&path:/packages/
 - **只管 skill**。MCP 的按工作区开关不在本包范围（MCP 一侧在 DSH 里没有干净的收窄点）。见 [docs/adr/0004-skill-only-scope.md](docs/adr/0004-skill-only-scope.md)。
 - 会话中途切换工作目录不会重算策略，重开会话即恢复。
 - 同层 first-wins：若别的插件先把同名 skill 注册进同一层，那条关不掉，面板会在该行标出「关不掉」。
-- 官方 `@deepseek-ai` 技能默认不在面板出现（判定见 `src/inventory.ts`），但模型仍可调用；打开「显示官方技能」后可逐项关闭。
+- 官方 `@deepseek-ai` 技能默认不在面板出现（判定见 `src/inventory.ts`），但模型仍可调用；打开「显示官方技能」后可逐项关闭，关掉后与自定义技能同规则：模型看不见，`/name` 也不生效。
+- **`/` 菜单会自动隐藏已关闭的项**：远端 `skills.list` 按 `isUserInvocable` 过滤，`userInvocable: false` 的条目到不了客户端。手打 `/name` 时宿主静默跳过注入，也没有任何提示——这个 skill 在该工作区就是不存在。
+- **`/` 菜单项本身无法被本包定制**。官方 `dsh-client-ui-skill` 独占 `("/", "skill")` 这个 trigger source，`registerSource` 对重复键直接抛错，所以插件无法改它的候选或文案——隐藏靠的是宿主的过滤，不是本包。
+- **切换会话后 `/` 候选可能滞后**。宿主按 `sessionId` 缓存 skill 清单，只在 `agent-preset/selected` 与 `plugin-manager/changed` 时失效；重新启用插件或复用旧会话时，输入框里仍可能列出刚被关掉的 skill。**刷新页面**即恢复。
 
 ## 与 dsh-skill-scope 的关系
 

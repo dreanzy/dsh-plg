@@ -1,6 +1,6 @@
 # @dreanzy/dsh-skill-pack
 
-Per-workspace skill visibility for the DeepSeek Harness. A workspace binds exactly one pack; a pack is a named table of switches. Unbound workspaces evaluate against `default`.
+Per-workspace skill availability for the DeepSeek Harness. A workspace binds exactly one pack; a pack is a named table of switches. Unbound workspaces evaluate against `default`.
 
 **English** | [简体中文](README.md)
 
@@ -8,7 +8,7 @@ Per-workspace skill visibility for the DeepSeek Harness. A workspace binds exact
 
 Once you install enough skills, every request pays for the whole catalogue again: the skill directory re-enters the context, too many candidates make the model pick wrong, and one project's private capability keeps occupying space in another.
 
-This plugin turns "which skills may the model auto-invoke right now" into a set of switches, and makes each workspace choose once:
+This plugin turns "which skills may the model auto-discover, and which ones a user may still name with `/name`" into a set of switches, and makes each workspace choose once:
 
 ```
 bound pack  ??  default pack  ??  default on
@@ -68,7 +68,10 @@ See [docs/adr/0001-intent-writes.md](docs/adr/0001-intent-writes.md).
 - **Skills only.** Per-workspace MCP switching is out of scope; DSH offers no clean narrowing point for MCP tools. See [docs/adr/0004-skill-only-scope.md](docs/adr/0004-skill-only-scope.md).
 - Changing the working directory mid-session does not re-evaluate; reopening the session restores the expected state.
 - Same-layer first-wins: if another plugin registered a skill of the same name into the same layer first, that skill cannot be hidden. The panel greys it out and states the reason.
-- Official `@deepseek-ai` skills are hidden from the panel by default (the rule lives in `src/inventory.ts`) but stay model-invokable; turn "显示官方技能" on to switch them individually.
+- Official `@deepseek-ai` skills are hidden from the panel by default (the rule lives in `src/inventory.ts`) but stay model-invokable; turn "显示官方技能" on to switch them individually. Once switched off they follow the same rule as custom skills: the model cannot see them and `/name` stops working.
+- **The `/` menu hides a closed skill automatically.** The remote `skills.list` filters by `isUserInvocable`, so a `userInvocable: false` entry never reaches the client. Typing `/name` by hand does nothing and shows no hint either: in that workspace the skill simply does not exist.
+- **This package cannot customise the `/` menu itself.** The official `dsh-client-ui-skill` owns the `("/", "skill")` trigger source, and `registerSource` throws on a duplicate key, so the plugin can neither replace nor filter its candidates — the hiding comes from the host filter, not from this package.
+- **The `/` candidates can lag behind a Session switch.** The host caches the skill catalog per `sessionId` and only invalidates it on `agent-preset/selected` and `plugin-manager/changed`; reusing an old Session or re-enabling the plugin can still list a skill you just closed. **Refresh the page** to recover.
 
 ## Relationship to dsh-skill-scope
 

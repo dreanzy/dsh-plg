@@ -10,7 +10,9 @@ _Avoid_: 条目、skill 条目、开关
 
 **开关状态（Switch）**:
 某个能力项在某一层被显式定下的取值，只有开与关两种。键不存在不是一种状态，那是跟随。
-_Avoid_: 启用、禁用、打开
+
+「关」在本插件里同时关掉两条路径：模型侧（从 `available_skills` 目录消失、`skill` 工具拒绝）与用户侧（`/name` 注入被跳过）。遮蔽副本把 `modelInvocable` 与 `userInvocable` 都置为 `false`，两者缺一都算没关掉。
+_Avoid_: 启用、禁用、打开、隐藏（只描述模型侧）
 
 **绑定（Binding）**:
 某个工作区绑到哪个 pack 的那一条记录，键是规范化后的目录。未绑定、或绑定的 pack 已不存在时，按 `default` pack 求值。
