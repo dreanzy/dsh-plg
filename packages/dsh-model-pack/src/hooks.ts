@@ -25,6 +25,15 @@ import { describeTiers, probeSupport, registerTierTool, type TierToolDeps } from
 const SUBAGENT_TOOL = 'subagent'
 
 /**
+ * 「这个会话已经开过轮次」的标记事件。
+ *
+ * `turn/start` 是每轮必写的第一条，宿主自己的 blank 投影就用它；
+ * `request/header` 在真正发出模型请求时写。任一出现就不再是空白会话。
+ * 取并集是为了盖住"消息发了、请求没出去"的那种会话。
+ */
+const CONTENT_MARKERS: readonly string[] = ['turn/start', 'request/header']
+
+/**
  * 委派段的顺序值。
  *
  * 官方 `TOOL_SUBAGENT` 是 2800（那段「Start independent delegations using subagent_fork」），
@@ -121,6 +130,8 @@ function cwdOf(agent: AgentLike): string | null {
 export interface HooksHandle {
   /** 插件重载后补施加：已有会话不会再收到 `agent/created`。 */
   bootstrap(): Promise<void>
+  /** 切 pack 之后把空白会话的模型位改成新路由；有轮次的会话不动。 */
+  refreshBlankSessions(): Promise<void>
   /** 退订全部事件并释放全部登记项。幂等。 */
   stopAll(): void
   /** 面板用的两格探测结果。 */
@@ -205,21 +216,22 @@ export function installHooks(ctx: PluginContext, options: HooksOptions = {}): Ho
    * ---------------------------------------------------------------- */
 
   /**
-   * 会话是否已经真正跑过请求。
+   * 会话是否还是空白会话：没开过任何一轮，也没发过请求。
    *
    * 不能用 `model/selection` 当判据：宿主在**创建会话时**就写了一条初始选择
-   * （实测事件序列 `session → permission/preset → sandbox/mode → approval/policy →
-   * model/selection → subagent/model-selection-policy`）。把它当成「用户已经选过」，
-   * 会让 pack 对每一个新建会话都不生效，而老会话因为已有 selection 或手动切换，
-   * 看起来反而是好的——这是最难从表面现象反推的一类 bug。
+   * （实测序列 `session → permission/preset → sandbox/mode → approval/policy →
+   * model/selection → agent/inbox/spliced → turn/start`），值就是当时的默认模型。
+   * 把它当成「用户已经选过」，pack 对每个新建会话都不生效——正是最难看出来的那类 bug。
    *
-   * `request/header` 只在真正发出请求时出现，才是可靠判据。读不到事件接口时返回
-   * false：新建会话本来就没有请求，放行才能让 pack 生效；兜底交给 select 自身的
-   * 幂等短路（同一路由不会被重复记录）。
+   * 读不到事件接口时按「不是空白」处理：宁可少改一个会话，也不误改用户正在用的。
+   * 兜底还有 select 自身的幂等短路（同一路由不会重复记录）。
    */
-  const hasRecordedRequest = (agent: AgentLike): boolean => {
+  const isBlank = (agent: AgentLike): boolean => {
     const session = agent.session
-    const isHeader = (event: unknown): boolean => asRecord(event)?.['type'] === 'request/header'
+    const marks = (event: unknown): boolean => {
+      const type = asRecord(event)?.['type']
+      return typeof type === 'string' && CONTENT_MARKERS.includes(type)
+    }
 
     if (typeof session.snapshotEvents === 'function') {
       let events: unknown
@@ -227,9 +239,9 @@ export function installHooks(ctx: PluginContext, options: HooksOptions = {}): Ho
         events = session.snapshotEvents()
       } catch (error) {
         warnOnce('session-read', '读取会话事件失败，本轮不改模型：' + String(error))
-        return true
+        return false
       }
-      if (Array.isArray(events)) return events.some(isHeader)
+      if (Array.isArray(events)) return !events.some(marks)
     }
 
     const at = session.eventAt
@@ -237,27 +249,37 @@ export function installHooks(ctx: PluginContext, options: HooksOptions = {}): Ho
     if (typeof at === 'function' && typeof length === 'number') {
       for (let seq = 0; seq < length; seq += 1) {
         try {
-          if (isHeader(at.call(session, seq))) return true
+          if (marks(at.call(session, seq))) return false
         } catch {
           return false
         }
       }
-      return false
+      return true
     }
 
     return false
   }
 
-  const applySessionRoute = (agent: AgentLike, resolved: ResolvedPack): void => {
+  /** 按 pack 的会话路由给 agent 换模型。返回是否真的施加过。 */
+  const applySessionRoute = (agent: AgentLike, resolved: ResolvedPack): boolean => {
     const route = resolved.pack.session
-    if (route === undefined) return
-    if (hasRecordedRequest(agent)) return
+    if (route === undefined) return false
+    // 有内容的会话不归插件管：模型选择已经写在它自己的日志里。
+    if (!isBlank(agent)) return false
     const select = agent.model?.select
     if (typeof select !== 'function') {
       warnOnce('no-select', '宿主的 agent.model.select 不可用，会话路由未注入')
-      return
+      return false
     }
-    select.call(agent.model, selectionOf(route))
+    try {
+      select.call(agent.model, selectionOf(route))
+      return true
+    } catch (error) {
+      // 失败要落到面板上：用户以为改成功了、模型却没变，是这类问题里最难查的一种。
+      lastErrorText = 'agent=' + agent.id + ' 会话路由施加失败：' + String(error)
+      ctx.logger.warn('model-pack: ' + lastErrorText)
+      return false
+    }
   }
 
   /* ---------------------------------------------------------------- *
@@ -348,7 +370,7 @@ export function installHooks(ctx: PluginContext, options: HooksOptions = {}): Ho
   const applyOne = async (
     agent: AgentLike,
     state: AgentState,
-    options: { applySessionRoute: boolean },
+    options: { rewriteSelection: boolean },
   ): Promise<void> => {
     const cwd = cwdOf(agent)
     if (cwd === null) {
@@ -362,7 +384,7 @@ export function installHooks(ctx: PluginContext, options: HooksOptions = {}): Ho
     const resolved = resolve(loaded, cwd)
     // 提示词覆盖随 loadState 一起读上来；合并是纯函数，不额外碰盘。
     const prompt = resolvePrompt(loaded.prompts)
-    if (options.applySessionRoute) applySessionRoute(agent, resolved)
+    if (options.rewriteSelection) applySessionRoute(agent, resolved)
     applyTierAndSection(agent, resolved, prompt, state)
   }
 
@@ -382,11 +404,10 @@ export function installHooks(ctx: PluginContext, options: HooksOptions = {}): Ho
       // 子智能体的路由由父级在创建前捕获，这里插手会与 dsh-subagent 打架。
       if (agent.session.header?.origin === 'subagent') return
 
-      // 新会话：模型、工具、段三样都做。
-      // 恢复的会话：只做工具与段——模型选择已经写在它自己的日志里，不该被工作区绑定改写，
-      // 但工具和段挂在 agent 作用域上，agent 重建后旧注册随旧 agent 一起消失，
-      // 不重新挂的话，恢复出来的会话只有模型、没有 subagent_tier，模型只能去调官方 subagent。
-      const isStartup = record['source'] === 'startup'
+      // 创建与恢复一视同仁：空白会话换模型，有轮次的会话只重挂工具与段。
+      // 判据只有 isBlank 一条——用 source 分流会漏掉"恢复出来的空白会话"，
+      // 而工具与段挂在 agent 作用域上，agent 重建后旧注册会随旧 agent 消失，
+      // 不重新挂的话，恢复出来的会话只有模型、没有 subagent_tier。
 
       // 插件重载时 bootstrap 可能已经为同一 agent 建过 state：再施加一次会撞工具重名，
       // 第二次注册失败、disposers 为空，却把第一次登记的释放器覆盖掉。
@@ -394,7 +415,7 @@ export function installHooks(ctx: PluginContext, options: HooksOptions = {}): Ho
 
       const state: AgentState = { disposers: [] }
       states.set(agent.id, state)
-      await applyOne(agent, state, { applySessionRoute: isStartup })
+      await applyOne(agent, state, { rewriteSelection: true })
     } catch (error) {
       // 这个监听器抛错会让会话创建失败，所以一律吞掉降级。
       recordFailure(agent?.id ?? '?', error)
@@ -478,9 +499,49 @@ export function installHooks(ctx: PluginContext, options: HooksOptions = {}): Ho
         if (cwdOf(agent) === null) continue
         const state: AgentState = { disposers: [] }
         states.set(agent.id, state)
-        await applyOne(agent, state, { applySessionRoute: false })
+        await applyOne(agent, state, { rewriteSelection: false })
       } catch (error) {
         ctx.logger.warn('model-pack: 补施加失败（agent=' + (agent?.id ?? '?') + '）：' + String(error))
+      }
+    }
+  }
+
+  /**
+   * 用户改了 pack：把所有空白会话的模型位改成新求值出来的路由。
+   *
+   * 不筛选命令：判定只有一条——求值出来的会话路由与当前选择不同（select 自己幂等短路），
+   * 且该会话仍是空白。做命令白名单会漏掉"改 default pack 的会话路由"这类间接触发。
+   * 读盘按 cwd 去重：一次保存最多读几份 packs.json。
+   */
+  const refreshBlankSessions = async (): Promise<void> => {
+    let list: unknown[] = []
+    try {
+      const agents = serviceOf('agents')
+      const raw = typeof agents?.['list'] === 'function' ? (agents['list'] as () => unknown).call(agents) : []
+      list = Array.isArray(raw) ? raw : []
+    } catch {
+      return
+    }
+
+    const resolvedByCwd = new Map<string, ResolvedPack>()
+    for (const entry of list) {
+      let agent: AgentLike | null = null
+      try {
+        agent = asAgentLike(entry)
+        if (agent === null) continue
+        if (agent.session.header?.origin === 'subagent') continue
+        const cwd = cwdOf(agent)
+        if (cwd === null) continue
+        if (!isBlank(agent)) continue
+        let resolved = resolvedByCwd.get(cwd)
+        if (resolved === undefined) {
+          resolved = resolve(await loadState(cwd, pathOptions), cwd)
+          resolvedByCwd.set(cwd, resolved)
+        }
+        applySessionRoute(agent, resolved)
+      } catch (error) {
+        lastErrorText = 'agent=' + (agent?.id ?? '?') + ' 切 pack 后重施加失败：' + String(error)
+        ctx.logger.warn('model-pack: ' + lastErrorText)
       }
     }
   }
@@ -507,6 +568,7 @@ export function installHooks(ctx: PluginContext, options: HooksOptions = {}): Ho
 
   return {
     bootstrap,
+    refreshBlankSessions,
     stopAll,
     support,
     lastError: () => lastErrorText,

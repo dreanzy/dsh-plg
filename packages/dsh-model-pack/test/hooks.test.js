@@ -156,10 +156,9 @@ function install({ ctx, home }) {
  * 事件过滤（spec §6.1 前三步：零动作）
  * ------------------------------------------------------------------ */
 
-test('source 不是 startup：恢复的会话不改模型，但工具与段要重新挂', async (t) => {
-  // 工具与段注册在 agent 作用域上，agent 重建后旧注册随旧 agent 一起消失。
-  // 只在 startup 时挂，会让恢复出来的会话只有模型、没有 subagent_tier，
-  // 模型于是只能去调官方 subagent。
+test('恢复出来的空白会话也按 pack 换模型，工具与段照样重挂', async (t) => {
+  // 判据只有「有没有开过轮次」一条：source=resume 只说明它是从日志恢复的，
+  // 不能说明用户用过它。用 source 分流会漏掉"昨天开了没聊"的会话。
   const ws = await makeWorkspace()
   t.after(ws.cleanup)
   const { ctx, listeners } = makeContext({ subagents: makeSubagents() })
@@ -168,10 +167,29 @@ test('source 不是 startup：恢复的会话不改模型，但工具与段要�
   install({ ctx, home: ws.home })
   await fire(listeners, 'agent/created', { agent, source: 'resume' })
 
-  assert.deepEqual(calls.select, [], '恢复的会话不该被工作区绑定改写模型')
+  assert.equal(calls.select.length, 1, '恢复的空白会话应当跟随工作区绑定')
   assert.equal(calls.register.length, 1, '工具必须重新注册')
   assert.equal(calls.restrict.length, 1, '官方 subagent 要重新屏蔽')
   assert.equal(calls.section.length, 1, '委派段要重新注入')
+})
+
+test('开过轮次（turn/start）：不换模型，工具与段照常', async (t) => {
+  // 宿主自己的 blank 投影就认 turn/start；只看 request/header 会漏掉
+  // "消息发了、请求没出去"的会话，进而把用户正在用的会话改掉。
+  const ws = await makeWorkspace()
+  t.after(ws.cleanup)
+  const { ctx, listeners } = makeContext({ subagents: makeSubagents() })
+  const { agent, calls } = makeAgent({
+    cwd: ws.cwd,
+    events: [{ type: 'model/selection' }, { type: 'turn/start' }],
+  })
+
+  install({ ctx, home: ws.home })
+  await fire(listeners, 'agent/created', { agent, source: 'startup' })
+  await settle()
+
+  assert.deepEqual(calls.select, [], '开过轮次的会话不能被工作区绑定覆盖')
+  assert.equal(calls.register.length, 1)
 })
 
 test('origin 为 subagent：零动作，不与父级捕获打架', async (t) => {
@@ -243,8 +261,9 @@ test('已跑过请求：不再 select，但工具与段照常', async (t) => {
 
 test('创建期写入的初始 model/selection 不阻止 select', async (t) => {
   // 宿主的真实创建序列：session → permission/preset → sandbox/mode → approval/policy
-  // → model/selection → subagent/model-selection-policy。把这条 initial selection
-  // 当成「用户已选」会让 pack 对每个新会话都不生效，而老会话看起来正常。
+  // → model/selection → agent/inbox/spliced → turn/start。这条 initial selection 的值
+  // 就是当时的默认模型，不是用户的选择；判据只看「有没有开过轮次」。
+  // 把它当成「用户已选」会让 pack 对每个新会话都不生效，而老会话看起来正常。
   const ws = await makeWorkspace()
   t.after(ws.cleanup)
   const { ctx, listeners } = makeContext({ subagents: makeSubagents() })
@@ -445,4 +464,51 @@ test('stopAll：退订事件并释放全部登记项，重复调用不抛', asyn
   assert.deepEqual(calls.disposed, ['tool', 'restrict', 'section'])
   assert.equal(listeners.has('agent/created'), false)
   hooks.stopAll()
+})
+
+/* ------------------------------------------------------------------ *
+ * 切 pack 之后：空白会话换模型
+ * ------------------------------------------------------------------ */
+
+test('切 pack：只改空白会话，开过轮次的会话不动', async (t) => {
+  const ws = await makeWorkspace()
+  t.after(ws.cleanup)
+
+  const blank = makeAgent({ cwd: ws.cwd })
+  const used = makeAgent({
+    cwd: ws.cwd,
+    events: [{ type: 'model/selection' }, { type: 'turn/start' }],
+  })
+  used.agent.id = 'agent-2'
+
+  const { ctx } = makeContext({
+    subagents: makeSubagents(),
+    agents: { list: () => [blank.agent, used.agent] },
+  })
+  const hooks = install({ ctx, home: ws.home })
+
+  await hooks.refreshBlankSessions()
+
+  assert.equal(blank.calls.select.length, 1, '空白会话要按新 pack 换模型')
+  assert.deepEqual(blank.calls.select[0], { provider: 'deepseek', model: 'deepseek-chat', reasoningEffort: 'high' })
+  assert.deepEqual(used.calls.select, [], '开过轮次的会话不能被改写')
+})
+
+test('切 pack：select 抛错写进 lastError，不外抛', async (t) => {
+  const ws = await makeWorkspace()
+  t.after(ws.cleanup)
+
+  const blank = makeAgent({ cwd: ws.cwd, selectError: new Error('select exploded') })
+  const { ctx } = makeContext({
+    subagents: makeSubagents(),
+    agents: { list: () => [blank.agent] },
+  })
+  const hooks = install({ ctx, home: ws.home })
+
+  await hooks.refreshBlankSessions()
+
+  const reason = hooks.lastError()
+  assert.equal(typeof reason, 'string')
+  assert.match(reason, /会话路由施加失败/)
+  assert.match(reason, /select exploded/)
 })

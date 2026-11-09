@@ -143,9 +143,13 @@ export function apply(ctx: unknown): void {
     const deps: RouteDeps = {
       loadState: (cwd) => loadState(cwd),
       // 每次落盘后同步一次默认模型：改了 default pack 的会话路由就可能改变「新会话该用什么」。
+      // 再让空白会话的模型位跟着新路由走：用户刚在面板上点了保存，界面必须立刻对得上。
       applyCommands: async (cwd, commands) => {
         const state = await applyCommands(cwd, commands)
         void syncDefaultModel(context)
+        void hooks.refreshBlankSessions().catch((error: unknown) => {
+          context.logger.warn(name + ': 切 pack 后重施加失败：' + String(error))
+        })
         return state
       },
       resolve: (state, cwd) => resolve(state as PackState, cwd),
