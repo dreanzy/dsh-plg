@@ -1213,10 +1213,21 @@ window.__ModuleLoader__.load({
           try {
             const data = await api.apply(state.currentCwd, commands)
             setState((prev) => ({ ...prev, phase: 'ready', data: data, error: null }))
-            // 绑定改了要把 chip 上的 pack 名一起更新：chip 在会话页，与设置页之间
-            // 没有通道，只能在这里主动重读一次。
-            if (commands.some((command) => command.op === 'bind' || command.op === 'deletePack')) {
+            // 绑定与名册改动要把 chip 和模型位标签一起更新：两处都在会话页，与设置页
+            // 之间没有通道，只能在这里主动重读。模型位那条缓存不失效的话，用户改完
+            // 绑定回到 composer 看到的还是旧 pack 名，只能整页刷新。
+            if (
+              commands.some(
+                (command) =>
+                  command.op === 'bind' ||
+                  command.op === 'deletePack' ||
+                  command.op === 'renamePack' ||
+                  command.op === 'putPack' ||
+                  command.op === 'createPack',
+              )
+            ) {
               refreshChipName(host, env.sessionId)
+              void labelRefresh(host)
             }
             return data
           } catch (failure) {
@@ -2128,8 +2139,8 @@ window.__ModuleLoader__.load({
      * 工作区绑定：说明 → 手动添加路径 → 列表（每行一个下拉）。
      *
      * 顺序是「说明 → 手动添加 → 列表」：手动添加是入口，放到列表底下等于没有。
-     * 绑定只影响该目录下**新开**的会话：策略在会话创建时求值，已经开着的会话不会
-     * 因为这里改了绑定就换一套 pack。
+     * 绑定只影响该目录下的空白会话（还没开过轮次）：创建、恢复、改绑定三个时点都会
+     * 重新施加；开了轮次的会话不会被这里改写。
      *
      * 手动添加的路径落在服务端 `bindings.extra`（`addExtra` / `removeExtra`），
      * 刷新页面、换机器都还在。
@@ -2176,7 +2187,7 @@ window.__ModuleLoader__.load({
         'div',
         { style: S.block },
         h('div', { style: S.blockTitle }, '工作区绑定'),
-        h('div', { style: { ...S.hint, marginBottom: '8px' } }, '绑定只影响该目录下新开的会话；已经开着的会话不换 pack。未绑定即默认。'),
+        h('div', { style: { ...S.hint, marginBottom: '8px' } }, '绑定只影响该目录下还没发出请求的会话；开了轮次的会话不换 pack。未绑定即默认。'),
         h(
           'div',
           { style: { display: 'flex', gap: '8px', marginBottom: '8px', alignItems: 'center' } },
@@ -2463,7 +2474,7 @@ window.__ModuleLoader__.load({
         h(
           'div',
           { style: S.hint },
-          '一张 pack = 一条会话路由 + 至多四档子智能体路由。工作区绑到哪张 pack，就按哪套生效；未绑定按默认。只作用于该目录里之后新建的会话，不改动已有会话，也不替代官方「设置 → 模型」。',
+          '一张 pack = 一条会话路由 + 至多四档子智能体路由。工作区绑到哪张 pack，就按哪套生效；未绑定按默认。只作用于该目录里还没发出请求的会话，开了轮次的会话不再改动，也不替代官方「设置 → 模型」。',
         ),
         data.lastError ? h('div', { style: S.probeFail }, '上一次施加失败：' + data.lastError) : null,
         warnings.length > 0
@@ -2554,8 +2565,11 @@ window.__ModuleLoader__.load({
      *
      * 为什么不在组件里取数：`conversation.input.model.label` 的渲染一旦抛错，
      * 官方触发按钮会退回默认文字（见 ui-model-selection README「模型名称扩展」）。
-     * 所以组件必须是对异常零敏感的纯函数式渲染——不请求、不订阅、不挂交互；
-     * 取数全部提前到 apply：先 session.list 得到 sessionId→cwd，再按 cwd 各 read 一次。
+     * 所以组件里不请求、不挂交互，取数全部提前到 apply：先 session.list 得到
+     * sessionId→cwd，再按 cwd 各 read 一次。
+     *
+     * 唯一的订阅是缓存版本号（`labelVersion`）：写完缓存要有人通知 composer 重渲染，
+     * 否则改完绑定只能整页刷新才看得到新名字。订阅的是本模块自己的 signal，不碰宿主。
      *
      * sessionId 从哪来：这个 slot 是 `scope: 'session'` 的单一内联 slot，
      * 会话绑定把 `sessionId` 作为普通 prop 交给组件（不是 hook，不订阅）。
@@ -2564,8 +2578,34 @@ window.__ModuleLoader__.load({
       session: new Map(), // sessionId -> cwd
       name: new Map(), // cwd -> pack 显示名
       running: null, // 单飞：并发重读只跑一次
+      queued: false, // 单飞期间又来了一次整轮重读的请求
     }
-    /** 增量重读间隔：只为还没缓存过的工作区发 read，新会话不用等整页刷新。 */
+    /**
+     * 缓存版本号。
+     *
+     * slot 是纯渲染：缓存更新后没有任何东西会通知 composer 重渲染，用户看到的
+     * 就一直是旧名字，直到整页刷新。改绑定、改 pack 名都发生在同一页里，
+     * 所以缓存必须自己发信号。
+     */
+    const labelVersion = createSignal(0)
+    function bumpLabel() {
+      labelVersion.set(labelVersion.read() + 1)
+    }
+    /** 两次缓存内容是否相同：只在真变了才发信号，避免每轮轮询都白重渲染一次。 */
+    function sameNames(before, after) {
+      if (before.size !== after.size) return false
+      for (const [cwd, name] of after) {
+        if (before.get(cwd) !== name) return false
+      }
+      return true
+    }
+    /**
+     * 重读间隔。
+     *
+     * 每轮整轮重读：绑定可能在另一个窗口里改，也可能由别的东西写盘，60 秒内自愈
+     * 比要求用户刷新页面强。量级是 session.list 加最多 8 次本地 read，不值得为省它
+     * 做增量判断——增量判断漏掉的那一类（已缓存但已过期的 cwd）正是这个 bug。
+     */
     const LABEL_REFRESH_MS = 60000
     /** 标签与官方目录名同处一行时的排版；只影响宽度分配，不改变触发器的交互。 */
     const LABEL_STYLE = {
@@ -2613,14 +2653,17 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * 重读 pack 名缓存。
+     * 重读 pack 名缓存：整轮重建。
      *
-     * `full` 为真时整轮重建（启动、连接重置）；为假时只读还没缓存的 cwd（新会话）。
      * 任何异常都吞掉：缓存保留旧值，组件继续按旧值渲染或退回纯模型名——
      * 这条路径失败不允许影响 composer 的任何行为。
      */
-    function labelRefresh(host, full) {
-      if (labelCache.running) return labelCache.running
+    function labelRefresh(host) {
+      if (labelCache.running) {
+        // 跑着的时候又来一次：记住，等它结束后再跑一遍，不丢这次请求。
+        labelCache.queued = true
+        return labelCache.running
+      }
       const run = (async () => {
         try {
           const session = host.remote && host.remote.session
@@ -2642,10 +2685,9 @@ window.__ModuleLoader__.load({
             nextSession.set(item.sessionId, item.cwd)
             if (cwds.indexOf(item.cwd) < 0 && cwds.length < MAX_WORKSPACES) cwds.push(item.cwd)
           }
-          const names = full ? new Map() : labelCache.name
+          const names = new Map()
           await Promise.all(
             cwds.map(async (cwd) => {
-              if (!full && names.has(cwd)) return
               try {
                 const name = labelPackNameOf(await api.read(cwd))
                 if (name === '') names.delete(cwd)
@@ -2655,8 +2697,10 @@ window.__ModuleLoader__.load({
               }
             }),
           )
+          const changed = !sameNames(labelCache.name, names)
           labelCache.session = nextSession
           labelCache.name = names
+          if (changed) bumpLabel()
         } catch {
           // 整轮失败保留旧缓存，不把标签打空。
         }
@@ -2664,6 +2708,10 @@ window.__ModuleLoader__.load({
       labelCache.running = run
       run.then(() => {
         if (labelCache.running === run) labelCache.running = null
+        if (labelCache.queued) {
+          labelCache.queued = false
+          void labelRefresh(host)
+        }
       })
       return run
     }
@@ -2680,6 +2728,19 @@ window.__ModuleLoader__.load({
      * pack 名拿不到（未读、读失败、会话不属于任何工作区）时退回纯模型名，不留占位符。
      */
     function labelView(props) {
+      // 订阅缓存版本：这一处是纯渲染 slot，宿主不会因为我们的缓存变了而重渲染，
+      // 不订阅就只能靠整页刷新。订阅函数是本模块自己的 signal，不碰宿主。
+      //
+      // 外面包一层 try：万一宿主不在渲染期调用这个 slot，hook 会抛 Invalid hook call。
+      // 那时退回「只有整页刷新才更新」，与修复前一致——绝不能让异常泄给宿主，
+      // 那样官方触发按钮会退回默认文字。
+      try {
+        if (typeof useSyncExternalStore === 'function') {
+          useSyncExternalStore(labelVersion.subscribe, labelVersion.read, labelVersion.read)
+        }
+      } catch {
+        // 见上。
+      }
       let modelName = ''
       let packName = ''
       try {
@@ -2834,6 +2895,8 @@ window.__ModuleLoader__.load({
             const known = id !== null && isRecord(packsOf(fresh)[id])
             setState((prev) => ({ ...prev, data: fresh, error: null }))
             chipName.set(known ? packNameOf(fresh, id) : null)
+            // 绑定改了，模型位那一行的 pack 名要跟着换：它读的是 apply 之前的缓存。
+            void labelRefresh(host)
           },
           (error) => setState((prev) => ({ ...prev, error: String(error && error.message ? error.message : error) })),
         )
@@ -2882,7 +2945,7 @@ window.__ModuleLoader__.load({
                   ),
                   onChange: (next) => bindTo(next),
                 }),
-                h('div', { style: { ...S.hint, marginTop: '6px' } }, '只影响这个目录里新开的会话。'),
+                h('div', { style: { ...S.hint, marginTop: '6px' } }, '只影响这个目录里还没发出请求的会话。'),
               ),
           h(
             'div',
@@ -3044,13 +3107,13 @@ window.__ModuleLoader__.load({
         ctx.slots.register({ name: 'shell.overlay', id: MODAL_ID, order: 63 }, ChipOverlay),
       )
 
-      // 缓存先读一次；连接重置整轮重读；其余时间只为新出现的工作区增量重读。
+      // 缓存先读一次；连接重置与每 60 秒各整轮重读一次——绑定可能在别处被改。
       ctx.effect(() => {
-        labelRefresh(host, true)
+        labelRefresh(host)
       }, 'model-pack: 读取模型位 pack 名')
 
       if (typeof ctx.on === 'function') {
-        ctx.effect(() => ctx.on('connection/reset', () => labelRefresh(host, true)), 'model-pack: 模型位 pack 名重读')
+        ctx.effect(() => ctx.on('connection/reset', () => labelRefresh(host)), 'model-pack: 模型位 pack 名重读')
       }
 
       ctx.effect(() => {
@@ -3058,10 +3121,10 @@ window.__ModuleLoader__.load({
         const timer = setInterval(() => {
           // 后台标签页不重读：用户看不见触发按钮，读到的也只是缓存。
           if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return
-          labelRefresh(host, false)
+          labelRefresh(host)
         }, LABEL_REFRESH_MS)
         return () => clearInterval(timer)
-      }, 'model-pack: 模型位 pack 名增量重读')
+      }, 'model-pack: 模型位 pack 名定时重读')
     }
   },
 })
