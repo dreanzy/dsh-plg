@@ -1363,7 +1363,8 @@ window.__ModuleLoader__.load({
           'button',
           {
             type: 'button',
-            style: S.pickerTrigger,
+            // 只降触发器：菜单挂在这个按钮的兄弟节点上，不能跟着一起半透明。
+            style: props.dim === true ? { ...S.pickerTrigger, opacity: 0.6 } : S.pickerTrigger,
             title: props.title || label,
             'aria-haspopup': 'listbox',
             'aria-expanded': open,
@@ -1533,9 +1534,15 @@ window.__ModuleLoader__.load({
         ? knownEfforts
         : [{ value: effort, label: effort + '（该模型未公布）' }].concat(knownEfforts)
 
+      // 失效路由的「变淡」只能落在触发器上，不能落在容器上。
+      // 容器一旦 opacity < 1，会把整个合成层做半透明，下拉菜单也不例外：
+      // 菜单背后的表单文字透出来，就成了一眼看不清的两层字。子元素无法把
+      // 父级 opacity 补回来，所以这里把透明度下发给 Picker，由它只装饰触发器。
+      const dim = filled && !known
+
       return h(
         'div',
-        { style: { opacity: filled && !known ? 0.6 : 1, flex: '1 1 320px', minWidth: '240px' } },
+        { style: { flex: '1 1 320px', minWidth: '240px' } },
         // 一行放下：provider/model 合并下拉 + 思考等级。标签由调用方给（首选 / 备选），
         // 这里不再重复写「首选」——同一块里出现两次同样的词只是噪音。
         h(
@@ -1548,6 +1555,7 @@ window.__ModuleLoader__.load({
               value: currentKey,
               placeholder: 'provider · model',
               disabled: disabled,
+              dim: dim,
               options: routeOptions,
               onChange: chooseRoute,
             }),
@@ -1559,6 +1567,7 @@ window.__ModuleLoader__.load({
               ? h(Picker, {
                   value: effort,
                   disabled: disabled,
+                  dim: dim,
                   // 必须显式压小：Picker 根节点默认 minWidth 120px，套在窄容器里
                   // 会撑出去盖住右边的按钮。
                   minWidth: '60px',
@@ -1592,7 +1601,7 @@ window.__ModuleLoader__.load({
                 {
                   type: 'button',
                   disabled: disabled,
-                  style: { ...S.reset, flex: '0 0 auto' },
+                  style: { ...S.reset, flex: '0 0 auto', opacity: dim ? 0.6 : 1 },
                   title: '删掉 reasoningEffort 键，回到跟随模型默认',
                   onClick: () => onChange(routeWithoutEffort(value)),
                 },
