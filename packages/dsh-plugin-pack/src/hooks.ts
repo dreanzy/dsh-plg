@@ -1,4 +1,4 @@
-import { defaultCatalogFeed, type CatalogFeed } from './catalog.js'
+import { candidateTools, defaultCatalogFeed, type CatalogFeed } from './catalog.js'
 import { effective, type Effective } from './effective.js'
 import { createReconciler } from './reconcile.js'
 import { loadState, type PolicyState } from './store.js'
@@ -150,9 +150,14 @@ function buildSnapshot(catalog: Catalog | null, resolver: Effective): Snapshot {
 /**
  * 从当前清单里挑出要 deny 的名字。
  *
+ * 名字有两个来源，都是「这个插件注册了什么」的证据，只是强度不同：
+ * - `plugin.tools`：结构扫描认出的 `defineTool({ name })`；
+ * - `candidateTools`：包源码里出现过的 name 字面量，且没有第二个包写过它。
+ *
  * 两个过滤都不能省：
  * - 只在当前清单里：restrict() 对未知全局工具名直接抛错，而宿主对整批校验，
  *   一个残留名字会让全部限制失败。目录里记着但已被卸载的插件工具必须挡在外面。
+ *   这一条同时也挡住了候选名的过期形态：名字不再真实注册，就不会进掩码。
  * - 锁定工具永不进：run_code 被宿主判为保留名，写进去同样是整批拒绝。
  *
  * deniedBefore 并入清单是必需的：限制一生效 definitions() 就看不见被关掉的工具，
@@ -166,10 +171,13 @@ function denyFor(
 ): string[] {
   const known = new Set<string>(visible)
   for (const name of deniedBefore) known.add(name)
+  const extras = candidateTools(catalog)
   const out = new Set<string>()
   for (const plugin of catalog.plugins) {
     if (resolver.isOpen(plugin.pkg)) continue
-    for (const name of plugin.tools) {
+    const candidates = extras.get(plugin.pkg)
+    const names = candidates === undefined ? plugin.tools : [...plugin.tools, ...candidates]
+    for (const name of names) {
       if (LOCKED_TOOLS.has(name)) continue
       if (known.has(name)) out.add(name)
     }

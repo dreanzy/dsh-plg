@@ -1,4 +1,4 @@
-import { defaultCatalogFeed, type CatalogFeed } from './catalog.js'
+import { candidateTools, defaultCatalogFeed, type CatalogFeed } from './catalog.js'
 import { effective, type EffectiveRow } from './effective.js'
 import type { Support, ToolSchemaLike, ToolsFace } from './hooks.js'
 import { defaultPackOf } from './policy.js'
@@ -53,6 +53,13 @@ export interface PluginRow {
   readonly toolVolume: number
   /** 段字符数。 */
   readonly sectionChars: number
+  /**
+   * 归属到该插件的工具总数，不按当前可见性裁剪。
+   *
+   * `tools` 是「此刻看得见几个」，停用一生效就变 0；`owned` 是「这个插件一共有几个」。
+   * 两者不同时面板显示 `可见/归属`，否则一个已经关干净的插件看起来像归属扫描又失败了。
+   */
+  readonly owned: number
   /** 段归属是否完整。不完整的部分留在孤儿里，面板标注「提示词占用未知」。 */
   readonly sectionKnown: boolean
   /** 关闭前需要二次确认：关掉它，模型基本失去工作能力，或本插件自己失效。 */
@@ -340,12 +347,16 @@ function buildPluginView(input: BuildInput): PluginView {
 
   const showOfficial = loaded.ui.showOfficialPlugins === true
   const officialTotal = plugins.filter((plugin) => plugin.pkg.startsWith(OFFICIAL_SCOPE)).length
+  // 归属的两个来源必须同口径：hooks 按它算掩码，面板按它显示「N 工具」。
+  const candidateExtras = catalog === null ? new Map<string, Set<string>>() : candidateTools(catalog)
   const rows: PluginRow[] = []
   for (const plugin of plugins) {
     // 官方插件只在面板层面过滤；求值始终用全量清单——否则拨一下「显示官方插件」
     // 就会连带改变它们的生效状态，而那个开关只该影响列表。
     if (!showOfficial && plugin.pkg.startsWith(OFFICIAL_SCOPE)) continue
-    const present = names === null ? plugin.tools : plugin.tools.filter((name) => names.has(name))
+    const candidates = candidateExtras.get(plugin.pkg)
+    const contributed = candidates === undefined ? plugin.tools : [...plugin.tools, ...candidates]
+    const present = names === null ? contributed : contributed.filter((name) => names.has(name))
     let toolVolume = plugin.toolVolume
     if (volumes !== null) {
       toolVolume = 0
@@ -358,6 +369,7 @@ function buildPluginView(input: BuildInput): PluginView {
       pkg: plugin.pkg,
       origin: plugin.pkg.startsWith(OFFICIAL_SCOPE) ? 'official' : 'profile',
       tools: present.length,
+      owned: contributed.length,
       sections: plugin.sections.length,
       toolVolume,
       sectionChars: plugin.sectionChars,

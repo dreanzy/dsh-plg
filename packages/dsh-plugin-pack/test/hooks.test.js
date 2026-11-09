@@ -174,6 +174,75 @@ test('停用插件后它的工具进 deny 掩码，别的插件不受影响', as
   assert.equal(tools.denied.has('beta'), false)
 })
 
+test('候选名也进 deny 掩码：结构认不出的注册形态照样能关掉', async () => {
+  const { cwd } = await makeWorkspace()
+  await applyCommands(null, [{ op: 'packItem', packId: 'default', name: 'plug-w', value: false }])
+  const tools = fakeTools([{ name: 'wrapped_tool', description: 'w', parameters: { type: 'object' } }])
+  const plugin = {
+    pkg: 'plug-w',
+    tools: [],
+    names: ['wrapped_tool'],
+    sections: [],
+    toolVolume: 0,
+    sectionChars: 0,
+    toolsKnown: true,
+    sectionsKnown: true,
+  }
+  const ctx = fakeCtx()
+  installHooks(ctx, { catalog: feedFor(catalogFor([plugin])) })
+
+  await ctx.emit('agent/created', { agent: agentFor(cwd, tools) })
+
+  // 停在 tools 空、只靠 names 的包上，掩码必须来自候选名。
+  assert.deepEqual(tools.calls, [['wrapped_tool']])
+})
+
+test('两个包都写过的候选名不归属任何人：不会被误关', async () => {
+  const { cwd } = await makeWorkspace()
+  await applyCommands(null, [{ op: 'packItem', packId: 'default', name: 'plug-x', value: false }])
+  const tools = fakeTools([{ name: 'dup_tool', description: 'd', parameters: { type: 'object' } }])
+  const make = (pkg) => ({
+    pkg,
+    tools: [],
+    names: ['dup_tool'],
+    sections: [],
+    toolVolume: 0,
+    sectionChars: 0,
+    toolsKnown: true,
+    sectionsKnown: true,
+  })
+  const ctx = fakeCtx()
+  installHooks(ctx, { catalog: feedFor(catalogFor([make('plug-x'), make('plug-y')])) })
+
+  await ctx.emit('agent/created', { agent: agentFor(cwd, tools) })
+
+  assert.deepEqual(tools.calls, [])
+  assert.equal(tools.denied.size, 0)
+})
+
+test('候选名不在当前清单里就不进掩码（旧缓存不会误关已卸载的工具）', async () => {
+  const { cwd } = await makeWorkspace()
+  await applyCommands(null, [{ op: 'packItem', packId: 'default', name: 'plug-z', value: false }])
+  // 候选里只有一个已经不存在的名字：可见清单为空，掩码也必须为空。
+  const tools = fakeTools([])
+  const plugin = {
+    pkg: 'plug-z',
+    tools: [],
+    names: ['gone_tool'],
+    sections: [],
+    toolVolume: 0,
+    sectionChars: 0,
+    toolsKnown: true,
+    sectionsKnown: true,
+  }
+  const ctx = fakeCtx()
+  installHooks(ctx, { catalog: feedFor(catalogFor([plugin])) })
+
+  await ctx.emit('agent/created', { agent: agentFor(cwd, tools) })
+
+  assert.deepEqual(tools.calls, [])
+})
+
 test('绑定 pack 的停用只影响该工作区', async () => {
   const { cwd, home } = await makeWorkspace()
   const other = await mkdtemp(join(tmpdir(), 'dpp-ws2-'))

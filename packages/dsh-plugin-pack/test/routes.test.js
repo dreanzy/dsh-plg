@@ -227,6 +227,8 @@ test('全局面板带 sessionId 时用该会话的 scope 读工具清单', async
   // plug-a 声明 alpha：用的是 sessionId 那个 agent 的 scope，不是 list()[0]。
   assert.equal(byName.get('plug-a').tools, 1)
   assert.equal(byName.get('@deepseek-ai/dsh-thing').tools, 0)
+  // 归属数不按可见性裁剪：看不见不等于没归属。
+  assert.equal(byName.get('@deepseek-ai/dsh-thing').owned, 1)
 })
 
 test('范围外包名保留不删，且不出现在插件行里', async () => {

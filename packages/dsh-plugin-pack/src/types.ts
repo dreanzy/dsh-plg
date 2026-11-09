@@ -118,6 +118,14 @@ export interface PluginContribution {
   readonly pkg: string
   /** 该插件注册的工具名。 */
   readonly tools: readonly string[]
+  /**
+   * 包源码里出现过的所有 `name: '…'` 字面量（去重、排序）。
+   *
+   * 这**不是**工具名清单：`ctx.tools.register(vTool({ name }))` 与工厂函数返回对象
+   * 里的 name，结构解析都够不着。它只回答「这个包写过这些名字」，是不是工具由运行期
+   * 清单裁（见 `candidateTools` 与 hooks 的 `denyFor`）。旧缓存没有这个字段。
+   */
+  readonly names?: readonly string[]
   /** 该插件注入的提示词段名。 */
   readonly sections: readonly string[]
   /** 工具 schema 的估算 token（按 schema 投影长度折算）。 */

@@ -56,8 +56,13 @@ const SCAN_BUDGET_MS = 5_000
 /** 单文件上限。超过就不读：那是产物或打包文件，正则扫进去只会误抓与拖慢。 */
 const MAX_FILE_BYTES = 8 * 1024 * 1024
 
-/** 单包最多读多少个 js，防止某个包把源码与产物堆在一起时吃满预算。 */
-const MAX_FILES_PER_PACKAGE = 200
+/**
+ * 单包最多读多少个 js，防止某个包把源码与产物堆在一起时吃满预算。
+ *
+ * 512 而不是 200：带 tui/runtime 子树的实体插件（dsh-blender-plugin 已 219 个）会撞
+ * 200，整包被判残缺，工具归属拿不到，停用对它永久无效。
+ */
+const MAX_FILES_PER_PACKAGE = 512
 
 /** lib 目录递归深度上限。 */
 const MAX_LIB_DEPTH = 6
@@ -76,6 +81,18 @@ const MAX_SECTION_SPAN = 64 * 1024
  * 甚至不相干的 `name:` 字段一起抓进来。
  */
 const TOOL_PATTERN = /defineTool\(\{[\s\S]{0,240}?name:\s*['"]([A-Za-z_][A-Za-z0-9_]*)['"]/g
+
+/**
+ * 包内候选名字：任何 `name: '字面量'`，不再要求它包在 `defineTool({` 里。
+ *
+ * 有的插件用 `ctx.tools.register(vTool({ name }))`，有的把 name 放进工厂函数的返回
+ * 对象，结构解析都够不着。这里只收集「这个包写过这些名字」，归属交给运行期清单裁：
+ * 名字必须真的注册在宿主里，且没有第二个包也写过它（见 `candidateTools`）。
+ */
+const NAME_PATTERN = /(?<![\w$])name:\s*['"]([A-Za-z_][A-Za-z0-9_]*)['"]/g
+
+/** 单包候选名上限：防止把字典或产物塞进 lib 的包把缓存撑大。 */
+const MAX_NAMES_PER_PACKAGE = 512
 
 /** 段的注册点。`.section(` 一网打尽 `systemPrompt.section(` 与解构后的 `section(`。 */
 const SECTION_PATTERN = /\.section\s*\(\s*\{/g
@@ -154,9 +171,12 @@ function parsePlugin(value: unknown): PluginContribution | null {
   if (record === null) return null
   const pkg = record['pkg']
   if (typeof pkg !== 'string' || pkg === '') return null
+  // 候选名与手工表分开：`names` 缺席说明这是旧版本写的缓存，不是「这个包没有名字」。
+  const names = Array.isArray(record['names']) ? toStringArray(record['names']) : undefined
   return {
     pkg,
     tools: toStringArray(record['tools']),
+    ...(names === undefined ? {} : { names }),
     sections: toStringArray(record['sections']),
     toolVolume: toCount(record['toolVolume']),
     sectionChars: toCount(record['sectionChars']),
@@ -169,17 +189,28 @@ function parsePlugin(value: unknown): PluginContribution | null {
 /** 缓存是 `Catalog` 加一个手工开关；手写表优先级最高。 */
 interface CachedCatalog extends Catalog {
   readonly manual: boolean
+  /**
+   * 缓存里每一项都带候选名。
+   *
+   * 旧版本写的缓存没有 `names`，而指纹只看包的字节，不看扫描器版本：不显式判一次，
+   * 升级后会一直命中旧缓存，候选名永远是空的。
+   */
+  readonly shaped: boolean
 }
 
 function parseCatalog(value: unknown): CachedCatalog | null {
   const record = asRecord(value)
   if (record === null) return null
   const plugins: PluginContribution[] = []
+  let shaped = true
   const rawPlugins = record['plugins']
   if (Array.isArray(rawPlugins)) {
     for (const item of rawPlugins) {
       const plugin = parsePlugin(item)
-      if (plugin !== null) plugins.push(plugin)
+      if (plugin !== null) {
+        plugins.push(plugin)
+        if (plugin.names === undefined) shaped = false
+      }
     }
   }
   return {
@@ -190,6 +221,7 @@ function parseCatalog(value: unknown): CachedCatalog | null {
     // 缺字段按「完整」处理：手写缓存不必逐项写全，缺省的语义是「没发现问题」。
     complete: record['complete'] !== false,
     manual: record['manual'] === true,
+    shaped,
   }
 }
 
@@ -781,6 +813,7 @@ function sectionName(window: string, tokens: ReadonlySet<string>): { name: strin
 
 interface ScanResult {
   readonly tools: readonly string[]
+  readonly names: readonly string[]
   readonly sections: readonly string[]
   readonly sectionChars: number
   readonly toolsKnown: boolean
@@ -789,6 +822,7 @@ interface ScanResult {
 
 async function scanPackage(candidate: PackageCandidate, deadline: number): Promise<ScanResult> {
   const tools = new Set<string>()
+  const names = new Set<string>()
   const sections = new Map<string, number>()
   const tokens = packageTokens(candidate.name)
   const seen = new Set<string>()
@@ -823,6 +857,13 @@ async function scanPackage(candidate: PackageCandidate, deadline: number): Promi
       if (name !== undefined) tools.add(name)
     }
 
+    // 候选名不分结构，整份文本扫一遍：它是「这个包写过这些名字」，是不是工具由运行期裁。
+    for (const match of text.matchAll(NAME_PATTERN)) {
+      if (names.size >= MAX_NAMES_PER_PACKAGE) break
+      const name = match[1]
+      if (name !== undefined) names.add(name)
+    }
+
     for (const match of text.matchAll(SECTION_PATTERN)) {
       const window = text.slice(match.index, match.index + NAME_WINDOW)
       const parsed = sectionName(window, tokens)
@@ -839,6 +880,7 @@ async function scanPackage(candidate: PackageCandidate, deadline: number): Promi
 
   return {
     tools: [...tools].sort(),
+    names: [...names].sort(),
     sections: [...sections.keys()].sort(),
     sectionChars,
     // 工具名是字面量，文件全读到就算完整。
@@ -893,7 +935,14 @@ async function loadCatalog(options?: CatalogLoadOptions): Promise<Catalog> {
 
   // 残缺缓存（complete: false）不短路：它有东西可用，但结果不可信，必须重扫。
   // 否则一次超时或 IO 失败会把「少识别几个包」固化成永久的缓存。
-  if (options?.force !== true && cached !== null && cached.complete !== false && cached.key === key) {
+  // `shaped` 单独判：指纹只看包的字节，不看扫描器版本，旧格式缓存必须重扫一次。
+  if (
+    options?.force !== true &&
+    cached !== null &&
+    cached.complete !== false &&
+    cached.shaped &&
+    cached.key === key
+  ) {
     return toCatalog(cached)
   }
 
@@ -915,6 +964,7 @@ async function loadCatalog(options?: CatalogLoadOptions): Promise<Catalog> {
     plugins.push({
       pkg: candidate.name,
       tools: scanned.tools,
+      names: scanned.names,
       sections: scanned.sections,
       // 扫描拿不到 schema 投影，工具体量留给运行期清单补；这里只保留字段。
       toolVolume: 0,
@@ -944,6 +994,65 @@ async function loadCatalog(options?: CatalogLoadOptions): Promise<Catalog> {
     warn('dsh-plugin-pack: 插件目录缓存没写成，下次会重扫：' + String(error))
   }
   return catalog
+}
+
+/* ------------------------------------------------------------ 候选名归属 */
+
+/**
+ * 候选名 → 包名，只保留**唯一**且**未被任何包认领**的那些。
+ *
+ * 三条同时成立才算：
+ * - 名字出现在这个包的源码里（`names`）；
+ * - 没有第二个包也写过它：注释、文档、示例都会让一个名字出现在多处，此时放弃；
+ * - 没有包在静态扫描里已经认领它：`tools` 是结构化证据，比候选硬。
+ *
+ * 失手的方向只有「漏」：认不出的名字留在孤儿里，任何开关都管不到——这与 ADR 0001
+ * 「宁可少省，也不误删别人的段」是同一条取舍。
+ */
+export function candidateOwners(catalog: Catalog): Map<string, string> {
+  const claimed = new Set<string>()
+  for (const plugin of catalog.plugins) for (const name of plugin.tools) claimed.add(name)
+
+  const owners = new Map<string, string>()
+  const ambiguous = new Set<string>()
+  for (const plugin of catalog.plugins) {
+    for (const name of plugin.names ?? []) {
+      if (claimed.has(name) || ambiguous.has(name)) continue
+      const previous = owners.get(name)
+      if (previous === undefined) {
+        owners.set(name, plugin.pkg)
+      } else if (previous !== plugin.pkg) {
+        // 两个包都写过这个名字：归属不确定，宁可不要。
+        owners.delete(name)
+        ambiguous.add(name)
+      }
+    }
+  }
+  return owners
+}
+
+const candidateCache = new WeakMap<Catalog, Map<string, Set<string>>>()
+
+/**
+ * 每个包由候选名补上的工具名。
+ *
+ * 缓存命中时 `Catalog` 是同一个对象，按身份缓存即可；hooks 的工具掩码与面板的
+ * 工具数读的是同一份，两边不会各算一套。
+ */
+export function candidateTools(catalog: Catalog): Map<string, Set<string>> {
+  const hit = candidateCache.get(catalog)
+  if (hit !== undefined) return hit
+  const out = new Map<string, Set<string>>()
+  for (const [name, pkg] of candidateOwners(catalog)) {
+    let set = out.get(pkg)
+    if (set === undefined) {
+      set = new Set<string>()
+      out.set(pkg, set)
+    }
+    set.add(name)
+  }
+  candidateCache.set(catalog, out)
+  return out
 }
 
 /* ------------------------------------------------------------------ 读写面 */

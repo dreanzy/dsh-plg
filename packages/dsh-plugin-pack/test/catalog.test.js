@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { mkdir, mkdtemp, readFile, stat, utimes, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { tmpdir } from 'node:os'
-import { catalogPath, defaultCatalogFeed, fingerprint } from '../lib/catalog.js'
+import { candidateOwners, candidateTools, catalogPath, defaultCatalogFeed, fingerprint } from '../lib/catalog.js'
 
 /**
  * 假 profile：`package.json` 带 `dsh.profile.bundles`（识别 profile 的唯一判据），
@@ -338,8 +338,8 @@ test('complete: false 的缓存不短路扫描：残缺不会被固化', async (
 test('单包文件数超过上限时该包不完整：落盘 complete=false', async () => {
   const home = await freshHome('cap-files')
   const files = {}
-  // MAX_FILES_PER_PACKAGE 是 200：201 个 js 必然撞上限。
-  for (let index = 0; index < 201; index += 1) {
+  // MAX_FILES_PER_PACKAGE 是 512：513 个 js 必然撞上限。
+  for (let index = 0; index < 513; index += 1) {
     files['lib/f' + String(index).padStart(3, '0') + '.js'] = tool('cap_tool_' + String(index))
   }
   await makeProfile(join(home, 'profile'), { '@fake/many': { files } })
@@ -425,4 +425,78 @@ test('归属缓存在 $DSH_HOME/packs/plugin/ 下，与三份策略文件同目�
   process.env['DSH_HOME'] = home
   assert.equal(catalogPath(), join(home, 'packs', 'plugin', 'catalog.json'))
 })
+
+test('结构认不出的注册形态：名字进 names，不进 tools', async () => {
+  const home = await freshHome('names-shape')
+  await makeProfile(join(home, 'profile'), {
+    '@fake/wrapped': {
+      files: {
+        'lib/index.js':
+          'export function register(ctx) {\n' +
+          "  ctx.tools.register(vTool({ name: 'wrapped_tool', description: '' }))\n" +
+          "  ctx.tools.register({ name: 'plain_tool' })\n" +
+          '}\n',
+      },
+    },
+  })
+  process.env['DSH_PROFILE_DIR'] = join(home, 'profile')
+
+  const catalog = await defaultCatalogFeed.load({ force: true })
+  const plugin = catalog.plugins.find((item) => item.pkg === '@fake/wrapped')
+  // defineTool 之外的两条路径结构解析都够不着，这正是候选名的用途。
+  assert.deepEqual(plugin.tools, [])
+  assert.deepEqual(plugin.names, ['plain_tool', 'wrapped_tool'])
+
+  const onDisk = JSON.parse(await readFile(catalogPath(), 'utf8'))
+  assert.deepEqual(onDisk.plugins.find((item) => item.pkg === '@fake/wrapped').names, [
+    'plain_tool',
+    'wrapped_tool',
+  ])
+})
+
+test('候选归属：唯一才认领，两包同名与已被 tools 认领的都放弃', () => {
+  const catalog = {
+    key: 'k',
+    plugins: [
+      { pkg: 'a', tools: ['shared'], names: ['only_a', 'shared', 'both'] },
+      { pkg: 'b', tools: [], names: ['both', 'only_b'] },
+    ],
+    orphanTools: [],
+    orphanSections: [],
+    complete: true,
+  }
+  const owners = candidateOwners(catalog)
+  assert.equal(owners.get('only_a'), 'a')
+  assert.equal(owners.get('only_b'), 'b')
+  // 两个包都写过：归属不确定，宁可不要。
+  assert.equal(owners.has('both'), false)
+  // 已有结构化证据的名字不进候选，避免两套口径打架。
+  assert.equal(owners.has('shared'), false)
+
+  const byPkg = candidateTools(catalog)
+  assert.deepEqual([...byPkg.get('a')], ['only_a'])
+  assert.deepEqual([...byPkg.get('b')], ['only_b'])
+  // 同一份目录按身份缓存。
+  assert.equal(candidateTools(catalog), byPkg)
+})
+
+test('旧格式缓存（没有 names）不短路扫描：升级后自动补齐', async () => {
+  const home = await freshHome('names-shape-cache')
+  await makeProfile(join(home, 'profile'), {
+    '@fake/simple': { files: { 'lib/index.js': tool('simple_tool') } },
+  })
+  process.env['DSH_PROFILE_DIR'] = join(home, 'profile')
+
+  const first = await defaultCatalogFeed.load({ force: true })
+  assert.deepEqual(first.plugins[0].names, ['simple_tool'])
+
+  // 模拟旧版本写下的缓存：指纹没变，但结构里没有候选名。
+  const raw = JSON.parse(await readFile(catalogPath(), 'utf8'))
+  for (const item of raw.plugins) delete item.names
+  await writeFile(catalogPath(), JSON.stringify(raw, null, 2) + '\n')
+
+  const second = await defaultCatalogFeed.load()
+  assert.deepEqual(second.plugins[0].names, ['simple_tool'])
+})
+
 

@@ -1035,11 +1035,18 @@ window.__ModuleLoader__.load({
       return String(n)
     }
 
-    /** 行的第二行：工具数、段数与估算 token。字段缺失的按 0 算，不把 undefined 画到界面上。 */
+    /**
+     * 行的第二行：工具数、段数与估算 token。字段缺失的按 0 算，不把 undefined 画到界面上。
+     *
+     * 工具数写「可见/归属」：停用生效后被隐藏的工具不再出现在清单里，只报可见数会让一个
+     * 已经关干净的插件看起来像归属没扫到。两个数相同时只写一个。
+     */
     function metaOf(row) {
       const tools = row && typeof row.tools === 'number' ? row.tools : 0
+      const owned = row && typeof row.owned === 'number' && row.owned > tools ? row.owned : tools
       const sections = row && typeof row.sections === 'number' ? row.sections : 0
-      return tools + ' 工具 · ' + sections + ' 段 · ≈' + formatTokens(weightOf(row)) + ' token'
+      const count = owned === tools ? String(tools) : tools + '/' + owned
+      return count + ' 工具 · ' + sections + ' 段 · ≈' + formatTokens(weightOf(row)) + ' token'
     }
 
     /** `ui` 段兼容读：新服务端给 `ui`，缺字段时按内置缺省。 */
@@ -1829,6 +1836,28 @@ window.__ModuleLoader__.load({
       }, [plugins, groups])
 
       /**
+       * 组内不跟随组决定的成员数。
+       *
+       * 组行画的是组自己的落点，成员行画的是链的答案；default 层可能留着与组相反的
+       * 项级记录，于是组显示「关」、成员却亮在「开」。链里唯一能压过组级的就是项级，
+       * 所以「组有显式记录且成员答案与它不同」就是项级覆盖。只提示，不改写任何记录。
+       */
+      const groupOverrides = useMemo(() => {
+        const counts = {}
+        for (const row of plugins) {
+          const gid = groupOfRow(groups, row)
+          if (gid === null) continue
+          const byGroup = groupValue(pack, gid)
+          const groupEffective = byGroup !== null ? byGroup : groupValue(defaultPack, gid)
+          if (groupEffective === null) continue
+          if (rowOpen(pack, groups, row, row.open) !== groupEffective) {
+            counts[gid] = (counts[gid] || 0) + 1
+          }
+        }
+        return counts
+      }, [plugins, groups, pack, defaultPack])
+
+      /**
        * 这张 pack 生效时的代价：绑到它的工作区里，有 N 个插件不可见，省多少 token。
        *
        * 口径是**生效值**（含 default 兜底），不是「这张 pack 单独关了几个」：
@@ -2007,6 +2036,19 @@ window.__ModuleLoader__.load({
                   },
                   h('span', { style: { ...S.groupName, flex: '1 1 auto' } }, group.name),
                   h('span', { style: S.badge }, (groupCounts[group.id] || 0) + ' 项'),
+                  (groupOverrides[group.id] || 0) > 0
+                    ? h(
+                        'span',
+                        {
+                          style: S.badgeWarn,
+                          title:
+                            '组内 ' +
+                            groupOverrides[group.id] +
+                            ' 项有与组相反的项级开关，组开关对它们无效。到下方把那些项改成「跟随」，组开关才会生效。',
+                        },
+                        '项级覆盖 ' + groupOverrides[group.id],
+                      )
+                    : null,
                   value === null && !isDefault
                     ? h(
                         'span',
