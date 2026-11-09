@@ -12,12 +12,17 @@ import {
 export const name = 'dsh-skill-pack'
 
 /**
- * 硬依赖只有 `skills`：清单读取与遮蔽注册都取不到替代。
+ * 硬依赖是 `skills` 与 `agents`。
  *
- * 刻意不注入 `tools`（不管 MCP）、不注入 `agents`（用自己维护的会话表就够了）、
- * 不注入 `connection`（无连接服务的 profile 也必须能装配；路由阶段再可选嵌套注入）。
+ * - `skills`：清单读取与遮蔽注册都取不到替代。
+ * - `agents`：`agent/created` 只覆盖新会话；插件重载后**已经存在**的会话不会再发
+ *   这个事件，只能靠 `bootstrap()` 主动枚举 live Agent 补落地。未声明时 `ctx.get('agents')`
+ *   返回 `undefined`，枚举静默变成空数组——表现就是「重载插件后遮蔽再也不生效」。
+ *
+ * 刻意不注入 `tools`（不管 MCP）、不注入 `connection`（无连接服务的 profile 也必须能
+ * 装配；路由阶段再可选嵌套注入）。
  */
-export const inject = ['skills'] as const
+export const inject = ['skills', 'agents'] as const
 
 /** 路由路径。宿主按完整 pathname 匹配，`/api` 前缀不能省。 */
 const ROUTES = {

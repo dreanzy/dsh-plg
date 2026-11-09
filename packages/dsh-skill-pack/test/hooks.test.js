@@ -146,8 +146,8 @@ test('default pack 项级关掉的 skill 会被注册遮蔽副本（原「全局
   assert.equal(skills.registered.length, 1)
   assert.equal(skills.registered[0].name, 'alpha')
   assert.equal(skills.registered[0].invocation.modelInvocable, false)
-  assert.equal(skills.registered[0].invocation.userInvocable, true)
-  assert.equal(skills.registered[0].content, 'body of alpha')
+  assert.equal(skills.registered[0].invocation.userInvocable, false)
+  assert.equal(skills.registered[0].content, '')
 })
 
 test('绑定 pack 的组级关掉会遮蔽组内成员（原「工作区组级」用例）', async () => {
@@ -321,6 +321,67 @@ test('同名项在别的插件先注册时报告关不掉', async () => {
   await ctx.emit('agent/created', { agent: agentFor(cwd, skills) })
 
   assert.deepEqual(hooks.stuck(), ['alpha'])
+})
+
+test('遮蔽副本不读正文：skills.get 一次都不调', async () => {
+  const { cwd } = await makeWorkspace({
+    packs: { default: { name: 'default', items: { alpha: false }, groups: {} } },
+  })
+  const skills = fakeSkills(rows)
+  let reads = 0
+  skills.get = async () => {
+    reads += 1
+    throw new Error('遮蔽不该读正文')
+  }
+  const ctx = fakeCtx()
+  installHooks(ctx)
+
+  await ctx.emit('agent/created', { agent: agentFor(cwd, skills) })
+
+  assert.equal(reads, 0)
+  assert.equal(skills.registered.length, 1)
+  assert.equal(skills.registered[0].content, '')
+})
+
+test('只落了 modelInvocable 也算关不掉', async () => {
+  const { cwd } = await makeWorkspace({
+    packs: { default: { name: 'default', items: { alpha: false }, groups: {} } },
+  })
+  const skills = fakeSkills(rows)
+  // 复验时 alpha 只丢了 modelInvocable：模拟同层把 userInvocable 抢了回去。
+  skills.snapshot = async () => ({
+    skills: [{ ...rows[0], invocation: { modelInvocable: false, userInvocable: true } }, rows[1]],
+    complete: true,
+  })
+  const ctx = fakeCtx()
+  const hooks = installHooks(ctx)
+
+  await ctx.emit('agent/created', { agent: agentFor(cwd, skills) })
+
+  assert.deepEqual(hooks.stuck(), ['alpha'])
+})
+
+test('官方 skill 与自定义 skill 走同一条遮蔽规则', async () => {
+  const { cwd } = await makeWorkspace({
+    packs: { default: { name: 'default', items: { 'cordis-x': false }, groups: {} } },
+  })
+  const official = {
+    name: 'cordis-x',
+    description: 'c',
+    provider: 'filesystem',
+    source: 'custom',
+    path: '/p/node_modules/@deepseek-ai/pkg/skills/cordis-x/SKILL.md',
+    invocation: { modelInvocable: true, userInvocable: true },
+  }
+  const skills = fakeSkills([...rows, official])
+  const ctx = fakeCtx()
+  installHooks(ctx)
+
+  await ctx.emit('agent/created', { agent: agentFor(cwd, skills) })
+
+  assert.equal(skills.registered.length, 1)
+  assert.equal(skills.registered[0].name, 'cordis-x')
+  assert.deepEqual(skills.registered[0].invocation, { modelInvocable: false, userInvocable: false })
 })
 
 test('agent/disposed 释放遮蔽副本并摘掉状态', async () => {

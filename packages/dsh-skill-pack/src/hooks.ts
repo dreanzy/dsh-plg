@@ -1,11 +1,38 @@
+import { appendFileSync, mkdirSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
 import { type Inventory, type SkillSummaryLike, type SkillsFace } from './inventory.js'
 import { createReconciler, type Dispose } from './reconcile.js'
 import { createScopeSnapshot, fingerprintOf, type ScopeSnapshot } from './snapshot.js'
 import { loadState } from './store.js'
 
+/**
+ * 落地失败的落盘诊断。
+ *
+ * 宿主日志的位置随 profile 走，用户未必拿得到；面板又只能显示「关不掉」这一种结论。
+ * 「落地在哪个分支提前返回」是这个包最难复现的现场，所以把原因直接追加到
+ * `$DSH_HOME/logs/skill-pack-diagnose.log`：复现一次就有证据，不用再靠猜。
+ *
+ * 只在失败分支写，正常落地一行不写。写盘失败只吞掉——诊断不能影响主流程。
+ */
+function diagnose(message: string): void {
+  try {
+    const home =
+      typeof process.env['DSH_HOME'] === 'string' && process.env['DSH_HOME'] !== ''
+        ? process.env['DSH_HOME']
+        : join(homedir(), '.dsh')
+    const dir = join(home, 'logs')
+    mkdirSync(dir, { recursive: true })
+    appendFileSync(join(dir, 'skill-pack-diagnose.log'), `${new Date().toISOString()} ${message}\n`)
+  } catch {
+    // 写不进去就算了。
+  }
+}
+
 /** 宿主 ctx 的最小面：订阅、纳管、取服务、记日志。 */
 export interface PluginContext {
-  on(event: string, listener: (payload: unknown) => unknown): () => void
+  /** waterfall 事件的监听器会收到下游 `next`；普通事件只有 payload。 */
+  on(event: string, listener: (payload: unknown, next?: () => Promise<unknown>) => unknown): () => void
   effect(callback: () => unknown): unknown
   get(name: string): unknown
   logger: { info(message: string): void; warn(message: string): void }
@@ -41,7 +68,45 @@ function asAgentLike(value: unknown): AgentLike | null {
   }
 }
 
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null
+}
+
+/**
+ * 读 `workingDirectory` 投影的**原始值**。
+ *
+ * 不走 `workingDirectory.get()`：那个方法在投影尚未写入时回落到进程的
+ * `defaultDirectory`，会把「还没 cd 过的新会话」解析成宿主安装目录。宿主的
+ * `skill-catalog` 用的正是「投影 → header.cwd → defaultDirectory」这个顺序。
+ */
+export function projectedCwd(session: unknown): string | null {
+  const record = asRecord(session)
+  const projections = asRecord(record?.['projections'])
+  const faceOf = projections?.['faceOf']
+  if (typeof faceOf !== 'function') return null
+  try {
+    const face = asRecord((faceOf as (key: string) => unknown).call(projections, 'workingDirectory'))
+    const getSnapshot = face?.['getSnapshot']
+    const value = typeof getSnapshot === 'function' ? getSnapshot.call(face) : undefined
+    return typeof value === 'string' && value !== '' ? value : null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * 工作目录的权威值在投影里。
+ *
+ * `cd` 与切换工作区只改 `workingDirectory` 投影，`header.cwd` 是会话创建时的快照。
+ * 读 header 会让「切到另一个工作区后仍按上一个目录求值」——清单、绑定与开关全部停在
+ * 旧目录。投影还没写过（新会话）时退回 header.cwd。
+ */
 function cwdOf(agent: AgentLike): string | null {
+  const session = asRecord(agent.raw)?.['session']
+  const projected = projectedCwd(session)
+  if (projected !== null) return projected
   const cwd = agent.session.header?.cwd
   return typeof cwd === 'string' && cwd !== '' ? cwd : null
 }
@@ -66,53 +131,30 @@ function scopedSkills(agent: AgentLike): SkillsFace | null {
 
 interface AgentState {
   readonly agent: AgentLike
+  /** 上一次落地时用的工作目录；变了就要重新求值。 */
+  cwd: string | null
   /** 隐藏集的规范串，用来跳过没有变化的重新落地。 */
   key: string
   /** 注册遮蔽副本后复验，模型侧仍然看得见的名字。 */
   stuck: readonly string[]
 }
 
-/** 一份遮蔽的「读」阶段产物：注册时只差调用 `skills.register()`。 */
-interface ShadowDraft {
-  readonly row: SkillSummaryLike
-  readonly content: string
-}
-
-async function prepareShadows(
-  skills: SkillsFace,
-  rows: readonly SkillSummaryLike[],
-  hidden: readonly string[],
-  cwd: string,
-  scope: unknown,
-): Promise<ShadowDraft[]> {
+/**
+ * 把求值得到的名字映射回清单行。
+ *
+ * **不读正文。** 遮蔽副本把 `modelInvocable` 与 `userInvocable` 都置为 `false`，
+ * 模型目录、`skill` 工具、`/name` 注入三条路径都在取正文之前按标记拒绝，正文
+ * 没有消费者。`skills.get()` 又会命中 revision 缓存——跳过它，`agent/created`
+ * 就少了整段全量枚举。
+ */
+function shadowRows(rows: readonly SkillSummaryLike[], hidden: readonly string[]): SkillSummaryLike[] {
   const byName = new Map(rows.map((row) => [row.name, row]))
-
-  /**
-   * **先取全部定义，再统一注册。**
-   *
-   * `skills.register()` 会无条件让注册表的 revision +1 并清掉收集缓存，而
-   * `skills.get()` 的缓存正按 revision 做键。所以「取一个 → 注册一个」会让
-   * 每次 `get()` 都必然缓存未命中、触发一次完整枚举：一百来个隐藏项实测要
-   * 三秒以上，而这段代码跑在 `agent/created` 里、被宿主串行 await——用户看到的
-   * 就是「点新会话要等很久」。
-   *
-   * 分段之后只有第一次 `get()` 可能全量，其余命中缓存；注册本身是微秒级。
-   */
-  const prepared: ShadowDraft[] = []
+  const out: SkillSummaryLike[] = []
   for (const name of hidden) {
     const row = byName.get(name)
-    if (row === undefined) continue
-    let content = ''
-    try {
-      const definition = await skills.get(name, { cwd, scope })
-      if (definition !== undefined && typeof definition.content === 'string') content = definition.content
-    } catch {
-      // 读不到正文只影响手动调用的内容，不影响遮蔽本身。
-    }
-    prepared.push({ row, content })
+    if (row !== undefined) out.push(row)
   }
-
-  return prepared
+  return out
 }
 
 /**
@@ -124,19 +166,20 @@ async function prepareShadows(
 function registerShadows(
   ctx: PluginContext,
   skills: SkillsFace,
-  drafts: readonly ShadowDraft[],
+  rows: readonly SkillSummaryLike[],
 ): Dispose | null {
   const disposers: Dispose[] = []
-  for (const { row, content } of drafts) {
+  for (const row of rows) {
     try {
       disposers.push(
         skills.register({
           name: row.name,
           description: row.description,
-          content,
+          // 正文没有消费者：两条调用路径都在取正文之前按标记拒绝。
+          content: '',
           source: row.source,
           ...(row.path === undefined ? {} : { path: row.path }),
-          invocation: { modelInvocable: false, userInvocable: true },
+          invocation: { modelInvocable: false, userInvocable: false },
         }),
       )
     } catch (error) {
@@ -156,8 +199,8 @@ function registerShadows(
 }
 
 /**
- * 复验：判据是 `invocation.modelInvocable !== false`，不是「名字还在不在」。
- * 遮蔽只改 invocation 标记，名字永远在清单里。
+ * 复验：判据是「两条标记都落了」，不是「名字还在不在」。
+ * 遮蔽只改 invocation 标记，名字永远在清单里；任一条没落都算关不掉。
  */
 async function verifyShadows(
   ctx: PluginContext,
@@ -172,7 +215,7 @@ async function verifyShadows(
     if (after.complete) {
       const visible = new Set<string>()
       for (const row of after.skills) {
-        if (row.invocation?.modelInvocable !== false) visible.add(row.name)
+        if (row.invocation?.modelInvocable !== false || row.invocation?.userInvocable !== false) visible.add(row.name)
       }
       stuck = hidden.filter((name) => visible.has(name))
       if (stuck.length > 0) {
@@ -212,6 +255,9 @@ export function installHooks(
   /** 与落地共用的那份求值缓存。路由要用同一份，否则面板与模型看到的会分叉。 */
   snapshot: ScopeSnapshot
 } {
+  // 每次 `apply`（含禁用后重新启用）都会走到这里：这是判断「插件这次到底装上没有」
+  // 的唯一无条件证据。
+  diagnose('install: hooks 已挂载')
   const states = new Map<string, AgentState>()
   /**
    * 每个 agent 一份装配记账：先释放上一轮、串行、失败退回无资源，三件事都在这里。
@@ -292,11 +338,18 @@ export function installHooks(
 
   const applyOne = async (state: AgentState): Promise<void> => {
     const cwd = cwdOf(state.agent)
-    if (cwd === null) return
+    if (cwd === null) {
+      diagnose(`applyOne: 解析不到 cwd（agent=${state.agent.id}）`)
+      return
+    }
+    // 目录变了，旧目录那一格缓存就没有消费者了；顺手打掉，避免按会话数单调增长。
+    if (state.cwd !== null && state.cwd !== cwd) snapshot.invalidate(state.cwd)
+    state.cwd = cwd
 
     const skills = scopedSkills(state.agent)
     if (skills === null) {
       ctx.logger.warn(`dsh-skill-pack: 取不到 agent 作用域的 skills 服务（agent=${state.agent.id}）`)
+      diagnose(`applyOne: 取不到 agent 作用域的 skills 服务（agent=${state.agent.id}）`)
       return
     }
 
@@ -312,6 +365,7 @@ export function installHooks(
     for (const warning of view.warnings) ctx.logger.warn(`dsh-skill-pack: ${warning}`)
     if (!view.complete) {
       ctx.logger.warn(`dsh-skill-pack: skill 清单不完整，本轮不改变遮蔽（agent=${state.agent.id}）`)
+      diagnose(`applyOne: 清单不完整，本轮不动（agent=${state.agent.id}, cwd=${cwd}, warnings=${view.warnings.join(' | ')}）`)
       return
     }
 
@@ -320,18 +374,19 @@ export function installHooks(
     const key = hidden.join(',')
     if (key === state.key) return
 
-    // 读正文不碰注册表，可以在这里并发；注册必须排进 reconcile 的队列，
+    // 只做名字 → 行的映射，不碰注册表；注册必须排进 reconcile 的队列，
     // 这样「先释放上一轮、再施加这一轮」才成立。
-    const drafts = await prepareShadows(skills, view.rows, hidden, cwd, state.agent.raw)
-    const landed = await shadows.apply(state.agent.id, () => registerShadows(ctx, skills, drafts))
+    const rows = shadowRows(view.rows, hidden)
+    const landed = await shadows.apply(state.agent.id, () => registerShadows(ctx, skills, rows))
     if (!landed) {
       // 上一轮已被释放、这一轮没有资源：不推进 key，下一个事件会重试。
       state.stuck = []
+      diagnose(`applyOne: 没有可注册的遮蔽副本（agent=${state.agent.id}, hidden=${hidden.join(',')}）`)
       return
     }
     state.key = key
     state.stuck =
-      drafts.length === 0 ? [] : await verifyShadows(ctx, skills, hidden, cwd, state.agent.raw)
+      rows.length === 0 ? [] : await verifyShadows(ctx, skills, hidden, cwd, state.agent.raw)
   }
 
   const onCreated = async (payload: unknown): Promise<void> => {
@@ -349,7 +404,7 @@ export function installHooks(
       // 宿主可能对同一个 agent id 再发一次 created（会话恢复、重连）。
       // 覆盖前必须释放旧遮蔽，否则注册表里留下没人能释放的第二份副本。
       shadows.release(agent.id)
-      const state: AgentState = { agent, key: '', stuck: [] }
+      const state: AgentState = { agent, cwd: null, key: '', stuck: [] }
       states.set(agent.id, state)
       if (typeof agent.raw === 'object' && agent.raw !== null) agentByScope.set(agent.raw, agent)
       await guarded(async () => {
@@ -372,6 +427,33 @@ export function installHooks(
     // 同目录还有活会话时会被一并打掉，代价是它们下一轮重读一次。
     const cwd = cwdOf(agent)
     if (cwd !== null) snapshot.invalidate(cwd)
+  }
+
+  /**
+   * 切换工作区不重建 Agent，也不发 `skills/change`：清单与绑定会一起停在旧目录。
+   * 每步比一次工作目录，变了就重新落地（一次切换只跑一次）。
+   *
+   * `agent/pre-step` 是 waterfall：必须 `await next()` 并把下游结论原样返回，
+   * 否则整步连同目录、工具、提示词装配一起被吞掉。
+   */
+  const onPreStep = async (payload: unknown, next?: () => Promise<unknown>): Promise<unknown> => {
+    if (typeof next !== 'function') return undefined
+    const decision = await next()
+    try {
+      const agent = asAgentLike((payload as { agent?: unknown } | null)?.agent)
+      if (agent !== null) {
+        const state = states.get(agent.id)
+        const cwd = cwdOf(agent)
+        if (state !== undefined && cwd !== null && state.cwd !== cwd) {
+          await guarded(async () => {
+            await applyOne(state)
+          })
+        }
+      }
+    } catch (error) {
+      ctx.logger.warn(`dsh-skill-pack: 工作目录变化后重新落地失败：${String(error)}`)
+    }
+    return decision
   }
 
   async function onChange(): Promise<void> {
@@ -403,6 +485,8 @@ export function installHooks(
   // 事件名必须带斜杠，与宿主 emit 的字符串逐字一致；写成点号不会报错，也永远不会被调用。
   const offSkills = ctx.on('skills/change', onChange as never)
   const offDisposed = ctx.on('agent/disposed', onDisposed as never)
+  // 切换工作区只改投影，不重建 Agent、也不发 `skills/change`：只能按步比较目录。
+  const offStep = ctx.on('agent/pre-step', onPreStep as never)
 
   /**
    * 策略保存不触碰 skill 注册表，因此不会发出 `skills/change`。
@@ -415,7 +499,7 @@ export function installHooks(
   }
 
   const stopAll = (): void => {
-    for (const off of [offCreated, offSkills, offDisposed]) {
+    for (const off of [offCreated, offSkills, offDisposed, offStep]) {
       try {
         off()
       } catch {
@@ -441,15 +525,35 @@ export function installHooks(
     let list: unknown[] = []
     try {
       const agents = ctx.get('agents') as { list?: () => unknown } | undefined
-      const raw = typeof agents?.list === 'function' ? agents.list.call(agents) : []
+      if (agents === undefined || typeof agents.list !== 'function') {
+        // 未在 inject 声明时 ctx.get 返回 undefined：以前这里静默返回，表现就是
+        // 「重载插件后遮蔽再也不生效」，而且没有任何线索。
+        ctx.logger.warn('dsh-skill-pack: agents 服务不可用，已有会话不会被补落地')
+        diagnose('bootstrap: agents 服务不可用')
+        return
+      }
+      const raw = agents.list.call(agents)
       list = Array.isArray(raw) ? raw : []
-    } catch {
+    } catch (error) {
+      ctx.logger.warn(`dsh-skill-pack: bootstrap 枚举 live Agent 失败：${String(error)}`)
+      diagnose(`bootstrap: 枚举失败 ${String(error)}`)
       return
     }
+    diagnose(`bootstrap: 枚举到 ${list.length} 个 agent`)
     for (const raw of list) {
-      const agent = asAgentLike({ agent: raw })
-      if (agent === null || states.has(agent.id) || cwdOf(agent) === null) continue
-      const state: AgentState = { agent, key: '', stuck: [] }
+      // 传 agent 本体：`asAgentLike` 读的是 `value.id` / `value.session`，
+      // 多包一层 `{ agent }` 会让每个元素都判成形状不符。
+      const agent = asAgentLike(raw)
+      if (agent === null) {
+        diagnose('bootstrap: agents.list() 返回的形状不符')
+        continue
+      }
+      if (states.has(agent.id)) continue
+      if (cwdOf(agent) === null) {
+        diagnose(`bootstrap: 解析不到 cwd（agent=${agent.id}）`)
+        continue
+      }
+      const state: AgentState = { agent, cwd: null, key: '', stuck: [] }
       states.set(agent.id, state)
       if (typeof agent.raw === 'object' && agent.raw !== null) agentByScope.set(agent.raw, agent)
       try {
@@ -458,6 +562,7 @@ export function installHooks(
         })
       } catch (error) {
         ctx.logger.warn(`dsh-skill-pack: 补落地失败（agent=${agent.id}）：${String(error)}`)
+        diagnose(`bootstrap: 补落地失败（agent=${agent.id}）${String(error)}`)
       }
     }
   }

@@ -1,5 +1,6 @@
 import { defaultPackOf } from './policy.js'
 import { effective } from './effective.js'
+import { projectedCwd } from './hooks.js'
 import { isOfficialSkill, type SkillSummaryLike, type SkillsFace } from './inventory.js'
 import { applyCommands, type PolicyState } from './store.js'
 import type { ScopeSnapshot, SnapshotValue } from './snapshot.js'
@@ -130,7 +131,11 @@ async function resolveSession(
     try {
       const agent = get.call(agents, sessionId)
       const record = asRecord(agent)
-      const cwd = readString(asRecord(asRecord(record?.['session'])?.['header']), 'cwd')
+      const session = asRecord(record?.['session'])
+      // 工作目录的权威值在投影里：`cd` 与切换工作区只改投影，`header.cwd` 是会话
+      // 创建时的快照。投影还没写过（新会话）时退回 header.cwd——顺序与宿主
+      // `skill-catalog` 一致。
+      const cwd = projectedCwd(session) ?? readString(asRecord(session?.['header']), 'cwd')
       if (cwd !== null) return { cwd, live: true, agent }
     } catch {
       // Agent 侧失败不致命，继续问 sessionQuery。
@@ -142,12 +147,12 @@ async function resolveSession(
   if (typeof observe === 'function') {
     let observation: unknown
     try {
-      observation = await (observe as (id: string, options: { projectionMode: 'none' }) => Promise<unknown>).call(
-        query,
-        sessionId,
-        { projectionMode: 'none' },
-      )
-      const cwd = readString(asRecord(asRecord(observation)?.['header']), 'cwd')
+      // 不带 `projectionMode: 'none'`：历史会话的当前目录同样只在投影里。
+      observation = await (observe as (id: string) => Promise<unknown>).call(query, sessionId)
+      const observed = asRecord(observation)
+      const projections = asRecord(observed?.['projections'])
+      const values = asRecord(projections?.['values'])
+      const cwd = readString(values, 'workingDirectory') ?? readString(asRecord(observed?.['header']), 'cwd')
       if (cwd !== null) return { cwd, live: false, agent: undefined }
     } catch {
       // 未知会话在这里 reject；交给调用方报错。

@@ -363,6 +363,7 @@ window.__ModuleLoader__.load({
       sessionId: undefined,
     }
     const chipName = createSignal(null)
+
     /**
      * 未绑定 pack 时 chip 上的字。
      *
@@ -1807,6 +1808,11 @@ window.__ModuleLoader__.load({
         ),
         h(
           'div',
+          { style: S.hint },
+          '切换会话或重新启用插件后，输入框的 / 候选可能还是旧的：宿主按会话缓存 skill 清单。刷新页面即可。',
+        ),
+        h(
+          'div',
           { style: { display: 'flex', gap: '8px', marginBottom: '8px', alignItems: 'center' } },
           h('input', {
             style: S.input,
@@ -2023,6 +2029,7 @@ window.__ModuleLoader__.load({
               ),
             )
           }
+
           env.onChipChange = (visible) => {
             if (visible) registerChip()
             else unmountChip()
