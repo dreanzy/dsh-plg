@@ -18,16 +18,25 @@ window.__ModuleLoader__.load({
     /** 工作区清单上限：会话一多，绑定表会变成一堵墙。 */
     const MAX_WORKSPACES = 30
     /**
-     * chip 文字隐藏的断点。
+     * chip 的容器查询断点与两态交互样式。
      *
      * 宿主输入框底栏 `.row` 声明了 `container-type: inline-size`，并用
-     * `@container (width <= 560px)` 控制这一带按钮的间距。跟随同一个断点，
-     * chip 就和官方那几个按钮同步折叠，而不是各自算一套阈值。
+     * `@container (width <= 560px)` 控制这一带按钮的间距。chip 的字号与图标
+     * 对齐官方控件后整体变宽，断点相应上调到 640px，仍与官方同步折叠。
      *
      * 用 CSS 容器查询而不是 JS 量宽：插槽把 chip 包在一个与它等宽的容器里，
      * 量父级永远偏小；往上找祖先又依赖具体层级，两种做法都会误判。
+     *
+     * hover 与 focus 只能写在 CSS 里：内联 style 表达不了伪类。两态各抄官方
+     * 对应控件——默认态用 ModelSelect trigger 的 hover，绑定态用 PlanChip 的。
      */
-    const CHIP_CSS = '@container (max-width: 560px) { .dsh-skill-pack-chip-text { display: none } }'
+    const CHIP_CSS =
+      '.dsh-skill-pack-chip { border: 1px solid var(--dsw-alias-border-l1, rgba(127,127,127,0.35)); background: transparent; color: var(--dsw-alias-label-secondary, GrayText); font-weight: 400 }' +
+      '.dsh-skill-pack-chip[data-bound="true"] { border-color: transparent; background: var(--dsw-alias-state-business-tertiary); color: var(--dsw-alias-state-business-primary); font-weight: 500 }' +
+      '.dsh-skill-pack-chip:hover { background: var(--dsw-alias-interactive-bg-hover) }' +
+      '.dsh-skill-pack-chip[data-bound="true"]:hover { background: color-mix(in srgb, var(--dsw-alias-state-business-tertiary), var(--dsw-alias-state-business-primary) 6%) }' +
+      '.dsh-skill-pack-chip:focus-visible { outline: var(--dsw-focus-ring-width, 2px) solid var(--dsw-alias-state-business-primary); outline-offset: 2px }' +
+      '@container (max-width: 640px) { .dsh-skill-pack-chip-text { display: none } }'
 
     // ---------- 传输 ----------
 
@@ -286,18 +295,37 @@ window.__ModuleLoader__.load({
         marginBottom: '6px',
       },
       path: { fontFamily: 'ui-monospace, monospace', fontSize: '11px', color: T.dim, wordBreak: 'break-all' },
+      /**
+       * chip 的尺寸与排布。颜色、字重、hover、focus 全部在 `CHIP_CSS` 里。
+       *
+       * 尺寸对齐官方输入框右侧控件（ModelSelect trigger / PlanChip）：高 28px、
+       * 字号 13px、圆角 `--dsw-radius-sm`（8px）。两态尺寸必须一致，否则绑定与
+       * 解绑时 chip 会横向跳动。
+       *
+       * 颜色为什么不在内联里：内联 style 的优先级压过任何类选择器，写了
+       * `background` 之后 `:hover` 就永远不会生效。内联只留布局，颜色交给
+       * 类选择器，hover 才有机会盖上去。
+       */
       chip: {
         display: 'inline-flex',
         alignItems: 'center',
         gap: '4px',
-        padding: '3px 8px',
-        borderRadius: '999px',
-        border: '1px solid ' + T.border,
-        background: 'transparent',
-        color: T.text,
-        fontSize: '11px',
+        boxSizing: 'border-box',
+        height: '28px',
+        padding: '0 8px',
+        borderRadius: 'var(--dsw-radius-sm, 8px)',
+        fontSize: '13px',
+        lineHeight: '20px',
         cursor: 'pointer',
+        maxWidth: '140px',
+        overflow: 'hidden',
+        whiteSpace: 'nowrap',
       },
+      /**
+       * 文字要能缩：`text-overflow` 在内联的 button 上不生效，
+       * 必须落在真正被裁的那个 flex item 上，且 `min-width: 0` 才肯缩。
+       */
+      chipText: { minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
     }
 
     /**
@@ -338,10 +366,11 @@ window.__ModuleLoader__.load({
     /**
      * 未绑定 pack 时 chip 上的字。
      *
-     * 跟宿主的语言走：中文下「默认」比 `Default` 自然。取不到语言服务就退回英文，
-     * 不让 chip 因为一个文案取不到而消失。
+     * 固定英文小写、三字母、去元音（skill→skl、plugin→plg、model→mdl；mcp 本就是
+     * 念字母的专名，恰好同形）。不随宿主语言：这四个是领域标识符，不是句子，
+     * 中文界面下缩写比中文译名更准，四个 chip 也等长。全名留在 title 里。
      */
-    const chipFallback = createSignal('Default')
+    const CHIP_LABEL = 'skl'
 
     // ---------- 基础组件 ----------
 
@@ -1068,9 +1097,9 @@ window.__ModuleLoader__.load({
         ),
       )
     }
-    /** chip 与设置页共用的图标；`size` 缺省 12，设置页会传 16。 */
+    /** chip 与设置页共用的图标；`size` 缺省 14（对齐官方 glyph），设置页会传 16。 */
     function ChipIcon(props) {
-      const size = props && props.size ? props.size : 12
+      const size = props && props.size ? props.size : 14
       return h(
         'svg',
         {
@@ -1856,7 +1885,12 @@ window.__ModuleLoader__.load({
 
     // ---------- 注册 ----------
 
-    /** chip 上的 pack 名：绑到哪个 pack 就显示哪个，未绑定显示「默认」/`Default`。 */
+    /**
+     * chip 上的 pack 名：绑到哪个 pack 就显示哪个，未绑定是 null（由 `CHIP_LABEL` 补字）。
+     *
+     * 判据用 `packId` 而不是 `binding`：`binding` 是原始记录，用户显式绑 `default`
+     * 时它是 `'default'` 而非 null，拿它判断会把「显式绑默认」误认成「绑了别的 pack」。
+     */
     function refreshChipName(sessionId) {
       if (typeof sessionId !== 'string' || sessionId === '') {
         chipName.set(null)
@@ -1877,24 +1911,12 @@ window.__ModuleLoader__.load({
       // `remote` 与 `remote.session` 都是独立服务名：只声明 `remote` 拿不到 session。
       // 声明是「服务在不在 ctx 上」的唯一开关；取用仍要 try/catch（ctx.get 对取不到的
       // 已声明服务会抛错）。缺了这两个，工作区清单只剩手动添加的路径。
-      // `locale` 只用来判断 chip 的缺省文案该写「默认」还是 Default。
-      inject: ['slots', 'remote', 'remote.session', 'locale'],
+      inject: ['slots', 'remote', 'remote.session'],
       apply(ctx) {
         // 兜底：client 模块的 apply 抛错会把 web boot 判成 entry failed，桌面端整个起不来。
         // 任何意外都只降级成「面板不出来」，绝不连坐宿主。
         try {
           const host = createHost(ctx)
-
-          // chip 的缺省文案随宿主语言走。只读一次：语言切换后刷新页面生效——
-          // 为一个词多挂一条 locale/change 生命周期不值得。
-          try {
-            const locale = typeof ctx.get === 'function' ? ctx.get('locale') : null
-            const snapshot = locale && typeof locale.getSnapshot === 'function' ? locale.getSnapshot() : null
-            const active = snapshot && typeof snapshot.active === 'string' ? snapshot.active : ''
-            chipFallback.set(/^zh/i.test(active) ? '默认' : 'Default')
-          } catch {
-            // 取不到就保持 Default，chip 照常显示。
-          }
 
           // 组件必须是稳定标识符：内联箭头每次渲染都是新类型，React 会整棵卸载重挂
           // （AGENTS.md 客户端红线 4）。apply 只跑一次，闭包里拿 host 是安全的。
@@ -1930,11 +1952,11 @@ window.__ModuleLoader__.load({
             env.sessionId = sessionId
             const name = useSyncExternalStore(chipName.subscribe, chipName.read, chipName.read)
             const isOpen = useSyncExternalStore(subscribeChip, readChipOpen, readChipOpen)
-            const fallback = useSyncExternalStore(chipFallback.subscribe, chipFallback.read, chipFallback.read)
             useEffect(() => {
               refreshChipName(sessionId)
             }, [sessionId])
-            const label = name || fallback
+            const bound = name !== null
+            const label = bound ? name : CHIP_LABEL
             return h(
               React.Fragment,
               null,
@@ -1945,15 +1967,17 @@ window.__ModuleLoader__.load({
                 'button',
                 {
                   type: 'button',
+                  className: 'dsh-skill-pack-chip',
+                  'data-bound': bound ? 'true' : 'false',
                   style: S.chip,
-                  title: '当前工作区绑定的 skill pack：' + label,
+                  title: bound ? 'skill pack：' + label : 'skill pack：未绑定（使用默认）',
                   onClick: () => {
                     chipOpen = !isOpen
                     notifyChip()
                   },
                 },
                 h(ChipIcon),
-                h('span', { key: 'chip-text', className: 'dsh-skill-pack-chip-text' }, label),
+                h('span', { key: 'chip-text', className: 'dsh-skill-pack-chip-text', style: S.chipText }, label),
               ),
             )
           }

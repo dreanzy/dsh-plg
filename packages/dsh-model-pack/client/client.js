@@ -76,7 +76,13 @@ window.__ModuleLoader__.load({
      * 用 CSS 容器查询而不是 JS 量宽：插槽把 chip 包在一个与它等宽的容器里，
      * 量父级永远偏小；往上找祖先又依赖具体层级，两种做法都会误判。
      */
-    const CHIP_CSS = '@container (max-width: 560px) { .dsh-model-pack-chip-text { display: none } }'
+    const CHIP_CSS =
+      '.dsh-model-pack-chip { border: 1px solid var(--dsw-alias-border-l1, rgba(127,127,127,0.35)); background: transparent; color: var(--dsw-alias-label-secondary, GrayText); font-weight: 400 }' +
+      '.dsh-model-pack-chip[data-bound="true"] { border-color: transparent; background: var(--dsw-alias-state-business-tertiary); color: var(--dsw-alias-state-business-primary); font-weight: 500 }' +
+      '.dsh-model-pack-chip:hover { background: var(--dsw-alias-interactive-bg-hover) }' +
+      '.dsh-model-pack-chip[data-bound="true"]:hover { background: color-mix(in srgb, var(--dsw-alias-state-business-tertiary), var(--dsw-alias-state-business-primary) 6%) }' +
+      '.dsh-model-pack-chip:focus-visible { outline: var(--dsw-focus-ring-width, 2px) solid var(--dsw-alias-state-business-primary); outline-offset: 2px }' +
+      '@container (max-width: 640px) { .dsh-model-pack-chip-text { display: none } }'
 
     /**
      * 设置页的三页，顺序固定：分包 → 工作区 → 提示词。
@@ -370,18 +376,37 @@ window.__ModuleLoader__.load({
         padding: '2px 6px',
       },
       path: { fontFamily: 'ui-monospace, monospace', fontSize: '11px', color: T.dim, wordBreak: 'break-all' },
+      /**
+       * chip 的尺寸与排布。颜色、字重、hover、focus 全部在 `CHIP_CSS` 里。
+       *
+       * 尺寸对齐官方输入框右侧控件（ModelSelect trigger / PlanChip）：高 28px、
+       * 字号 13px、圆角 `--dsw-radius-sm`（8px）。两态尺寸必须一致，否则绑定与
+       * 解绑时 chip 会横向跳动。
+       *
+       * 颜色为什么不在内联里：内联 style 的优先级压过任何类选择器，写了
+       * `background` 之后 `:hover` 就永远不会生效。内联只留布局，颜色交给
+       * 类选择器，hover 才有机会盖上去。
+       */
       chip: {
         display: 'inline-flex',
         alignItems: 'center',
         gap: '4px',
-        padding: '3px 8px',
-        borderRadius: '999px',
-        border: '1px solid ' + T.border,
-        background: 'transparent',
-        color: T.text,
-        fontSize: '11px',
+        boxSizing: 'border-box',
+        height: '28px',
+        padding: '0 8px',
+        borderRadius: 'var(--dsw-radius-sm, 8px)',
+        fontSize: '13px',
+        lineHeight: '20px',
         cursor: 'pointer',
+        maxWidth: '140px',
+        overflow: 'hidden',
+        whiteSpace: 'nowrap',
       },
+      /**
+       * 文字要能缩：`text-overflow` 在内联的 button 上不生效，
+       * 必须落在真正被裁的那个 flex item 上，且 `min-width: 0` 才肯缩。
+       */
+      chipText: { minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
       modalBack: {
         position: 'fixed',
         inset: 0,
@@ -2713,14 +2738,15 @@ window.__ModuleLoader__.load({
     /**
      * 未绑定 pack 时 chip 上的字。
      *
-     * 跟宿主的语言走：中文下「默认」比 `Default` 自然。取不到语言服务就退回英文，
-     * 不让 chip 因为一个文案取不到而消失。
+     * 固定英文小写、三字母、去元音（skill→skl、plugin→plg、model→mdl；mcp 本就是
+     * 念字母的专名，恰好同形）。不随宿主语言：这四个是领域标识符，不是句子，
+     * 中文界面下缩写比中文译名更准，四个 chip 也等长。全名留在 title 里。
      */
-    const chipFallback = createSignal('Default')
+    const CHIP_LABEL = 'mdl'
     /** 摘要弹层的开合。chip 与弹层分处两个槽位，只能靠它对齐。 */
     const chipOpen = createSignal(false)
 
-    /** chip 上的名字：绑到哪张 pack 就显示哪个，未绑定是 null（由 chipFallback 补字）。 */
+    /** chip 上的名字：绑到哪张 pack 就显示哪个，未绑定是 null（由 `CHIP_LABEL` 补字）。 */
     function refreshChipName(host, sessionId) {
       if (typeof sessionId !== 'string' || sessionId === '') {
         chipName.set(null)
@@ -2914,7 +2940,7 @@ window.__ModuleLoader__.load({
       // 只声明 remote 拿不到它（ctx.remote.session 会是空的，模型目录读不到）。
       // 声明里少一个 → 插件停在 pending → 整个设置分区连入口都不出现。
       // `locale` 只用来判断 chip 的缺省文案该写「默认」还是 Default。
-      inject: ['slots', 'remote', 'remote.session', 'locale'],
+      inject: ['slots', 'remote', 'remote.session'],
       apply(ctx) {
         // 兜底：client 模块的 apply 抛错会把 web boot 判成 entry failed，桌面端整个起不来。
         // 任何意外都只降级成「面板不出来」，绝不连坐宿主。
@@ -2944,17 +2970,6 @@ window.__ModuleLoader__.load({
         ctx.effect(() => ctx.on('connection/reset', () => host.catalog.load()), 'model-pack: 连接重置')
       }
 
-      // chip 的缺省文案随宿主语言走。只读一次：语言切换后刷新页面生效——
-      // 为一个词多挂一条 locale/change 生命周期不值得。
-      try {
-        const locale = typeof ctx.get === 'function' ? ctx.get('locale') : null
-        const snapshot = locale && typeof locale.getSnapshot === 'function' ? locale.getSnapshot() : null
-        const active = snapshot && typeof snapshot.active === 'string' ? snapshot.active : ''
-        chipFallback.set(/^zh/i.test(active) ? '默认' : 'Default')
-      } catch {
-        // 取不到就保持 Default，chip 照常显示。
-      }
-
       // 组件类型必须是稳定的标识符：写成内联箭头函数的话，每次渲染都是新类型，
       // React 会整棵卸载重挂——输入框每敲一个字就失焦。apply 只跑一次，所以在这里
       // 定义成常量既稳定又拿得到闭包里的 host。
@@ -2971,12 +2986,12 @@ window.__ModuleLoader__.load({
         const sessionId = props && typeof props.sessionId === 'string' ? props.sessionId : undefined
         env.sessionId = sessionId
         const name = useSyncExternalStore(chipName.subscribe, chipName.read, chipName.read)
-        const fallback = useSyncExternalStore(chipFallback.subscribe, chipFallback.read, chipFallback.read)
         const open = useSyncExternalStore(chipOpen.subscribe, chipOpen.read, chipOpen.read)
         useEffect(() => {
           refreshChipName(host, sessionId)
         }, [sessionId])
-        const label = name || fallback
+        const bound = name !== null
+        const label = bound ? name : CHIP_LABEL
         return h(
           React.Fragment,
           null,
@@ -2987,12 +3002,14 @@ window.__ModuleLoader__.load({
             'button',
             {
               type: 'button',
+              className: 'dsh-model-pack-chip',
+              'data-bound': bound ? 'true' : 'false',
               style: S.chip,
-              title: '当前工作区绑定的 pack：' + label,
+              title: bound ? 'model pack：' + label : 'model pack：未绑定（使用默认）',
               onClick: () => chipOpen.set(!open),
             },
-            h(ModelIcon, { size: 12 }),
-            h('span', { key: 'chip-text', className: 'dsh-model-pack-chip-text' }, label),
+            h(ModelIcon, { size: 14 }),
+            h('span', { key: 'chip-text', className: 'dsh-model-pack-chip-text', style: S.chipText }, label),
           ),
         )
       }
