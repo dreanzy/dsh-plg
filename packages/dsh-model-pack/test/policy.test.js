@@ -17,6 +17,7 @@ import {
   applyCommands,
   loadState,
   packsPath,
+  previewCommands,
   promptsPath,
   resolve,
   workspacesPath,
@@ -90,7 +91,7 @@ test('求值链：工作区绑定指向存在的 pack 则用它', async () => {
   const home = await tempRoot()
   const cwd = await tempRoot()
   await seedPacks(home, { version: 1, packs: { default: MINIMAL, standard: STANDARD } })
-  await seedWorkspaces(home, { version: 1, bindings: { [normalizeCwd(cwd)]: 'standard' }, extra: [] })
+  await seedWorkspaces(home, { version: 1, bindings: { [normalizeCwd(cwd)]: 'standard' } })
 
   const resolved = resolve(await loadState(cwd, { home }), cwd)
   assert.equal(resolved.id, 'standard')
@@ -104,7 +105,7 @@ test('求值链：绑定指向已删 pack 则降级到 default，warning 含被�
   const home = await tempRoot()
   const cwd = await tempRoot()
   await seedPacks(home, { version: 1, packs: { default: STANDARD } })
-  await seedWorkspaces(home, { version: 1, bindings: { [normalizeCwd(cwd)]: 'ghost' }, extra: [] })
+  await seedWorkspaces(home, { version: 1, bindings: { [normalizeCwd(cwd)]: 'ghost' } })
 
   const resolved = resolve(await loadState(cwd, { home }), cwd)
   assert.equal(resolved.id, DEFAULT_PACK_ID)
@@ -118,7 +119,6 @@ test('求值链：绑定指向已删 pack 则降级到 default，warning 含被�
   assert.deepEqual(await readWorkspaces(home), {
     version: 1,
     bindings: { [normalizeCwd(cwd)]: 'ghost' },
-    extra: [],
   })
 })
 
@@ -152,7 +152,7 @@ test('求值链：显式绑定 default 与未绑定等价', async () => {
   const home = await tempRoot()
   const cwd = await tempRoot()
   await seedPacks(home, { version: 1, packs: { default: STANDARD } })
-  await seedWorkspaces(home, { version: 1, bindings: { [normalizeCwd(cwd)]: 'default' }, extra: [] })
+  await seedWorkspaces(home, { version: 1, bindings: { [normalizeCwd(cwd)]: 'default' } })
 
   const state = await loadState(cwd, { home })
   assert.equal(state.binding, 'default')
@@ -196,7 +196,7 @@ test('求值链：cwd 为 null 时没有绑定', async () => {
   assert.equal(state.binding, null)
   assert.equal(state.pack, null)
   assert.equal(resolve(state).source, 'default')
-  assert.deepEqual(state.bindings, { bindings: {}, extra: [] })
+  assert.deepEqual(state.bindings, { bindings: {} })
 })
 
 test('求值链：default 可编辑，内容直接生效', async () => {
@@ -206,7 +206,7 @@ test('求值链：default 可编辑，内容直接生效', async () => {
     version: 1,
     packs: { default: { name: '默认', session: ROUTE, tiers: {} } },
   })
-  await seedWorkspaces(home, { version: 1, bindings: { [normalizeCwd(cwd)]: 'standard' }, extra: [] })
+  await seedWorkspaces(home, { version: 1, bindings: { [normalizeCwd(cwd)]: 'standard' } })
 
   const resolved = resolve(await loadState(cwd, { home }), cwd)
   assert.deepEqual(resolved.pack.session, ROUTE)
@@ -313,11 +313,12 @@ test('序列化：pack 按 id 排序，同内容字节稳定', () => {
   assert.deepEqual(Object.keys(parsed.packs), ['alpha', 'default', 'zebra'])
 })
 
-test('序列化：绑定键排序，extra 保序', () => {
-  const text = serializeBindings({ bindings: { 'c:/b': 'p2', 'c:/a': 'p1' }, extra: ['c:/z', 'c:/y'] })
+test('序列化：绑定键排序，只写 bindings', () => {
+  const text = serializeBindings({ bindings: { 'c:/b': 'p2', 'c:/a': 'p1' } })
   const parsed = JSON.parse(text)
   assert.deepEqual(Object.keys(parsed.bindings), ['c:/a', 'c:/b'])
-  assert.deepEqual(parsed.extra, ['c:/z', 'c:/y'])
+  // `extra` 能力已删除：旧字段不再写回，下次写盘即自然消失。
+  assert.equal('extra' in parsed, false)
   assert.ok(text.endsWith('\n'))
 })
 
@@ -457,20 +458,85 @@ test('写入：bind 到 default 归一化成解绑', async () => {
   assert.equal(resolve(await loadState(cwd, { home }), cwd).source, 'builtin')
 })
 
-test('写入：addExtra 与 removeExtra 规范化 cwd 并保序', async () => {
+test('兼容：旧 workspaces.json 里的 extra 被忽略，且不产生 warning', async () => {
   const home = await tempRoot()
-  const first = 'C:\\work\\alpha'
-  const second = 'C:\\work\\beta'
+  const cwd = await tempRoot()
+  await seedPacks(home, { version: 1, packs: { default: MINIMAL, standard: STANDARD } })
+  await seedWorkspaces(home, {
+    version: 1,
+    bindings: { [normalizeCwd(cwd)]: 'standard' },
+    // 旧版本手动添加的目录。这条能力已经删除：读时直接忽略，不报、不迁移。
+    extra: [normalizeCwd(cwd), 'C:\\work\\gone'],
+  })
 
-  await applyCommands(null, [
-    { op: 'addExtra', cwd: first },
-    { op: 'addExtra', cwd: second },
-    { op: 'addExtra', cwd: first },
+  const state = await loadState(cwd, { home })
+  assert.deepEqual(state.bindings, { bindings: { [normalizeCwd(cwd)]: 'standard' } })
+  assert.deepEqual(state.warnings, [])
+  assert.equal(resolve(state, cwd).id, 'standard')
+
+  // 下一次写盘自然清掉旧字段：不做迁移，也不为它保留一条写入分支。
+  await applyCommands(null, [{ op: 'bind', cwd, packId: null }], { home })
+  const written = await readWorkspaces(home)
+  assert.equal('extra' in written, false)
+  assert.deepEqual(written.bindings, {})
+})
+
+/* ------------------------------------------------------------------ *
+ * 试算（dryRun）：与真写共用应用规则，但不落盘
+ * ------------------------------------------------------------------ */
+
+test('试算：应用在内存里，返回同一份视图且不创建任何文件', async () => {
+  const home = await tempRoot()
+  const cwd = await tempRoot()
+  const commands = [
+    { op: 'createPack', name: '前端' },
+    { op: 'putPack', packId: 'standard', pack: STANDARD },
+    { op: 'bind', cwd, packId: 'standard' },
+  ]
+
+  const preview = await previewCommands(cwd, commands, { home })
+  assert.equal(preview.packs.packs.p1.name, '前端')
+  assert.deepEqual(preview.packs.packs.standard, STANDARD)
+  assert.equal(preview.binding, 'standard')
+  assert.equal(resolve(preview, cwd).id, 'standard')
+
+  // 试算不落盘：三份文件一个都没建。
+  assert.equal(existsSync(packsPath({ home })), false)
+  assert.equal(existsSync(workspacesPath({ home })), false)
+  assert.equal(existsSync(promptsPath({ home })), false)
+
+  // 真写后重读同一份视图：两条路径共用应用规则，形状不会漂移。
+  const written = await applyCommands(cwd, commands, { home })
+  assert.deepEqual(written.packs, preview.packs)
+  assert.deepEqual(written.bindings, preview.bindings)
+  assert.deepEqual(written.prompts, preview.prompts)
+  assert.equal(written.binding, preview.binding)
+})
+
+test('试算：非法命令只记 warning，合法命令仍然生效', async () => {
+  const home = await tempRoot()
+  const cwd = await tempRoot()
+  await applyCommands(null, [{ op: 'createPack', name: '前端' }], { home })
+  const before = await readFile(packsPath({ home }), 'utf8')
+
+  const preview = await previewCommands(cwd, [
+    { op: 'renamePack', packId: 'ghost', name: '不存在' },
+    { op: 'packTier', packId: 'p1', tierId: 'tier2', tier: { name: '速办', primary: ROUTE, fallbacks: [] } },
   ], { home })
-  assert.deepEqual((await readWorkspaces(home)).extra, [normalizeCwd(first), normalizeCwd(second)])
 
-  await applyCommands(null, [{ op: 'removeExtra', cwd: first }], { home })
-  assert.deepEqual((await readWorkspaces(home)).extra, [normalizeCwd(second)])
+  // 坏命令只留说明；同时的那条合法命令照样进视图。
+  assert.ok(preview.warnings.some((warning) => warning.includes('ghost')))
+  assert.equal(preview.packs.packs.p1.tiers.tier2.name, '速办')
+  // 文件一个字节都没动。
+  assert.equal(await readFile(packsPath({ home }), 'utf8'), before)
+})
+
+test('试算：提示词也走同一条路径，且不写 prompts.json', async () => {
+  const home = await tempRoot()
+  const preview = await previewCommands(null, [{ op: 'putPrompts', delegation: '试算编排' }], { home })
+
+  assert.equal(preview.prompts.delegation, '试算编排')
+  assert.equal(existsSync(promptsPath({ home })), false)
 })
 
 test('写入：showChip 与 defaultTab 落在 packs.json 的 ui 段', async () => {

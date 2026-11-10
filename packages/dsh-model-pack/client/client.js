@@ -7,8 +7,11 @@
  *   pack 的内容不是一张布尔表，而是「一条会话路由 + 至多四档子智能体路由」，
  *   所以「分包」页放名册与内容编辑器，「工作区」页放绑定。
  *
- * 数据全部来自服务端：`ui.defaultTab` 与 `bindings.extra` 都落在 packs.json /
- * workspaces.json，浏览器不存任何配置。
+ * 数据全部来自服务端：`ui.defaultTab` 与工作区绑定都落在 packs.json / workspaces.json，
+ * 浏览器不存任何配置。
+ *
+ * 改动先入队、点「保存」才写盘（ADR 0006）：点控件只把命令放进待保存队列，队列非空时
+ * 每一步都拿服务端的 `dryRun` 试算视图来渲染，面板因此不在浏览器里重算一遍求值链。
  *
  * 数据来自本插件的两条路由（read / apply）；模型目录来自宿主的
  * `remote.session.modelCatalog()`，那是唯一能回答「这个模型公布了哪些思考强度」的地方
@@ -85,6 +88,53 @@ window.__ModuleLoader__.load({
       '@container (max-width: 640px) { .dsh-model-pack-chip-text { display: none } }'
 
     /**
+     * 待保存行的底色。
+     *
+     * 原先用左侧 `inset` 竖条，真机上它紧贴行首的箭头与文字，`inset` 阴影又没法
+     * 给文字让出间距，压字比不标更糟。改成整行浅底：与官方标记「当前项」同一套
+     * 做法（pack 行就是浅底），也不会和任何文字抢位置。
+     */
+    const PENDING_BG =
+      'color-mix(in srgb, var(--dsw-alias-state-business-tertiary, rgba(65,118,230,0.16)) 55%, transparent)'
+
+    /**
+     * 面板按钮与可点行的样式。
+     *
+     * 尺寸抄官方设置页的行内操作按钮（`ModelsSection.module.css` 的
+     * `.rowActions .secondaryButton`）：高 28px、左右 10px、12px 字、`--dsw-radius-sm`。
+     * 颜色一律留在类里：内联写 `background` / `color` 会压掉 `:hover`（ui-baseline 红线 7）。
+     */
+    const PANEL_CSS =
+      '.dsh-model-pack-btn { transition: background 120ms ease, border-color 120ms ease, color 120ms ease }' +
+      '.dsh-model-pack-btn-secondary { border-color: var(--dsw-alias-border-l1, rgba(127,127,127,0.3)); background: transparent; color: var(--dsw-alias-label-primary, inherit) }' +
+      '.dsh-model-pack-btn-secondary:hover:not(:disabled) { background: var(--dsw-alias-interactive-bg-hover) }' +
+      // 确认条上的次要按钮：无边框、浅灰底。照官方弹窗的「取消」——透明底 + 描边在浅色面板上
+      // 会读成一条黑框，有底色才显得是按钮而不是一个框。
+      '.dsh-model-pack-btn-quiet { border-color: transparent; background: var(--dsw-alias-interactive-bg-hover, rgba(127,127,127,0.12)); color: var(--dsw-alias-label-primary, inherit) }' +
+      '.dsh-model-pack-btn-quiet:hover:not(:disabled) { background: var(--dsw-alias-interactive-bg-hover-solid, var(--dsw-alias-interactive-bg-hover)) }' +
+      // 主操作：实心。官方弹窗的「保存」就是这个范式（`button-primary-fill` + `label-primary-foreground`）。
+      '.dsh-model-pack-btn-primary { border-color: transparent; background: var(--dsw-alias-button-primary-fill, #1f2328); color: var(--dsw-alias-label-primary-foreground, #fff) }' +
+      '.dsh-model-pack-btn-primary:hover:not(:disabled) { background: var(--dsw-alias-button-primary-hover, #33383f) }' +
+      '.dsh-model-pack-btn-danger { border-color: transparent; background: transparent; color: var(--dsw-alias-state-error-primary, #c0392b) }' +
+      '.dsh-model-pack-btn-danger:hover:not(:disabled) { background: var(--dsw-alias-interactive-bg-hover-danger, rgba(192,57,43,0.12)) }' +
+      // 确认态照官方的 dangerButton：无边框，只换底色与字重。
+      // 官方没有任何"加红描边"的危险按钮，那是我自己发明的，观感上像被框住的一块错误。
+      '.dsh-model-pack-btn-danger[data-armed="true"] { border-color: transparent; background: var(--dsw-alias-interactive-bg-hover-danger, rgba(192,57,43,0.14)); color: var(--dsw-alias-state-error-primary, #c0392b); font-weight: 500 }' +
+      '.dsh-model-pack-btn-danger[data-armed="true"]:hover:not(:disabled) { background: var(--dsw-alias-interactive-bg-hover-danger, rgba(192,57,43,0.22)) }' +
+      '.dsh-model-pack-btn:disabled { opacity: 0.4; cursor: default }' +
+      '.dsh-model-pack-btn:focus-visible { outline: var(--dsw-focus-ring-width, 2px) solid var(--dsw-alias-state-business-primary); outline-offset: 2px }' +
+      /*
+       * 可点行的底色与 hover 全走类。
+       *
+       * 这几行的底色原本是内联写的（当前项灰底 / 待保存浅蓝），内联会压掉 `:hover`
+       * ——红线 7 那条坑。改成 `data-state` 交给 CSS，两种状态与 hover 才能共存。
+       */
+      '.dsh-model-pack-row { transition: background 120ms ease; cursor: pointer }' +
+      '.dsh-model-pack-row:hover { background: var(--dsw-alias-interactive-bg-hover, rgba(127,127,127,0.08)) }' +
+      '.dsh-model-pack-row[data-state="current"] { background: rgba(127,127,127,0.16) }' +
+      '.dsh-model-pack-row[data-state="pending"] { background: ' + PENDING_BG + ' }'
+
+    /**
      * 设置页的三页，顺序固定：分包 → 工作区 → 提示词。
      *
      * `value` 必须与 `UiState['defaultTab']` 逐字一致：它同时是 `defaultTab` 命令的取值。
@@ -94,17 +144,6 @@ window.__ModuleLoader__.load({
       { value: 'workspace', label: '工作区' },
       { value: 'prompts', label: '提示词' },
     ]
-
-    /**
-     * 空草稿。冻结：它会被 useState 直接持有，任何就地写入都会变成跨实例的脏数据。
-     *
-     * `prompts` 是提示词覆盖的稀疏 patch：undefined = 没改过；键不存在 = 该字段没改；
-     * 键存在且是字符串 = 待提交的新值。空串不进 patch（空 = 跟随内置）。
-     */
-    const EMPTY_DRAFT = Object.freeze({
-      editing: null,
-      prompts: undefined,
-    })
 
     // ---------- 传输 ----------
 
@@ -146,7 +185,16 @@ window.__ModuleLoader__.load({
           ...(cwd ? { cwd: cwd } : {}),
           ...(typeof sessionId === 'string' && sessionId !== '' ? { sessionId: sessionId } : {}),
         }),
-      apply: (cwd, commands) => post(PATHS.apply, cwd ? { cwd: cwd, commands: commands } : { commands: commands }),
+      /**
+       * `dryRun` 只把命令应用在内存里、返回同一份视图，不写盘——待保存改动靠它渲染。
+       */
+      apply: (cwd, commands, dryRun) => {
+        const body = {}
+        if (cwd) body.cwd = cwd
+        body.commands = commands
+        if (dryRun === true) body.dryRun = true
+        return post(PATHS.apply, body)
+      },
     }
 
     // ---------- 样式 ----------
@@ -293,7 +341,6 @@ window.__ModuleLoader__.load({
       rowMain: { flex: '1 1 auto', minWidth: 0 },
       rowName: { display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap', color: T.text, fontWeight: 600 },
       rowMeta: { color: T.dim, fontSize: '12px', marginTop: '3px', lineHeight: 1.5 },
-      rowDesc: { color: T.dim, fontSize: '11px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
       field: { padding: '6px 0 10px', borderTop: '1px solid ' + T.border },
       fieldHead: { display: 'flex', alignItems: 'center', gap: '8px', padding: '0 10px', marginTop: '8px' },
       fieldRow: { display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', padding: '4px 10px' },
@@ -301,21 +348,108 @@ window.__ModuleLoader__.load({
       fallbackRow: { display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap', padding: '4px 10px 4px 22px' },
       disabledSection: { opacity: 0.5, pointerEvents: 'none', userSelect: 'none' },
       /**
-       * 按钮。主操作**不用品牌色实心**：ui-baseline 第 3 条明确禁止，品牌蓝块在暗色
-       * 主题下会盖掉周围信息，官方设置页也不是那个观感。主操作靠浅底 + 字重区分。
+       * 行内操作按钮的尺寸与排布。颜色、hover、危险态全部在 `PANEL_CSS` 里——
+       * 内联写 `background` / `color` 会压掉 CSS 的 `:hover`（ui-baseline 红线 7）。
+       * 尺寸对齐官方设置页行内按钮：高 28px、左右 10px、12px 字、radius-sm。
        */
-      button: (primary, danger) => ({
-        border: '1px solid ' + T.border,
-        borderRadius: '6px',
-        padding: '4px 9px',
+      btn: {
+        display: 'inline-flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        boxSizing: 'border-box',
+        height: '28px',
+        padding: '0 10px',
+        borderWidth: '.5px',
+        borderStyle: 'solid',
+        borderRadius: 'var(--dsw-radius-sm, 8px)',
         fontSize: '12px',
-        cursor: 'pointer',
-        background: primary ? 'var(--dsw-alias-bg-layer-2, rgba(127,127,127,0.18))' : 'transparent',
-        color: danger ? T.error : T.text,
-        fontWeight: primary ? 600 : 400,
+        lineHeight: '18px',
         whiteSpace: 'nowrap',
-      }),
-      reset: { border: 0, background: 'transparent', cursor: 'pointer', color: T.dim, fontSize: '12px', padding: '2px 4px' },
+        cursor: 'pointer',
+      },
+      /**
+       * 底部停靠区：提示行 + 待保存条。贴住面板底边，内容再长也一直看得见。
+       * 分隔线只在停靠区顶沿画一条，内部两行之间不再加线。
+       */
+      dock: {
+        position: 'sticky',
+        bottom: 0,
+        zIndex: 20,
+        background: 'var(--dsw-alias-bg-layer-1, Canvas)',
+        borderTop: '1px solid var(--dsw-alias-border-l2, rgba(127,127,127,0.55))',
+      },
+      /** 提示行：警告色浅底，右侧一个关闭。 */
+      noticeBar: {
+        display: 'flex',
+        alignItems: 'center',
+        gap: '8px',
+        padding: '8px 12px',
+        background: 'var(--dsw-alias-state-warn-tertiary, rgba(245,158,11,0.14))',
+      },
+      /** 待保存条：不贴边，位置由 `dock` 决定。 */
+      pendingBar: {
+        display: 'flex',
+        alignItems: 'center',
+        gap: '8px',
+        padding: '10px 12px',
+      },
+      /** 弹层里的同一条：不贴边、不画分隔线，交给外层的 `bottomBar`。 */
+      pendingInline: {
+        display: 'flex',
+        alignItems: 'center',
+        gap: '8px',
+        flex: '1 1 auto',
+        minWidth: 0,
+      },
+      /**
+       * 弹层的底栏：左「关闭」右「待保存 + 撤销/保存」。
+       * 「关闭」位置固定在最左：它一会儿在左一会儿在右，只会让人重新找一次按钮。
+       */
+      bottomBar: {
+        display: 'flex',
+        alignItems: 'center',
+        gap: '8px',
+        marginTop: '14px',
+        paddingTop: '10px',
+        borderTop: '1px solid var(--dsw-alias-border-l2, rgba(127,127,127,0.55))',
+      },
+      /**
+       * 吸顶的区块标题。
+       *
+       * 分包页的内容区有几百行，滚到中段时「档位」「工作区绑定」早就滚出视口了，
+       * 而这一块每一行都在往同一个对象里写决定。标题跟着滚走等于让人盲改。
+       * `top: 0` 相对最近的滚动祖先（宿主的设置弹层内容区）；要是宿主自己也吸顶，
+       * 这里会被压住——那就只能退回不吸顶，别硬加偏移量去猜。
+       */
+      blockTitleSticky: {
+        position: 'sticky',
+        top: 0,
+        zIndex: 5,
+        padding: '6px 0',
+        marginBottom: '6px',
+        background: 'var(--dsw-alias-bg-layer-1, Canvas)',
+        fontSize: '12px',
+        fontWeight: 600,
+        color: T.text,
+      },
+      /**
+       * 裸文字按钮（行内图标、折叠箭头）。
+       *
+       * 热区按 24px 起：原来只有字号那么高，指针要精确压住才点得中——这类控件
+       * 是整类的问题，不只改被指出来的那一个。
+       */
+      reset: {
+        border: 0,
+        background: 'transparent',
+        cursor: 'pointer',
+        color: T.dim,
+        fontSize: '12px',
+        padding: '2px 4px',
+        minHeight: '24px',
+        display: 'inline-flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+      },
       probeFail: {
         marginTop: '8px',
         padding: '6px 10px',
@@ -339,22 +473,7 @@ window.__ModuleLoader__.load({
       notice: { marginTop: '8px', padding: '6px 10px', borderRadius: '6px', border: '1px solid ' + T.border, color: T.dim, fontSize: '12px' },
       error: { color: T.error, fontSize: '12px', marginTop: '8px' },
       empty: { color: T.faint, padding: '12px 4px', fontSize: '12px' },
-      actionBar: {
-        position: 'sticky',
-        bottom: 0,
-        display: 'flex',
-        alignItems: 'center',
-        gap: '8px',
-        padding: '10px 12px',
-        marginTop: '12px',
-        background: T.surface,
-        border: '1px solid ' + T.borderStrong,
-        borderRadius: '8px',
-        boxShadow: '0 6px 18px rgba(0,0,0,0.18)',
-        zIndex: 10,
-      },
       block: { marginTop: '16px', paddingTop: '12px', borderTop: '1px solid ' + T.border },
-      blockTitle: { fontSize: '12px', fontWeight: 600, color: T.text, marginBottom: '6px' },
       packRow: {
         display: 'flex',
         alignItems: 'center',
@@ -462,14 +581,11 @@ window.__ModuleLoader__.load({
       return book && isRecord(book.packs) ? book.packs : {}
     }
 
-    /** 绑定表：`{ bindings: Record<cwd, packId>, extra: string[] }`。 */
+    /** 绑定表：`{ bindings: Record<cwd, packId> }`。目录清单由宿主的会话列表提供。 */
     function bindingsOf(data) {
       const bindings = data && data.state && data.state.bindings
-      if (!isRecord(bindings)) return { bindings: {}, extra: [] }
-      return {
-        bindings: isRecord(bindings.bindings) ? bindings.bindings : {},
-        extra: Array.isArray(bindings.extra) ? bindings.extra : [],
-      }
+      if (!isRecord(bindings)) return { bindings: {} }
+      return { bindings: isRecord(bindings.bindings) ? bindings.bindings : {} }
     }
 
     /**
@@ -510,13 +626,28 @@ window.__ModuleLoader__.load({
     /**
      * 名册列表：`default` 排第一，其余按 id 排序。
      *
+     * `frozenOrder` 是改动前那份视图的 id 序：待保存期间按它排，名册就不会因为刚落下的
+     * 一条命令而重排。凭「改动前的排序键」而不是数组下标——新建的 pack 会插进数组，
+     * 下标一挪就重排，而 id 是不变的键。
+     *
      * `isDefault` 只标 `default` 那一张——它是求值链终点，不是「当前生效的那张」。
      * 服务端保证 `default` 一定存在（`parsePacks` 会补），这里不做兜底造行：
      * 真缺了就该显示成缺了，而不是画一个磁盘上不存在的 pack。
      */
-    function packListOf(data) {
+    function packListOf(data, frozenOrder) {
       const packs = packsOf(data)
-      const ids = Object.keys(packs).sort()
+      const ids = Object.keys(packs)
+      if (Array.isArray(frozenOrder) && frozenOrder.length > 0) {
+        const rank = new Map()
+        frozenOrder.forEach((id, index) => rank.set(id, index))
+        ids.sort((a, b) => {
+          const left = rank.has(a) ? rank.get(a) : frozenOrder.length
+          const right = rank.has(b) ? rank.get(b) : frozenOrder.length
+          return left === right ? String(a).localeCompare(String(b)) : left - right
+        })
+      } else {
+        ids.sort()
+      }
       const at = ids.indexOf(DEFAULT_PACK_ID)
       if (at > 0) {
         ids.splice(at, 1)
@@ -558,10 +689,6 @@ window.__ModuleLoader__.load({
         if (isRecord(tier) && isRecord(tier.primary)) count += 1
       }
       return count
-    }
-
-    function clonePack(pack) {
-      return JSON.parse(JSON.stringify(isRecord(pack) ? pack : { name: '', tiers: {} }))
     }
 
     /** 从目录取模型条目；目录可能还没加载完，全部按「找不到」处理。 */
@@ -615,7 +742,7 @@ window.__ModuleLoader__.load({
       }
     }
 
-    /** 草稿到落盘形状：只保留协议里的键，空串的 effort 直接丢掉（等于跟随）。 */
+    /** 编辑值到落盘形状：只保留协议里的键，空串的 effort 直接丢掉（等于跟随）。 */
     function normalizePack(pack) {
       const out = { name: String(pack && pack.name ? pack.name : '').trim(), tiers: {} }
       if (isRecord(pack) && isRecord(pack.session)) out.session = normalizeRoute(pack.session)
@@ -628,7 +755,7 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * 草稿 → 命令：只发改过的那几处。
+     * 编辑值 → 命令：只发改过的那几处。
      *
      * 优先细粒度（`renamePack` / `packSession` / `packTier`），不整张 `putPack`：
      * 整张写会把别人在这期间的改动一起写回。只有原 pack 读不到时才退回 `putPack`。
@@ -793,7 +920,7 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * 草稿或生效值里的档集合；没有就返回空对象。
+     * 生效值里的档集合；没有就返回空对象。
      *
      * 多处解构都写同一句 `isRecord(x.tiers) ? x.tiers : {}`，漏一处就会拿到 undefined
      * 再去取键。收成一句，新增字段时也不用逐个改。
@@ -831,143 +958,33 @@ window.__ModuleLoader__.load({
       return keys
     }
 
-    /** 深拷贝一份稀疏 patch：草稿只读不就地改，跨渲染才不会串。 */
-    function clonePromptPatch(patch) {
-      const next = {}
-      if (!isRecord(patch)) return next
-      if (typeof patch.delegation === 'string') next.delegation = patch.delegation
+    /** 提示词补丁类命令：一条只带自己那几个键，按绝对状态写入。 */
+    function promptDelegationCommand(value) {
+      return { op: 'putPrompts', delegation: value }
+    }
+
+    function promptTierCommand(tierId, field, value) {
+      const patch = {}
+      patch[field] = value
       const tiers = {}
-      const source = tiersOf(patch)
-      for (const tierId of TIER_IDS) {
-        const tier = source[tierId]
-        if (!isRecord(tier)) continue
-        const copy = {}
-        for (const field of PROMPT_TIER_FIELDS) {
-          if (typeof tier[field] === 'string') copy[field] = tier[field]
-        }
-        if (Object.keys(copy).length > 0) tiers[tierId] = copy
-      }
-      if (Object.keys(tiers).length > 0) next.tiers = tiers
-      return next
+      tiers[tierId] = patch
+      return { op: 'putPrompts', tiers: tiers }
+    }
+
+    /** 「恢复内置」按档整键重置（后端 resetPrompts 的粒度就是档）。 */
+    function promptResetCommand(key) {
+      return { op: 'resetPrompts', keys: [key] }
     }
 
     /**
-     * 写一个提示词字段到草稿。
-     *
-     * 与生效值相同就删键：改回原值等于没改，保存时不该多写一条覆盖。
-     * `tierId === null` 表示编排段；档的键按整档存放，label 与 text 各自独立。
-     */
-    function setPromptField(patch, tierId, field, raw, base) {
-      const next = clonePromptPatch(patch)
-      if (tierId === null) {
-        if (raw === base) delete next.delegation
-        else next.delegation = raw
-        return next
-      }
-      const tiers = tiersOf(next)
-      const tier = isRecord(tiers[tierId]) ? tiers[tierId] : {}
-      if (raw === base) delete tier[field]
-      else tier[field] = raw
-      if (Object.keys(tier).length > 0) tiers[tierId] = tier
-      else delete tiers[tierId]
-      if (Object.keys(tiers).length > 0) next.tiers = tiers
-      else delete next.tiers
-      return next
-    }
-
-    /** 当前输入值：草稿优先，没有草稿就用生效值。空输入框因此不会把值变成 undefined。 */
-    function promptFieldValue(patch, tierId, field, base) {
-      if (!isRecord(patch)) return base
-      if (tierId === null) return typeof patch.delegation === 'string' ? patch.delegation : base
-      const tiers = tiersOf(patch)
-      const tier = tiers[tierId]
-      if (isRecord(tier) && typeof tier[field] === 'string') return tier[field]
-      return base
-    }
-
-    /** 「恢复内置」成功后把该键从草稿里摘掉；其余键的未保存改动保留。 */
-    function withoutPromptKey(patch, key) {
-      const next = clonePromptPatch(patch)
-      if (key === PROMPT_DELEGATION_KEY) {
-        delete next.delegation
-        return next
-      }
-      const tiers = tiersOf(next)
-      delete tiers[key]
-      if (Object.keys(tiers).length > 0) next.tiers = tiers
-      else delete next.tiers
-      return next
-    }
-
-    /** 草稿里有没有实质改动。空 patch 与 undefined 都是「没有」。 */
-    function hasPromptPatch(patch) {
-      if (!isRecord(patch)) return false
-      if (typeof patch.delegation === 'string') return true
-      const tiers = tiersOf(patch)
-      for (const tierId of TIER_IDS) {
-        const tier = tiers[tierId]
-        if (isRecord(tier) && Object.keys(tier).length > 0) return true
-      }
-      return false
-    }
-
-    /**
-     * 空白字段的位置：保存前拦一层，连请求都不发。
+     * 空白字段拦在入队之前。
      *
      * 后端的 readPromptField 会拒空串与纯空白；语义上空串又等于「跟随内置」，
      * 而跟随内置有自己的入口（恢复内置）。就地拦下，报错比让后端回一句
      * 「不能为空串」更接近用户此刻想做的事。
      */
-    function blankPromptFields(patch) {
-      const problems = []
-      if (!isRecord(patch)) return problems
-      if (typeof patch.delegation === 'string' && patch.delegation.trim() === '') problems.push('编排段')
-      const tiers = tiersOf(patch)
-      for (const tierId of TIER_IDS) {
-        const tier = tiers[tierId]
-        if (!isRecord(tier)) continue
-        for (const field of PROMPT_TIER_FIELDS) {
-          if (typeof tier[field] === 'string' && tier[field].trim() === '') {
-            problems.push(TIER_NAMES[tierId] + (field === 'label' ? '的名称' : '的判据'))
-          }
-        }
-      }
-      return problems
-    }
-
-    /**
-     * 草稿 → `putPrompts` 命令；没有实质改动时返回 null。
-     *
-     * 只带自己的键：编排段改了才带 delegation，某档改了才带 tiers[tierId]，
-     * 档内再只带改过的 label / text。空白值与等于生效值的值都不进命令。
-     */
-    function promptsCommand(prompts, patch) {
-      if (!isRecord(patch)) return null
-      const effective = promptTextOf(prompts)
-      const command = { op: 'putPrompts' }
-      let touched = false
-      if (typeof patch.delegation === 'string' && patch.delegation.trim() !== '' && patch.delegation !== effective.delegation) {
-        command.delegation = patch.delegation
-        touched = true
-      }
-      const source = tiersOf(patch)
-      const tierPayload = {}
-      for (const tierId of TIER_IDS) {
-        const tier = source[tierId]
-        if (!isRecord(tier)) continue
-        const base = promptTierBase(effective, tierId)
-        const fields = {}
-        for (const field of PROMPT_TIER_FIELDS) {
-          const value = tier[field]
-          if (typeof value !== 'string' || value.trim() === '') continue
-          if (value === base[field]) continue
-          fields[field] = value
-          touched = true
-        }
-        if (Object.keys(fields).length > 0) tierPayload[tierId] = fields
-      }
-      if (Object.keys(tierPayload).length > 0) command.tiers = tierPayload
-      return touched ? command : null
+    function isBlankPrompt(value) {
+      return typeof value !== 'string' || value.trim() === ''
     }
 
     /** 形如 `a/b` 的串的样本（spec §6.3.1 第 2 条）。不是校验，只用来提醒。 */
@@ -1151,7 +1168,7 @@ window.__ModuleLoader__.load({
      * 读面板数据：一次 read 就够。
      *
      * 绑定表（`state.bindings`）与 cwd 无关——它读的是同一份 workspaces.json，
-     * 一次 read 就带回全部工作区的绑定与 `extra` 清单。cwd 只决定 `state.binding` /
+     * 一次 read 就带回全部工作区的绑定。cwd 只决定 `state.binding` /
      * `state.packId` / `resolved` 算哪一条，所以传当前会话的目录。
      *
      * 旧契约下每个目录要各 read 一次才能拼出绑定表，那是服务端没有绑定表时的权宜；
@@ -1164,10 +1181,10 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * 面板视图 + 一次立即写入。
+     * 面板视图 + 一批即时写命令。
      *
-     * 名册与绑定都是「点一下就该落盘」的操作（与其余三包一致）；四档编辑仍走草稿 +
-     * 保存——它一次改的是一个对象，逐键写盘只会写出一堆半成品 pack。
+     * 改动不再一律「点一下即落盘」：路由、档位、提示词、绑定、新建与改名都进待保存队列
+     * （见 ADR 0006）。还走这里的只剩当场就该生效的几类——删除 pack、`defaultTab`。
      */
     function useSchemeView(host) {
       const [state, setState] = useState({
@@ -1204,7 +1221,7 @@ window.__ModuleLoader__.load({
        * 返回新状态而不是再 read 一次：`apply` 的响应就是落盘后重读的完整视图，
        * 多一次 read 既慢又可能读到别人刚写的中间态。调用方拿它反查新建的 pack id。
        *
-       * body 的 cwd 恒取当前工作区：命令自带 cwd（bind / addExtra / removeExtra），
+       * body 的 cwd 恒取当前工作区：命令自带 cwd（bind），
        * 这个 cwd 只决定回读哪一条绑定——不带的话返回的 `state.binding` 是 null，
        * 界面会闪一下「未绑定」。
        */
@@ -1238,7 +1255,23 @@ window.__ModuleLoader__.load({
         [host, state.currentCwd],
       )
 
-      return { state: state, reload: reload, run: run }
+      /**
+       * 采纳一份新快照。
+       *
+       * 待保存队列提交后拿到的就是落盘后的整车视图，直接替换当前快照，不再 read 一次：
+       * 多一次 read 既慢，又可能读到别人刚写进去的中间态。绑定与名册的改动要把 chip 与
+       * 模型位标签一起更新——两处都在会话页，与设置页之间没有通道，只能在这里主动重读。
+       */
+      const accept = useCallback(
+        (data) => {
+          setState((prev) => ({ ...prev, phase: 'ready', data: data, error: null }))
+          refreshChipName(host, env.sessionId)
+          void labelRefresh(host)
+        },
+        [host],
+      )
+
+      return { state: state, reload: reload, run: run, accept: accept }
     }
 
     function useCatalog(catalog) {
@@ -1412,28 +1445,67 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * 删除的二次确认：第一次点变成「确认删除」，再点一次才真正执行。
+     * 面板按钮。颜色全部在 `PANEL_CSS` 里，这里只给尺寸与语义。
+     *
+     * 尺寸抄官方设置页的行内操作按钮（28px 高、左右 10px、12px 字、radius-sm），
+     * 比原来的裸文字热区大一倍以上——裸文字只有字号那么高，指针要精确压住才点得中。
+     */
+    function Button(props) {
+      const variant = props.variant || (props.danger === true ? 'danger' : 'secondary')
+      const className = 'dsh-model-pack-btn dsh-model-pack-btn-' + variant
+      return h(
+        'button',
+        {
+          type: 'button',
+          disabled: props.disabled === true,
+          className: className,
+          style: { ...S.btn, ...(props.style || {}) },
+          title: props.title || '',
+          ref: props.innerRef,
+          'data-armed': variant === 'danger' && props.armed === true ? 'true' : undefined,
+          onClick: props.onClick,
+        },
+        props.children,
+      )
+    }
+
+    /**
+     * 删除的二次确认：第一次点变成「确认」，再点一次才执行。
      *
      * 不用弹窗：这类删除都发生在列表行里，弹窗要额外一次「关闭」动作；
      * 行内二次确认把成本压到一次点击，误点的代价只是多看一眼。
-     * 进入确认态后 4 秒自动撤销，避免一直停在危险状态。
+     * 进入确认态后 4 秒自动撤销，点别处也撤销，避免一直停在危险状态。
+     *
+     * 删除是唯一「点了就没了」的动作（不进待保存队列，见 ADR 0006），
+     * 所以确认态必须比常态明显：文案换成「确认」、浅红底、字重加重。
      */
     function ConfirmButton(props) {
       const [armed, setArmed] = useState(false)
+      const boxRef = useRef(null)
       const disabled = props.disabled === true
       useEffect(() => {
         if (!armed) return undefined
         const timer = setTimeout(() => setArmed(false), 4000)
         return () => clearTimeout(timer)
       }, [armed])
+      useEffect(() => {
+        if (!armed) return undefined
+        const onDown = (event) => {
+          const node = boxRef.current
+          if (node && node.contains(event.target)) return
+          setArmed(false)
+        }
+        document.addEventListener('mousedown', onDown, true)
+        return () => document.removeEventListener('mousedown', onDown, true)
+      }, [armed])
       return h(
-        'button',
+        Button,
         {
-          type: 'button',
+          danger: true,
+          armed: armed,
           disabled: disabled,
-          style: armed
-            ? { ...S.reset, color: T.error, fontWeight: 600, whiteSpace: 'nowrap' }
-            : props.style || S.reset,
+          innerRef: boxRef,
+          style: props.style,
           title: armed ? '再点一次确认删除' : props.title || '',
           onClick: (event) => {
             event.stopPropagation()
@@ -1446,22 +1518,252 @@ window.__ModuleLoader__.load({
             props.onConfirm()
           },
         },
-        armed ? props.confirmLabel || '删除' : props.label || '✕',
+        armed ? props.confirmLabel || '确认' : props.label || '删除',
       )
     }
 
-    function Button(props) {
-      const face = props || {}
-      return h(
-        'button',
-        {
-          type: 'button',
-          style: S.button(face.primary === true, face.danger === true),
-          title: face.title,
-          disabled: face.disabled === true,
-          onClick: face.disabled === true ? undefined : face.onClick,
+    /**
+     * 面板内输入框的 Esc 只作用于输入框自己，不冒泡。
+     *
+     * 宿主的设置弹层把 Esc 当「关闭面板」：改名途中按 Esc 想反悔，
+     * 结果整个面板关掉，改了一半的名字也一起没了。
+     */
+    function stopEscape(event) {
+      if (event.key === 'Escape') event.stopPropagation()
+    }
+
+    /**
+     * 文本输入：改动先留在输入框里，失焦、回车或 Esc 时才交给调用方。
+     *
+     * 不逐字入队：每次入队都会发一次 `dryRun`，逐字就是每个键一次往返，光标会跟着
+     * 服务端的回显跳。输入框因此自己持有一份缓冲，未聚焦时始终显示外部值。
+     */
+    function TextField(props) {
+      const [buffer, setBuffer] = useState(null)
+      const cancelled = useRef(false)
+      const value = buffer === null ? String(props.value === undefined ? '' : props.value) : buffer
+      const commit = () => {
+        const next = cancelled.current ? null : buffer
+        cancelled.current = false
+        setBuffer(null)
+        if (next === null) return
+        if (next === String(props.value === undefined ? '' : props.value)) return
+        props.onCommit(next)
+      }
+      const shared = {
+        value: value,
+        disabled: props.disabled === true,
+        placeholder: props.placeholder,
+        title: props.title,
+        style: props.style,
+        autoFocus: props.autoFocus === true,
+        onFocus: props.onFocus,
+        onClick: (event) => event.stopPropagation(),
+        onChange: (event) => setBuffer(event.target.value),
+        onBlur: commit,
+        onKeyDown: (event) => {
+          // 宿主的设置弹层把 Esc 当「关闭面板」，这里必须拦住冒泡。
+          if (event.key === 'Escape') {
+            event.stopPropagation()
+            cancelled.current = true
+            setBuffer(null)
+            if (props.onCancel) props.onCancel()
+            return
+          }
+          if (event.key === 'Enter' && props.multiline !== true) {
+            event.preventDefault()
+            event.currentTarget.blur()
+          }
         },
-        face.children,
+      }
+      if (props.multiline === true) return h('textarea', { ...shared, rows: props.rows })
+      return h('input', shared)
+    }
+
+    /** 每条命令命中哪一格状态。同键后写覆盖，队列里永远只有最后一次取值。 */
+    function pendingKey(command) {
+      switch (command.op) {
+        case 'packSession':
+          return 'packSession:' + command.packId
+        case 'packTier':
+          return 'packTier:' + command.packId + ':' + command.tierId
+        case 'putPack':
+          return 'pack:' + command.packId
+        case 'renamePack':
+          return 'renamePack:' + command.packId
+        case 'bind':
+          return 'bind:' + command.cwd
+        default:
+          // 新建与提示词补丁没有可覆盖的目标：前者每条都是独立一次决定，
+          // 后者的每条只带自己那几个键（按单键去重会丢掉别的键）。
+          return null
+      }
+    }
+
+    /**
+     * 待保存改动（见 ADR 0006）。
+     *
+     * 点一下只入队，不发写请求；队列非空时每次变化都用 `dryRun` 试算一次，
+     * 拿服务端算好的视图来渲染——浏览器不复制求值链（根术语表「生效视图」）。
+     * 点「保存」才把整批命令写盘。
+     *
+     * 队列活在这一次挂载里：关闭面板即丢。跨面板保留会被「我到底存了没」拖住，
+     * 而用户关掉面板再回来时通常已经不记得点过什么了。
+     */
+    function usePending(options) {
+      const [entries, setEntries] = useState([])
+      const [preview, setPreview] = useState({ data: null, loading: false, error: null })
+      const seq = useRef(0)
+      const uid = useRef(0)
+      const latest = useRef(options)
+      latest.current = options
+      /*
+       * 队列的最新值也放一份在 ref 里。
+       *
+       * 输入框的失焦发生在点击之前：先 push 再点「保存」时，那个点击处理函数拿到的
+       * 还是上一次渲染的 `entries`，最后一段刚提交的文字就会掉。commit 读 ref 兜住。
+       */
+      const entriesRef = useRef(entries)
+      entriesRef.current = entries
+
+      useEffect(() => {
+        if (entries.length === 0) {
+          // 队列空了就让上一次在途的试算作废，避免它的响应把视图改回「有改动」。
+          seq.current += 1
+          setPreview({ data: null, loading: false, error: null })
+          return
+        }
+        const mine = (seq.current += 1)
+        setPreview((prev) => ({ data: prev.data, loading: true, error: null }))
+        latest.current.preview(entries.map((entry) => entry.command)).then(
+          (data) => {
+            if (mine === seq.current) setPreview({ data: data, loading: false, error: null })
+          },
+          (error) => {
+            if (mine === seq.current) {
+              setPreview((prev) => ({ data: prev.data, loading: false, error: String(error.message || error) }))
+            }
+          },
+        )
+      }, [entries])
+
+      const push = useCallback((commands) => {
+        const list = Array.isArray(commands) ? commands : [commands]
+        setEntries((prev) => {
+          const next = prev.slice()
+          for (const command of list) {
+            const key = pendingKey(command)
+            if (key !== null) {
+              for (let index = next.length - 1; index >= 0; index -= 1) {
+                if (next[index].key === key) next.splice(index, 1)
+              }
+            }
+            uid.current += 1
+            next.push({ id: uid.current, key: key, command: command })
+          }
+          return next
+        })
+      }, [])
+
+      const undo = useCallback(() => setEntries((prev) => prev.slice(0, -1)), [])
+      const discard = useCallback(() => setEntries([]), [])
+
+      /**
+       * 丢掉命中 predicate 的命令，返回丢掉了几条。
+       *
+       * 删除是当场写盘的，队列里引用被删对象的命令（改它的名、给它设开关、
+       * 绑到它）在删除之后都落不了地，留着只会在保存时报错。
+       */
+      const drop = useCallback(
+        (predicate) => {
+          const victims = entriesRef.current.filter((entry) => predicate(entry.command))
+          if (victims.length === 0) return 0
+          setEntries((prev) => prev.filter((entry) => !predicate(entry.command)))
+          return victims.length
+        },
+        [],
+      )
+
+      const commit = useCallback(async () => {
+        const commands = entriesRef.current.map((entry) => entry.command)
+        if (commands.length === 0) return true
+        try {
+          const data = await latest.current.apply(commands)
+          setEntries([])
+          latest.current.onApplied(data)
+          return true
+        } catch (error) {
+          setPreview((prev) => ({ ...prev, error: String(error.message || error) }))
+          return false
+        }
+      }, [])
+
+      /** 被改动命中的键，供行渲染标出「这一行还没保存」。 */
+      const keys = useMemo(() => {
+        const set = new Set()
+        for (const entry of entries) if (entry.key !== null) set.add(entry.key)
+        return set
+      }, [entries])
+
+      return {
+        entries: entries,
+        keys: keys,
+        preview: preview,
+        push: push,
+        undo: undo,
+        discard: discard,
+        drop: drop,
+        commit: commit,
+        count: entries.length,
+      }
+    }
+
+    /** 停靠区上方那一行提示：说清楚发生了什么，给一个关掉它的入口。 */
+    function NoticeBar(props) {
+      return h(
+        'div',
+        { style: S.noticeBar },
+        h(
+          'span',
+          {
+            style: {
+              ...S.hint,
+              flex: '1 1 auto',
+              minWidth: 0,
+              color: 'var(--dsw-alias-state-warn-label, #b7791f)',
+            },
+          },
+          props.text,
+        ),
+        h(Button, { variant: 'quiet', onClick: props.onClose, title: '关闭提示' }, '关闭'),
+      )
+    }
+
+    /** 底部待保存条：左计数与错误，右「撤销 / 放弃全部 / 保存」。 */
+    function PendingBar(props) {
+      if (props.count === 0) return null
+      const busy = props.busy === true
+      // 设置页里贴住底边（内容很长，要一直看得见）；弹层里不贴，由外层底栏排布。
+      const inline = props.inline === true
+      const style = inline ? S.pendingInline : S.pendingBar
+      return h(
+        'div',
+        { style: style },
+        // 弹层里「关闭」占住最左，这里先把空位弹开，让文字与按钮一起靠右。
+        inline ? h('span', { key: 'spacer', style: { flex: '1 1 auto' } }) : null,
+        h(
+          'span',
+          {
+            style: { ...S.hint, flex: inline ? '0 0 auto' : '1 1 auto', color: props.error ? T.error : undefined },
+          },
+          props.error ? '未保存：' + props.error : '已改 ' + props.count + ' 项，尚未保存',
+        ),
+        h(Button, { variant: 'quiet', onClick: props.onUndo, disabled: busy }, '撤销'),
+        // 只有一项时「撤销」与「放弃全部」做的是同一件事，多一个按钮只是多一次选择。
+        props.count > 1
+          ? h(Button, { variant: 'quiet', onClick: props.onDiscard, disabled: busy }, '放弃全部')
+          : null,
+        h(Button, { variant: 'primary', onClick: props.onCommit, disabled: busy }, busy ? '保存中…' : '保存'),
       )
     }
 
@@ -1624,7 +1926,6 @@ window.__ModuleLoader__.load({
     function defaultTier(tierId, catalog) {
       return { name: TIER_NAMES[tierId], primary: firstRoute(catalog), fallbacks: [] }
     }
-
     /**
      * 一档：名称、首选、有序备选。
      *
@@ -1637,6 +1938,7 @@ window.__ModuleLoader__.load({
       const catalog = props.catalog
       const disabled = props.disabled === true
       const onChange = props.onChange
+      const [renaming, setRenaming] = useState(false)
 
       if (!isRecord(tier)) {
         return h(
@@ -1648,7 +1950,7 @@ window.__ModuleLoader__.load({
             h('div', { style: S.rowName }, TIER_NAMES[tierId], h(Tag, null, tierId), h(Tag, null, '未配置')),
             h('div', { style: S.rowMeta }, '没配置的档不会出现在 subagent_tier 的可选值里。'),
           ),
-          h(Button, { disabled: disabled, onClick: () => onChange(defaultTier(tierId, catalog)) }, '启用此档'),
+          h(Button, { variant: 'secondary', disabled: disabled, onClick: () => onChange(defaultTier(tierId, catalog)) }, '启用此档'),
         )
       }
 
@@ -1675,7 +1977,7 @@ window.__ModuleLoader__.load({
           { style: S.fieldHead },
           h('span', { style: S.groupName }, TIER_NAMES[tierId]),
           h(Tag, null, tierId),
-          h(Button, { disabled: disabled, danger: true, onClick: () => onChange(null) }, '停用此档'),
+          h(Button, { variant: 'danger', disabled: disabled, onClick: () => onChange(null) }, '停用此档'),
         ),
         // 名称与首选同一行：名称通常就是档名，单独占一行只是把首选挤下去。
         h(
@@ -1685,13 +1987,36 @@ window.__ModuleLoader__.load({
           h(
             'div',
             { style: { flex: '0 1 140px', minWidth: '100px' } },
-            h('input', {
-              style: S.input,
-              value: tier.name || '',
-              disabled: disabled,
-              placeholder: TIER_NAMES[tierId],
-              onChange: (event) => setTier({ ...tier, name: event.target.value }),
-            }),
+            // 双击名字即改名：改名的常见入口就是「看见名字想改」，不必先点一个按钮。
+            renaming
+              ? h(TextField, {
+                  autoFocus: true,
+                  value: tier.name || '',
+                  style: S.input,
+                  disabled: disabled,
+                  placeholder: TIER_NAMES[tierId],
+                  onCommit: (name) => {
+                    setRenaming(false)
+                    const trimmed = name.trim()
+                    if (trimmed === '') return
+                    setTier({ ...tier, name: trimmed })
+                  },
+                  onCancel: () => setRenaming(false),
+                })
+              : h(
+                  'span',
+                  {
+                    style: { ...S.rowName, cursor: disabled ? 'default' : 'text' },
+                    title: disabled ? '' : '双击改名',
+                    onDoubleClick: disabled
+                      ? undefined
+                      : (event) => {
+                          event.stopPropagation()
+                          setRenaming(true)
+                        },
+                  },
+                  String(tier.name || '') || TIER_NAMES[tierId],
+                ),
           ),
           h(RouteFields, {
             value: tier.primary,
@@ -1720,6 +2045,7 @@ window.__ModuleLoader__.load({
               : '首选不可用时按下列顺序依次尝试',
           ),
           h(Button, {
+            variant: 'secondary',
             disabled: disabled,
             onClick: () => setTier({ ...tier, fallbacks: fallbacks.concat([firstRoute(catalog)]) }),
           }, '添加'),
@@ -1738,12 +2064,12 @@ window.__ModuleLoader__.load({
                 setTier({ ...tier, fallbacks: list })
               },
             }),
-            h(Button, { disabled: disabled || index === 0, onClick: () => moveFallback(index, -1) }, '↑'),
-            h(Button, { disabled: disabled || index === fallbacks.length - 1, onClick: () => moveFallback(index, 1) }, '↓'),
+            h(Button, { variant: 'secondary', disabled: disabled || index === 0, onClick: () => moveFallback(index, -1) }, '↑'),
+            h(Button, { variant: 'secondary', disabled: disabled || index === fallbacks.length - 1, onClick: () => moveFallback(index, 1) }, '↓'),
             h(ConfirmButton, {
               disabled: disabled,
               label: '删除',
-              confirmLabel: '删除',
+              confirmLabel: '确认',
               title: '删掉这条备选路由',
               onConfirm: () => {
                 const list = fallbacks.slice()
@@ -1758,29 +2084,37 @@ window.__ModuleLoader__.load({
 
     // ---------- pack 内容编辑 ----------
 
+    /**
+     * pack 内容编辑器：会话路由 + 四档。
+     *
+     * 值来自**试算视图**里的那张 pack，改动立刻算成细粒度命令并入队——不再攒一份整包
+     * 草稿再一次性提交。两套并存时「哪一份才算数」说不清，所以旧的草稿整套删掉了。
+     */
     function SinglePackEditor(props) {
-      const { editing, catalog, support } = props
-      const pack = editing.value
+      const packId = props.packId
+      const pack = props.pack
+      const catalog = props.catalog
+      const support = props.support
+      const onChange = props.onChange
       const tiers = isRecord(pack.tiers) ? pack.tiers : {}
       const tierDisabled = support.subagents === false
-      const setPack = props.onChange
-      // `default` 的名字由服务端固定（改名命令会被拒），输入框置灰而不是让人白改。
-      const nameLocked = editing.id === DEFAULT_PACK_ID
+      // `default` 的名字由服务端固定（改名命令会被拒），改不了就不给入口。
+      const nameLocked = packId === DEFAULT_PACK_ID
 
       const setSession = (next) => {
         if (next === null) {
-          // 跟随 = 删键。构造新对象而不是 delete，草稿才不会被就地改写。
-          setPack({ name: pack.name, tiers: pack.tiers })
+          // 跟随 = 删键。构造新对象而不是 delete，视图才不会被就地改写。
+          onChange({ name: pack.name, tiers: pack.tiers })
           return
         }
-        setPack({ ...pack, session: next })
+        onChange({ ...pack, session: next })
       }
 
       const setTier = (tierId, next) => {
         const nextTiers = { ...tiers }
         if (next === null) delete nextTiers[tierId]
         else nextTiers[tierId] = next
-        setPack({ ...pack, tiers: nextTiers })
+        onChange({ ...pack, tiers: nextTiers })
       }
 
       return h(
@@ -1790,15 +2124,24 @@ window.__ModuleLoader__.load({
           'div',
           { style: S.fieldRow },
           h('span', { style: S.fieldLabel }, '名称'),
-          h('input', {
-            style: S.input,
-            value: nameLocked ? DEFAULT_PACK_NAME : pack.name || '',
-            disabled: nameLocked,
-            placeholder: '比如：标准',
-            onChange: (event) => setPack({ ...pack, name: event.target.value }),
-          }),
-          nameLocked ? h(Tag, { title: '默认 pack 不可改名' }, '固定') : null,
-          h('span', { style: S.mono }, 'id: ' + editing.id),
+          h(
+            'div',
+            { style: { flex: '0 1 200px', minWidth: '120px' } },
+            nameLocked
+              ? h('span', { style: S.rowName }, DEFAULT_PACK_NAME)
+              : h(TextField, {
+                  value: pack.name || '',
+                  style: S.input,
+                  placeholder: '比如：标准',
+                  onCommit: (name) => {
+                    const trimmed = name.trim()
+                    if (trimmed === '' || trimmed === pack.name) return
+                    onChange({ ...pack, name: trimmed })
+                  },
+                }),
+          ),
+          nameLocked ? h(Tag, { title: '默认 pack 不可改名' }, '固定') : h('span', { style: S.hint }, '改完失焦即入队'),
+          h('span', { style: S.mono }, 'id: ' + packId),
         ),
         h(
           'div',
@@ -1808,8 +2151,8 @@ window.__ModuleLoader__.load({
             h('div', { style: S.rowMeta }, '只作用于该工作区里之后新建的会话；已有会话不变。'),
           ),
           isRecord(pack.session)
-            ? h(Button, { onClick: () => setSession(null), title: '删掉 session 键，回到官方默认' }, '跟随系统默认')
-            : h(Button, { onClick: () => setSession(firstRoute(catalog)) }, '指定会话路由'),
+            ? h(Button, { variant: 'secondary', onClick: () => setSession(null), title: '删掉 session 键，回到官方默认' }, '跟随系统默认')
+            : h(Button, { variant: 'secondary', onClick: () => setSession(firstRoute(catalog)) }, '指定会话路由'),
         ),
         isRecord(pack.session)
           ? h(RouteFields, {
@@ -1855,44 +2198,53 @@ window.__ModuleLoader__.load({
     /**
      * 字段级提示：空白与 provider/model 串。
      *
-     * 前者阻断保存（保存前也拦一次），后者只提醒。两者都不是校验：
+     * 前者在入队前就拦下（后端会拒空串），后者只提醒。两者都不是校验：
      * 面板没有权威的 provider 名单，硬校验只会误杀（spec §6.3.1 第 2 条）。
      */
     function PromptFieldNotice(props) {
       const value = typeof props.value === 'string' ? props.value : ''
-      let inner = null
       if (value.trim() === '') {
-        inner = h('div', { style: S.error }, '不能为空。想用内置文本请点「恢复内置」。')
-      } else {
-        const hit = routeLikeIn(value)
-        if (hit !== '') {
-          inner = h(
+        return h('div', { style: S.fieldRow }, h('div', { style: S.rowMain }, h('div', { style: S.error }, '不能为空。想用内置文本请点「恢复内置」。')))
+      }
+      const hit = routeLikeIn(value)
+      if (hit === '') return null
+      return h(
+        'div',
+        { style: S.fieldRow },
+        h(
+          'div',
+          { style: S.rowMain },
+          h(
             'div',
             { style: { ...S.notice, color: T.warn, borderColor: T.warn } },
             '段内出现「' + hit + '」——形如 provider/model 的串。段里出现模型名会让前缀随会话变化，破坏前缀缓存；若这只是路径，可以忽略（这条不阻止保存）。',
-          )
-        }
-      }
-      if (inner === null) return null
-      return h('div', { style: S.fieldRow }, h('div', { style: S.rowMain }, inner))
+          ),
+        ),
+      )
     }
 
     /**
      * 一档提示词：名称 + 判据。
      *
-     * 「恢复内置」按档整键重置（后端 resetPrompts 的粒度就是档），
-     * 所以清空输入框不能等价于恢复内置：空输入框会被拦下，见 PromptFieldNotice。
+     * 「恢复内置」按档整键重置（后端 resetPrompts 的粒度就是档），所以清空输入框不能
+     * 等价于恢复内置：空输入框会被拦下，见 PromptFieldNotice。
      */
     function PromptTierEditor(props) {
       const tierId = props.tierId
       const base = props.base || { label: '', text: '' }
-      const patch = props.patch
       const overridden = props.overridden === true
       const disabled = props.disabled === true
-      const onChange = props.onChange
+      const onCommit = props.onCommit
       const onReset = props.onReset
-      const labelValue = promptFieldValue(patch, tierId, 'label', base.label)
-      const textValue = promptFieldValue(patch, tierId, 'text', base.text)
+
+      const commit = (field, value) => {
+        if (isBlankPrompt(value)) {
+          props.notify(TIER_NAMES[tierId] + (field === 'label' ? '的名称' : '的判据') + '不能为空。想用内置文本请点「恢复内置」。')
+          return
+        }
+        if (value === base[field]) return
+        onCommit(tierId, field, value)
+      }
 
       return h(
         'div',
@@ -1904,6 +2256,7 @@ window.__ModuleLoader__.load({
           h(Tag, null, tierId),
           overridden ? h(Tag, { danger: true, title: '这一档至少有一个字段是你自己填的' }, '已自定义') : h(Tag, null, '内置'),
           h(Button, {
+            variant: 'secondary',
             disabled: disabled || !overridden,
             title: overridden ? '删掉该档的覆盖，回到内置' : '当前就是内置',
             onClick: () => onReset(tierId),
@@ -1913,15 +2266,19 @@ window.__ModuleLoader__.load({
           'div',
           { style: S.fieldRow },
           h('span', { style: S.fieldLabel }, '名称'),
-          h('input', {
-            style: S.input,
-            value: labelValue,
-            disabled: disabled,
-            placeholder: base.label,
-            onChange: (event) => onChange(setPromptField(patch, tierId, 'label', event.target.value, base.label)),
-          }),
+          h(
+            'div',
+            { style: S.rowMain },
+            h(TextField, {
+              value: base.label,
+              style: S.input,
+              disabled: disabled,
+              placeholder: base.label,
+              onCommit: (value) => commit('label', value),
+            }),
+          ),
         ),
-        h(PromptFieldNotice, { value: labelValue }),
+        h(PromptFieldNotice, { value: base.label }),
         h(
           'div',
           { style: { ...S.fieldRow, alignItems: 'flex-start' } },
@@ -1929,16 +2286,17 @@ window.__ModuleLoader__.load({
           h(
             'div',
             { style: S.rowMain },
-            h('textarea', {
-              style: S.textarea,
-              value: textValue,
-              disabled: disabled,
+            h(TextField, {
+              multiline: true,
               rows: 2,
-              onChange: (event) => onChange(setPromptField(patch, tierId, 'text', event.target.value, base.text)),
+              value: base.text,
+              style: S.textarea,
+              disabled: disabled,
+              onCommit: (value) => commit('text', value),
             }),
           ),
         ),
-        h(PromptFieldNotice, { value: textValue }),
+        h(PromptFieldNotice, { value: base.text }),
       )
     }
 
@@ -1946,21 +2304,30 @@ window.__ModuleLoader__.load({
      * 提示词区：编排段 + 四档判据（spec §6.3.1）。
      *
      * 与 pack 正交：所有 pack 共用同一份覆盖，全局一份。
-     * 面板只提交改过的键；空串不提交；像 provider/model 的串只提醒。
-     * 独立成第二页：提示词是全局覆盖，与具体 pack 的绑定无关，混在分包页里太挤。
+     * 改动进待保存队列；「恢复内置」也是一条命令（resetPrompts）——它删键，与写入空串
+     * 是两件事。
      */
     function PromptSection(props) {
       const prompts = props.prompts
-      const patch = props.patch
       const disabled = props.disabled === true
-      const onChange = props.onChange
-      const onReset = props.onReset
+      const queue = props.queue
+      const notify = props.notify
       if (!isRecord(prompts)) return null
 
       const effective = promptTextOf(prompts)
       const overridden = promptOverrideKeys(prompts.overrides)
-      const delegationValue = promptFieldValue(patch, null, 'delegation', effective.delegation)
       const delegationOverridden = overridden.indexOf(PROMPT_DELEGATION_KEY) >= 0
+
+      const commitDelegation = (value) => {
+        if (isBlankPrompt(value)) {
+          notify('编排段不能为空。想用内置文本请点「恢复内置」。')
+          return
+        }
+        if (value === effective.delegation) return
+        queue(promptDelegationCommand(value))
+      }
+      const commitTier = (tierId, field, value) => queue(promptTierCommand(tierId, field, value))
+      const reset = (key) => queue(promptResetCommand(key))
 
       return h(
         'div',
@@ -1977,7 +2344,7 @@ window.__ModuleLoader__.load({
           h(
             'div',
             { style: S.rowMain },
-            h('div', { style: S.rowMeta }, '这些文字会进入系统提示词。改完点页面底部「保存」；想回到插件自带的文本，点「恢复内置」。输入框留空不算恢复内置。'),
+            h('div', { style: S.rowMeta }, '这些文字会进入系统提示词。改完失焦即入队，点底部「保存」才写盘；想回到插件自带的文本，点「恢复内置」。输入框留空不算恢复内置。'),
           ),
         ),
         h(
@@ -1990,9 +2357,10 @@ window.__ModuleLoader__.load({
             h(Tag, { title: '系统提示词里的段名：model-pack.delegation' }, '系统提示词'),
             delegationOverridden ? h(Tag, { danger: true, title: '当前用的是你自己写的文本' }, '已自定义') : h(Tag, null, '内置'),
             h(Button, {
+              variant: 'secondary',
               disabled: disabled || !delegationOverridden,
               title: delegationOverridden ? '删掉 delegation 覆盖，回到内置' : '当前就是内置',
-              onClick: () => onReset(PROMPT_DELEGATION_KEY),
+              onClick: () => reset(PROMPT_DELEGATION_KEY),
             }, '恢复内置'),
           ),
           h(
@@ -2001,27 +2369,28 @@ window.__ModuleLoader__.load({
             h(
               'div',
               { style: S.rowMain },
-              h('textarea', {
-                style: S.textarea,
-                value: delegationValue,
-                disabled: disabled,
+              h(TextField, {
+                multiline: true,
                 rows: 8,
-                onChange: (event) => onChange(setPromptField(patch, null, 'delegation', event.target.value, effective.delegation)),
+                value: effective.delegation,
+                style: S.textarea,
+                disabled: disabled,
+                onCommit: commitDelegation,
               }),
             ),
           ),
-          h(PromptFieldNotice, { value: delegationValue }),
+          h(PromptFieldNotice, { value: effective.delegation }),
         ),
         TIER_IDS.map((tierId) =>
           h(PromptTierEditor, {
             key: tierId,
             tierId: tierId,
             base: promptTierBase(effective, tierId),
-            patch: patch,
             overridden: overridden.indexOf(tierId) >= 0,
             disabled: disabled,
-            onChange: onChange,
-            onReset: onReset,
+            notify: notify,
+            onCommit: commitTier,
+            onReset: reset,
           }),
         ),
       )
@@ -2030,26 +2399,36 @@ window.__ModuleLoader__.load({
     // ---------- 分包页：名册 ----------
 
     /**
-     * pack 名册：新建、改名、删除，点「编辑」就地展开内容。
+     * pack 名册：新建、改名、删除，点一行展开内容。
      *
-     * 不再单列一个「编辑哪张 pack」的下拉：名册里每行都有编辑入口，选了就展开，
+     * 不再单列一个「编辑哪张 pack」的下拉：名册里每行都有入口，点了就展开，
      * 两处入口做同一件事只会让人犹豫点哪个。`default` 没有改名与删除入口——它是
      * 求值链的终点，删掉或改名之后「未绑定即默认」就失去指代；但内容可以改。
      */
     function PackRoster(props) {
       const packs = props.packs
       const bindings = props.bindings
+      const expanded = props.expanded
+      const isPending = props.isPending
+      const onCreate = props.onCreate
+      const onRename = props.onRename
+      const notify = props.notify
+      const onToggle = props.onToggle
+      const onChangePack = props.onChangePack
       const onDelete = props.onDelete
-      const editing = props.editing
-      const onEdit = props.onEdit
-      const onCancelEdit = props.onCancelEdit
-      const editingDirty = props.editingDirty === true
       const [newName, setNewName] = useState('')
+      const [renaming, setRenaming] = useState(null)
 
       const createPack = () => {
         const trimmed = newName.trim()
         if (trimmed === '') return
-        props.onCreate(trimmed)
+        // 重名在客户端先拦：只靠服务端拒的话，`packs.json` 这次不会应用，界面上
+        // 表现为「点了新建、什么都没出现」。
+        if (packs.some((entry) => entry.name === trimmed)) {
+          notify('已经有同名的 pack：' + trimmed)
+          return
+        }
+        onCreate(trimmed)
         setNewName('')
       }
 
@@ -2076,6 +2455,7 @@ window.__ModuleLoader__.load({
         h(
           'div',
           { style: { display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap', marginBottom: '8px' } },
+          // 新建框用普通受控输入：它的值只在本地，不需要走「失焦才入队」那套缓冲。
           h('input', {
             style: { ...S.input, flex: '0 0 200px' },
             placeholder: '新 pack 名',
@@ -2083,46 +2463,76 @@ window.__ModuleLoader__.load({
             onChange: (event) => setNewName(event.target.value),
             onKeyDown: (event) => {
               if (event.key === 'Enter') createPack()
+              stopEscape(event)
             },
           }),
-          h('button', { type: 'button', style: S.button(false, false), onClick: createPack }, '新建 pack'),
-          h('span', { style: S.hint }, '新建后直接展开编辑。'),
+          h(Button, { variant: 'secondary', onClick: createPack }, '新建 pack'),
+          h('span', { style: S.hint }, '新建也进待保存：点底部「保存」才写盘。'),
         ),
         packs.map((entry) => {
-          const open = editing !== null && editing.id === entry.id
+          const open = expanded === entry.id
+          const dirty = isPending(entry.id)
           return h(
             'div',
             { key: entry.id },
             h(
               'div',
-              { style: { ...S.packRow, flexWrap: 'wrap' } },
-              h(
-                'span',
-                { style: S.groupName, title: entry.isDefault ? '未绑定的工作区按它运行' : undefined },
-                entry.name,
-              ),
+              {
+                className: 'dsh-model-pack-row',
+                'data-state': dirty ? 'pending' : undefined,
+                style: { ...S.packRow, flexWrap: 'wrap', borderColor: open ? T.borderStrong : T.border },
+                onClick: () => onToggle(entry.id),
+              },
+              h('span', { style: { opacity: 0.5, width: '12px' } }, open ? '▾' : '▸'),
+              // 双击名字即改名；`default` 的名字由服务端固定，不给入口。
+              renaming === entry.id && !entry.isDefault
+                ? h('div', { style: { flex: '1 1 140px', minWidth: '100px' } },
+                    h(TextField, {
+                      autoFocus: true,
+                      value: entry.name,
+                      style: S.input,
+                      onClick: (event) => event.stopPropagation(),
+                      onCommit: (name) => {
+                        setRenaming(null)
+                        const trimmed = name.trim()
+                        if (trimmed === '' || trimmed === entry.name) return
+                        if (packs.some((other) => other.id !== entry.id && other.name === trimmed)) {
+                          notify('已经有同名的 pack：' + trimmed)
+                          return
+                        }
+                        onRename(entry.id, trimmed)
+                      },
+                      onCancel: () => setRenaming(null),
+                    }),
+                  )
+                : h(
+                    'span',
+                    {
+                      style: S.groupName,
+                      title: entry.isDefault ? '未绑定的工作区按它运行' : '双击改名',
+                      onDoubleClick: entry.isDefault
+                        ? undefined
+                        : (event) => {
+                            event.stopPropagation()
+                            setRenaming(entry.id)
+                          },
+                    },
+                    entry.name,
+                  ),
               h('span', { style: S.badge }, String(configured(entry)) + ' 处配置'),
-              open && editingDirty ? h(Tag, { title: '有未保存的改动' }, '未保存') : null,
-              // 行内动作统一用图标：这一行本来就窄，文字按钮会把 pack 名挤掉。
-              // 改名只在展开的内容编辑器里做，行内不再放第二个铅笔。
-              h(
-                'button',
-                {
-                  type: 'button',
-                  style: S.reset,
-                  title: open ? '收起内容' : '编辑内容',
-                  onClick: () => (open ? onCancelEdit() : onEdit(entry.id)),
-                },
-                open ? '▴' : '✎',
-              ),
+              dirty ? h(Tag, { title: '这张 pack 有未保存的改动' }, '待保存') : null,
               entry.isDefault
                 ? null
                 : h(ConfirmButton, {
+                    // 行内动作统一用图标：这一行本来就窄，文字按钮会把 pack 名挤掉。
+                    label: '✕',
+                    confirmLabel: '确认',
+                    disabled: false,
                     title:
                       boundCwds(entry.id).length === 0
-                        ? '删除 pack'
+                        ? '删除 pack（当场写盘，不可撤销）'
                         : '删除 pack（还被 ' + String(boundCwds(entry.id).length) + ' 个工作区绑定，删除后它们回落到默认）',
-                    onConfirm: () => onDelete(entry.id),
+                    onConfirm: () => onDelete(entry.id, entry.name),
                   }),
             ),
             open
@@ -2130,10 +2540,11 @@ window.__ModuleLoader__.load({
                   'div',
                   { style: { ...S.section, marginLeft: '10px' } },
                   h(SinglePackEditor, {
-                    editing: editing,
+                    packId: entry.id,
+                    pack: entry.pack,
                     catalog: props.catalog,
                     support: props.support,
-                    onChange: props.onChangeEditing,
+                    onChange: (next) => onChangePack(entry.id, next),
                   }),
                 )
               : null,
@@ -2145,33 +2556,23 @@ window.__ModuleLoader__.load({
     // ---------- 分包页：工作区绑定 ----------
 
     /**
-     * 工作区绑定：说明 → 手动添加路径 → 列表（每行一个下拉）。
+     * 工作区绑定：说明 → 列表（每行一个下拉）。
      *
-     * 顺序是「说明 → 手动添加 → 列表」：手动添加是入口，放到列表底下等于没有。
+     * 目录清单由宿主提供（开过会话的目录，外加绑定表里已有的键）：本插件不再维护
+     * 「手动添加的路径」——那条能力与 `workspaces.json` 的 `extra` 字段一并删掉了，
+     * 目录从哪来回宿主，本插件只决定「目录 → pack」。
+     *
      * 绑定只影响该目录下的空白会话（还没开过轮次）：创建、恢复、改绑定三个时点都会
      * 重新施加；开了轮次的会话不会被这里改写。
-     *
-     * 手动添加的路径落在服务端 `bindings.extra`（`addExtra` / `removeExtra`），
-     * 刷新页面、换机器都还在。
      */
     function WorkspaceBoard(props) {
       const packs = props.packs
       const paths = props.paths
-      const extra = props.extra
       const bindings = props.bindings
-      const run = props.run
-      const [manual, setManual] = useState('')
+      const pending = props.pending
+      const queue = props.queue
       const [limit, setLimit] = useState(WORKSPACES_PAGE)
 
-      const addManual = () => {
-        const trimmed = manual.trim()
-        if (trimmed === '') return
-        if (normalizeCwd(trimmed) === null) return
-        run([{ op: 'addExtra', cwd: trimmed }])
-        setManual('')
-      }
-
-      /** 绑定表按归一化键查：服务端落盘时用的就是 `normalizeCwd` 之后的键。 */
       /** 绑到 default 与未绑定同义：下拉里只认普通 pack。 */
       const usableBinding = (id) => (typeof id === 'string' && id !== DEFAULT_PACK_ID ? id : null)
       const boundOf = (cwd) => {
@@ -2195,26 +2596,13 @@ window.__ModuleLoader__.load({
       return h(
         'div',
         { style: S.block },
-        h('div', { style: S.blockTitle }, '工作区绑定'),
-        h('div', { style: { ...S.hint, marginBottom: '8px' } }, '绑定只影响该目录下还没发出请求的会话；开了轮次的会话不换 pack。未绑定即默认。'),
-        h(
-          'div',
-          { style: { display: 'flex', gap: '8px', marginBottom: '8px', alignItems: 'center' } },
-          h('input', {
-            style: S.input,
-            placeholder: '手动添加路径，例如 D:/work/repo',
-            value: manual,
-            onChange: (event) => setManual(event.target.value),
-            onKeyDown: (event) => {
-              if (event.key === 'Enter') addManual()
-            },
-          }),
-          h('button', { type: 'button', style: S.button(false, false), onClick: addManual }, '添加'),
-        ),
+        h('div', { style: S.blockTitleSticky }, '工作区绑定'),
+        h('div', { style: { ...S.hint, marginBottom: '8px' } }, '绑定只影响该目录下还没发出请求的会话；开了轮次的会话不换 pack。未绑定即默认。改动进待保存，点「保存」才写盘。'),
         paths.length === 0
-          ? h('div', { style: S.empty }, '没有可绑定的工作区。用上面的输入框手动添加。')
+          ? h('div', { style: S.empty }, '还没有可绑定的工作区：打开过一次会话的目录会出现在这里。')
           : paths.slice(0, limit).map((cwd) => {
-              const isExtra = extra.some((item) => normalizeCwd(item) === normalizeCwd(cwd))
+              const key = normalizeCwd(cwd)
+              const dirty = key !== null && pending.keys.has('bind:' + key)
               const bound = boundOf(cwd)
               // 悬空引用（pack 已删）显示成「默认」，与服务端读侧的行为一致。
               const value = bound !== null && packs.some((pack) => pack.id === bound) ? bound : ''
@@ -2234,7 +2622,7 @@ window.__ModuleLoader__.load({
                   'div',
                   { style: { flex: '1 1 auto', minWidth: 0 } },
                   h('div', { style: S.path, title: cwd }, cwd),
-                  h('div', { style: S.rowDesc }, isExtra ? '手动添加' : '来自会话'),
+                  dirty ? h(Tag, { title: '这项改动还没保存' }, '待保存') : null,
                 ),
                 h(
                   'div',
@@ -2242,23 +2630,17 @@ window.__ModuleLoader__.load({
                   h(Picker, {
                     value: value,
                     options: options,
-                    onChange: (next) => run([{ op: 'bind', cwd: cwd, packId: next === '' ? null : next }]),
+                    onChange: (next) => queue([{ op: 'bind', cwd: cwd, packId: next === '' ? null : next }]),
                   }),
                 ),
-                isExtra
-                  ? h(ConfirmButton, {
-                      title: '从手动清单移除（不影响已有绑定）',
-                      onConfirm: () => run([{ op: 'removeExtra', cwd: cwd }]),
-                    })
-                  : null,
               )
             }),
         paths.length > limit
           ? h(
-              'button',
+              Button,
               {
-                type: 'button',
-                style: { ...S.button(false, false), marginTop: '8px' },
+                variant: 'secondary',
+                style: { marginTop: '8px' },
                 onClick: () => setLimit(limit + WORKSPACES_PAGE),
               },
               '显示更多（还有 ' + String(paths.length - limit) + ' 个）',
@@ -2275,70 +2657,79 @@ window.__ModuleLoader__.load({
      * 三页：分包管名册与 pack 内容（会话路由与四档），工作区管绑定，提示词管全局覆盖。
      * 「当前页」与「默认页」是两件事：切页只改当前页，打开设置时落在哪一页
      * 由顶部那个下拉决定——两者混成一个状态时，「临时看一眼分包」会顺手改掉默认页。
+     *
+     * 改动先入队（ADR 0006）：点控件只发本地命令，队列非空时每一步都用 `dryRun` 试算，
+     * 面板按试算视图渲染；底部停靠区的「保存」是唯一的提交入口。
      */
     function SettingsPanel(props) {
       const host = props.host
       const catalog = useCatalog(host.catalog)
       const view = useSchemeView(host)
-      const [draft, setDraft] = useState(EMPTY_DRAFT)
+      const { state, run, accept } = view
       const [tab, setTab] = useState(null)
       const [notice, setNotice] = useState(null)
-      const [error, setError] = useState(null)
-      const [saving, setSaving] = useState(false)
+      const [busy, setBusy] = useState(false)
+      /** 展开编辑的是哪一张 pack。纯界面状态：内容本身在待保存队列里。 */
+      const [expanded, setExpanded] = useState(null)
+      /** 刚新建、等着展开的那张 pack 的名字（id 由服务端生成，只能在试算视图里反查）。 */
+      const wanted = useRef(null)
 
-      const state = view.state
-      const data = state.data
+      const preview = useCallback((commands) => api.apply(state.currentCwd, commands, true), [state.currentCwd])
+      const apply = useCallback((commands) => api.apply(state.currentCwd, commands), [state.currentCwd])
+      const pending = usePending({ preview: preview, apply: apply, onApplied: accept })
+
+      const base = state.data
+      // 有待保存改动时，面板按「试算视图」渲染；否则就是真实视图。
+      const data = pending.preview.data !== null ? pending.preview.data : base
+      const frozen = pending.count > 0
+      const frozenOrder = useMemo(
+        () => (frozen && base !== null ? Object.keys(packsOf(base)) : null),
+        [frozen, base],
+      )
+      const packs = useMemo(() => packListOf(data, frozenOrder), [data, frozenOrder])
+      const bindings = useMemo(() => bindingsOf(data), [data])
       const support = (data && data.support) || {}
-      const defaultTab = defaultTabOf(data)
-      // 当前页只由分页按钮切；初值取 `ui.defaultTab`，之后不再跟随任何外部请求。
-      const current = tab !== null ? tab : defaultTab
 
       /**
-       * 进入编辑态 ≠ 改过。
+       * 绑定列表：会话来的目录在前，绑定表里多出来的目录在后，按归一化键去重。
        *
-       * 草稿与已存的内容规范化后逐字段相同，就不该显示「未保存」——否则一选上
-       * 编辑对象，底部立刻冒出一条「1 处未保存」，像是已经动了什么。
+       * 绑定表里可能有会话已经删掉的目录：不列出来的话，这些绑定既看不见也解不开。
        */
-      const editingDirty = (() => {
-        if (!draft.editing) return false
-        const original = packsOf(data)[draft.editing.id]
-        if (original === undefined) return true
-        return JSON.stringify(normalizePack(draft.editing.value)) !== JSON.stringify(normalizePack(original))
-      })()
-
-      const packs = useMemo(() => (data ? packListOf(data) : []), [data])
-      const bindings = useMemo(() => bindingsOf(data), [data])
-
-      /** 绑定列表：会话来的目录在前，手动添加的在后，按归一化键去重。 */
       const paths = useMemo(() => {
         const list = []
         const seen = {}
-        for (const cwd of state.cwds) {
+        const add = (cwd) => {
           const key = normalizeCwd(cwd)
-          if (key === null || seen[key] === true) continue
+          if (key === null || seen[key] === true) return
           seen[key] = true
           list.push(cwd)
         }
-        for (const cwd of bindings.extra) {
-          const key = normalizeCwd(cwd)
-          if (key === null || seen[key] === true) continue
-          seen[key] = true
-          list.push(cwd)
-        }
-        // 绑定表里可能有会话已经删掉的目录：不列出来的话，这些绑定既看不见也解不开。
-        for (const cwd of Object.keys(bindings.bindings)) {
-          const key = normalizeCwd(cwd)
-          if (key === null || seen[key] === true) continue
-          seen[key] = true
-          list.push(cwd)
-        }
+        for (const cwd of state.cwds) add(cwd)
+        for (const cwd of Object.keys(bindings.bindings)) add(cwd)
         return list
-      }, [state.cwds, bindings.extra, bindings.bindings])
+      }, [state.cwds, bindings.bindings])
 
-      if (state.phase === 'loading' && data === null) {
+      /**
+       * 新建后展开新出现的那一张。
+       *
+       * `createPack` 只带名字，id 由服务端生成（`p1`、`p2`…）。试算视图里多出来的就是
+       * 它；拿不到就保持原样，不猜一个 id 出来。
+       */
+      useEffect(() => {
+        if (wanted.current === null) return
+        const found = Object.keys(packsOf(data)).find((id) => {
+          const pack = packsOf(data)[id]
+          return isRecord(pack) && pack.name === wanted.current && !isRecord(packsOf(base)[id])
+        })
+        if (found === undefined) return
+        wanted.current = null
+        setExpanded(found)
+      }, [data, base])
+
+      if (state.phase === 'loading' && base === null) {
         return h('div', { style: S.root }, h('div', { style: S.hint }, '加载中…'))
       }
-      if (!data) {
+      if (!base) {
         return h(
           'div',
           { style: S.root },
@@ -2347,133 +2738,99 @@ window.__ModuleLoader__.load({
         )
       }
 
-
+      const defaultTab = defaultTabOf(data)
+      // 当前页只由分页按钮切；初值取 `ui.defaultTab`，之后不再跟随任何外部请求。
+      const current = tab !== null ? tab : defaultTab
       const warnings = data.state && Array.isArray(data.state.warnings) ? data.state.warnings : []
-      const dirtyCount = (editingDirty ? 1 : 0) + (hasPromptPatch(draft.prompts) ? 1 : 0)
 
       // ---------- 改动 ----------
 
       /**
-       * 进入编辑态。
+       * 入队并清掉上一条提示。
        *
-       * `pack` 可显式传入：新建后 `data` 还是旧快照，新 id 只在 `run` 的返回值里，
-       * 从旧快照里查会查不到。
+       * 提示不自动消失：它是「删除把你没保存的改动带走了」这句唯一交代，
+       * 用户可能正切页、正滚列表，4 秒后就看不见等于没说。
+       * 下一次真的改动时它自然让位。
        */
-      const startEdit = (packId, pack) => {
+      const enqueue = (commands) => {
         setNotice(null)
-        setError(null)
-        const value = pack !== undefined ? pack : packsOf(data)[packId]
-        if (!isRecord(value)) return
-        setDraft((prev) => ({ ...prev, editing: { id: packId, value: clonePack(value) } }))
+        pending.push(commands)
       }
 
-      const cancelEdit = () => setDraft((prev) => ({ ...prev, editing: null }))
+      /** 当场说一句：用于重名、空白这类「点了但没生效」的情况。 */
+      const notify = (text) => setNotice(text)
 
-
-      const deletePack = async (packId) => {
-        setError(null)
-        setNotice(null)
-        const fresh = await view.run([{ op: 'deletePack', packId: packId }])
-        if (fresh === null) return
-        // 删掉的正是在编辑的那张：草稿跟着失效，否则保存时会把整张 pack 重建出来。
-        setDraft((prev) => (prev.editing && prev.editing.id === packId ? { ...prev, editing: null } : prev))
+      /** 这张 pack 有没有未保存改动：改名、会话路由、任一档。 */
+      const packPending = (packId) => {
+        for (const key of pending.keys) {
+          if (key === 'pack:' + packId || key === 'renamePack:' + packId || key === 'packSession:' + packId) return true
+          if (key.startsWith('packTier:' + packId + ':')) return true
+        }
+        return false
       }
 
       /**
-       * 新建 pack 后自动进入编辑。
+       * pack 内容的改动 → 细粒度命令。
        *
-       * `createPack` 只带名字，id 由服务端生成（`p1`、`p2`…，与名字脱钩）。
-       * `run` 返回的就是落盘后重读的状态，从里面按名字反查新 id——重名被拒时
-       * 反查不到，保持当前选择并显示错误，不猜一个 id 出来。
+       * 值取自试算视图里的那张 pack，`packCommands` 只把前后差异变成命令，所以每次
+       * 改动只发真正变了的那几处（改名 / 会话路由 / 某一档），不会整张覆写。
        */
-      const createPack = async (name) => {
-        setError(null)
-        setNotice(null)
-        const fresh = await view.run([{ op: 'createPack', name: name }])
-        if (fresh === null) return
-        const created = Object.keys(packsOf(fresh)).find((id) => {
-          const pack = packsOf(fresh)[id]
-          return isRecord(pack) && pack.name === name
-        })
-        if (created === undefined) {
-          setError('新建失败：服务端没有接受这个名字（可能已存在同名 pack）。')
+      const changePack = (packId, next) => {
+        const problems = validatePack(next)
+        if (problems.length > 0) {
+          notify('本地校验未通过：' + problems.join('；'))
           return
         }
-        // 用返回的新快照里的内容起编辑态：`data` 此刻还是旧的，查不到这个 id。
-        startEdit(created, packsOf(fresh)[created])
-        setNotice('已新建 pack「' + name + '」，可以直接编辑内容。')
-      }
-
-      /** 提示词草稿：整份替换（setPromptField 已返回新对象，这里不就地改）。 */
-      const setPromptDraft = (next) => {
-        setNotice(null)
-        setError(null)
-        setDraft((prev) => ({ ...prev, prompts: next }))
-      }
-
-      /**
-       * 「恢复内置」：立刻发 resetPrompts，不等保存按钮。
-       *
-       * 重置是删键，与「保存草稿」是两回事：混在保存里会让用户以为取消保存就能取消重置。
-       * 只传该键（单段粒度的 keys 数组）；不带 cwd——提示词覆盖在全局层，与目录无关。
-       */
-      const resetPrompt = async (key) => {
-        setError(null)
-        setNotice(null)
-        setSaving(true)
-        try {
-          const fresh = await view.run([{ op: 'resetPrompts', keys: [key] }])
-          if (fresh === null) return
-          setDraft((prev) => ({ ...prev, prompts: withoutPromptKey(prev.prompts, key) }))
-          setNotice('已恢复内置：' + (key === PROMPT_DELEGATION_KEY ? '编排段' : TIER_NAMES[key] || key))
-        } finally {
-          setSaving(false)
-        }
-      }
-
-      const save = async () => {
-        setError(null)
-        setNotice(null)
-        // 空白的提示词段先拦下：后端会拒空串，而这里能给出一句更接近意图的话。
-        const blank = blankPromptFields(draft.prompts)
-        if (blank.length > 0) {
-          setError('提示词有空白段：' + blank.join('；') + '。空串等于跟随内置，请点「恢复内置」。')
-          return
-        }
-        const commands = []
-        if (draft.editing) {
-          const problems = validatePack(draft.editing.value)
-          if (problems.length > 0) {
-            setError('本地校验未通过：' + problems.join('；'))
+        const before = packsOf(data)[packId]
+        const name = String(next.name || '').trim()
+        if (packId !== DEFAULT_PACK_ID && name !== String((before && before.name) || '')) {
+          if (packs.some((entry) => entry.id !== packId && entry.name === name)) {
+            notify('已经有同名的 pack：' + name)
             return
           }
-          const original = packsOf(data)[draft.editing.id]
-          commands.push.apply(commands, packCommands(draft.editing.id, original, draft.editing.value))
         }
-        // 只带改过的键；promptsCommand 自己在没有实质改动时返回 null。
-        const promptCommand = promptsCommand(data.prompts, draft.prompts)
-        if (promptCommand !== null) commands.push(promptCommand)
+        const commands = packCommands(packId, before, next)
         if (commands.length === 0) return
+        enqueue(commands)
+      }
 
-        setSaving(true)
-        // view.run 自己吞掉异常并返回 null；失败时草稿保留，用户改完可以再存。
-        const before = Array.isArray(data.state && data.state.warnings) ? data.state.warnings.length : 0
-        const fresh = await view.run(commands)
-        setSaving(false)
-        if (fresh === null) return
-        setDraft(EMPTY_DRAFT)
-        // 写盘失败不再抛，只往 warnings 里记一条。此时说「已保存」就是替宿主撒谎，
-        // 所以按告警条数有没有变多来选措辞。
-        const after = Array.isArray(fresh.state && fresh.state.warnings) ? fresh.state.warnings.length : 0
-        setNotice(after > before ? '改动没有完全落盘，原因见上方告警。' : '已保存。新会话生效；已有会话不变。')
+      /** 新建：进队列，等试算视图出现新 id 后再展开它。 */
+      const createPack = (name) => {
+        const trimmed = name.trim()
+        if (trimmed === '') return
+        wanted.current = trimmed
+        enqueue([{ op: 'createPack', name: trimmed }])
+      }
+
+      /**
+       * 删除：当场写盘。
+       *
+       * 队列里引用这张 pack 的命令（改名、会话路由、任一档、绑定）先剔掉再写，
+       * 丢掉几条要说出来——无声丢改动比丢改动本身更糟。
+       */
+      const deletePack = (packId, name) => {
+        const removed = pending.drop((command) => command.packId === packId)
+        if (expanded === packId) setExpanded(null)
+        setNotice(removed > 0 ? '已删除「' + name + '」，并丢弃对它的 ' + removed + ' 项未保存改动' : null)
+        void run([{ op: 'deletePack', packId: packId }])
+      }
+
+      const commit = () => {
+        if (busy) return
+        setBusy(true)
+        pending.commit().then(
+          () => setBusy(false),
+          () => setBusy(false),
+        )
       }
 
       // ---------- 渲染 ----------
 
-
       return h(
         'div',
         { style: S.root },
+        // 设置页与 chip 弹层是两个挂载点，样式表各注入一次（ui-baseline 第 13 条）。
+        h('style', { key: 'panel-css' }, PANEL_CSS),
 
         h(
           'div',
@@ -2483,7 +2840,7 @@ window.__ModuleLoader__.load({
         h(
           'div',
           { style: S.hint },
-          '一张 pack = 一条会话路由 + 至多四档子智能体路由。工作区绑到哪张 pack，就按哪套生效；未绑定按默认。只作用于该目录里还没发出请求的会话，开了轮次的会话不再改动，也不替代官方「设置 → 模型」。',
+          '一张 pack = 一条会话路由 + 至多四档子智能体路由。工作区绑到哪张 pack，就按哪套生效；未绑定按默认。只作用于该目录里还没发出请求的会话，开了轮次的会话不再改动，也不替代官方「设置 → 模型」。改动先攒着，点底部「保存」才写盘。',
         ),
         data.lastError ? h('div', { style: S.probeFail }, '上一次施加失败：' + data.lastError) : null,
         warnings.length > 0
@@ -2491,7 +2848,7 @@ window.__ModuleLoader__.load({
           : null,
 
         // 「当前页」只由分页按钮切；「默认页」只由这个下拉写。两者混成一个状态时，
-        // 临时看一眼分包会顺手改掉用户的默认页。
+        // 临时看一眼分包会顺手改掉用户的默认页。默认页是当场生效的偏好，不进队列。
         h(
           'div',
           { style: { ...S.bar, marginBottom: '0' } },
@@ -2502,28 +2859,26 @@ window.__ModuleLoader__.load({
             h(Picker, {
               value: defaultTab,
               options: TABS.map((entry) => ({ value: entry.value, label: entry.label })),
-              onChange: (next) => view.run([{ op: 'defaultTab', value: next }]),
+              onChange: (next) => run([{ op: 'defaultTab', value: next }]),
             }),
           ),
         ),
         h('div', { style: { margin: '10px 0' } }, h(Segmented, { value: current, onChange: setTab, options: TABS })),
         state.error ? h('div', { style: { ...S.error, marginTop: '8px' } }, state.error) : null,
-        notice ? h('div', { style: S.notice }, notice) : null,
-        error ? h('div', { style: S.error }, error) : null,
 
         // ---------- 分包页：名册 + 就地编辑 ----------
         current === 'packs'
           ? h(PackRoster, {
               packs: packs,
               bindings: bindings.bindings,
+              expanded: expanded,
+              isPending: packPending,
               onCreate: createPack,
+              onRename: (packId, name) => enqueue([{ op: 'renamePack', packId: packId, name: name }]),
+              notify: notify,
+              onToggle: (packId) => setExpanded(expanded === packId ? null : packId),
+              onChangePack: changePack,
               onDelete: deletePack,
-              editing: draft.editing,
-              editingDirty: editingDirty,
-              onEdit: (packId) => startEdit(packId),
-              onCancelEdit: cancelEdit,
-              onChangeEditing: (value) =>
-                setDraft((prev) => (prev.editing ? { ...prev, editing: { ...prev.editing, value: value } } : prev)),
               catalog: catalog,
               support: support,
             })
@@ -2534,9 +2889,9 @@ window.__ModuleLoader__.load({
           ? h(WorkspaceBoard, {
               packs: packs,
               paths: paths,
-              extra: bindings.extra,
               bindings: bindings.bindings,
-              run: view.run,
+              pending: pending,
+              queue: enqueue,
             })
           : null,
 
@@ -2544,28 +2899,39 @@ window.__ModuleLoader__.load({
         current === 'prompts'
           ? h(PromptSection, {
               prompts: data.prompts,
-              patch: draft.prompts,
-              disabled: saving,
-              onChange: setPromptDraft,
-              onReset: resetPrompt,
+              disabled: busy,
+              queue: enqueue,
+              notify: notify,
             })
           : null,
 
         catalog.phase === 'error' || catalog.phase === 'unavailable' ? h('div', { style: S.probeWarn }, catalog.error) : null,
         catalog.phase === 'loading' ? h('div', { style: S.hint }, '正在读取模型目录…') : null,
 
-        dirtyCount > 0
+        /*
+         * 底部停靠区：提示在上、待保存条在下，两行一起贴住底边。
+         *
+         * 提示原先放在标题下面，滚到分包页中段就看不见了——而它讲的正是「删除把你
+         * 没保存的改动带走了」这种当场必须知道的事。停靠区两行都常驻。
+         */
+        notice !== null || pending.count > 0
           ? h(
               'div',
-              { style: S.actionBar },
-              h('span', { style: { ...S.hint, flex: '0 1 auto', color: T.text } }, String(dirtyCount) + ' 处未保存'),
-              h('span', { style: { flex: '1 1 auto' } }),
-              h(Button, { disabled: saving, onClick: () => setDraft(EMPTY_DRAFT) }, '撤销'),
-              h(Button, { primary: true, disabled: saving, onClick: save }, saving ? '保存中…' : '保存'),
+              { style: S.dock },
+              notice !== null ? h(NoticeBar, { text: notice, onClose: () => setNotice(null) }) : null,
+              h(PendingBar, {
+                count: pending.count,
+                error: pending.preview.error,
+                busy: busy || pending.preview.loading,
+                onUndo: pending.undo,
+                onDiscard: pending.discard,
+                onCommit: commit,
+              }),
             )
           : null,
       )
     }
+
 
     // ---------- 模型位 pack 名 ----------
 
@@ -2846,19 +3212,29 @@ window.__ModuleLoader__.load({
         () => chipName.set(null),
       )
     }
-
     /**
      * chip 的弹层：这张 pack 与默认差在哪，就地切换。
      *
-     * 选「默认」发 `packId: null`（解除绑定），不是写一个 default 的 id——
-     * 未绑定与悬空引用在服务端是同一种状态。只有「关闭」：这一层不做跳转，
-     * 也不做「恢复会话路由」，它只回答「这个目录现在按哪套跑」。
+     * 点一行只把「换成它」放进待保存队列：面板按试算视图显示换过去之后长什么样，
+     * 点「保存」才真绑。选「默认」发 `packId: null`（解除绑定），不是写一个 default
+     * 的 id——未绑定与悬空引用在服务端是同一种状态。
      */
     function ChipModal(props) {
       const open = props.open === true
       const sessionId = props.sessionId
       const host = props.host
       const [state, setState] = useState({ loading: false, error: null, cwd: null, data: null })
+      const [busy, setBusy] = useState(false)
+
+      useEffect(() => {
+        if (!open) return undefined
+        // 居中模态只靠点遮罩退出会让人以为卡住了；Esc 是这类弹层的默认手势。
+        const onKey = (event) => {
+          if (event.key === 'Escape') props.onClose()
+        }
+        document.addEventListener('keydown', onKey, true)
+        return () => document.removeEventListener('keydown', onKey, true)
+      }, [open, props.onClose])
 
       useEffect(() => {
         if (!open) return undefined
@@ -2885,29 +3261,64 @@ window.__ModuleLoader__.load({
         }
       }, [open, sessionId, host])
 
+      const cwd = state.cwd
+      const preview = useCallback((commands) => api.apply(cwd, commands, true), [cwd])
+      const apply = useCallback((commands) => api.apply(cwd, commands), [cwd])
+      const accept = useCallback(
+        (view) => {
+          setState((prev) => ({ ...prev, data: view, error: null }))
+          const id = bindingOf(view)
+          const known = id !== null && isRecord(packsOf(view)[id])
+          chipName.set(known ? packNameOf(view, id) : null)
+          // 绑定改了，模型位那一行的 pack 名要跟着换：它读的是 apply 之前的缓存。
+          void labelRefresh(host)
+        },
+        [host],
+      )
+      const pending = usePending({ preview: preview, apply: apply, onApplied: accept })
+
+      /*
+       * 弹层关掉就丢弃待保存改动——它与设置面板一样，只活在「这一次打开」里。
+       * 用 ref 记上一次的开合：否则 open 为 false 的每次渲染都会 setEntries([])，
+       * 而那个新数组引用会触发下一轮渲染，自己把自己点着。
+       */
+      const wasOpen = useRef(false)
+      useEffect(() => {
+        if (wasOpen.current && !open) pending.discard()
+        wasOpen.current = open
+      }, [open])
+
       if (!open) return null
 
-      const data = state.data
-      const cwd = state.cwd
-      const packs = data ? packListOf(data) : []
-      const boundId = data ? bindingOf(data) : null
-      // 只有「没绑定」才写「按默认运行」。绑到 default 那张 pack 是另一回事：
-      // 它确实绑了，只是内容与默认相同，走差异分支会得到「没有任何改动。」。
+      const base = state.data
+      // 有待保存改动时按试算视图渲染：点一行就先看到「换过去之后长什么样」。
+      const data = pending.preview.data !== null ? pending.preview.data : base
+      const packs = data === null ? [] : packListOf(data)
+      /** 试算后的绑定：点一行就会变成它，但还没保存。 */
+      const boundId = bindingOf(data)
+      const bound = boundId === null ? DEFAULT_PACK_ID : boundId
+      /*
+       * 真实绑定另算一份。
+       *
+       * 「当前」必须标在真正生效的那一张上：如果跟着试算视图走，点一下就会把新选的那张
+       * 标成「当前」，而 chip 上的名字还没变——两处说法打架。
+       */
+      const committedId = bindingOf(base)
+      const committed = committedId === null ? DEFAULT_PACK_ID : committedId
       const usingDefault = boundId === null
       const rows = data !== null && !usingDefault ? diffOf(data, boundId) : []
 
-      const bindTo = (value) => {
+      const bindTo = (packId) => {
         if (typeof cwd !== 'string' || cwd === '') return
-        api.apply(cwd, [{ op: 'bind', cwd: cwd, packId: value === '' ? null : value }]).then(
-          (fresh) => {
-            const id = bindingOf(fresh)
-            const known = id !== null && isRecord(packsOf(fresh)[id])
-            setState((prev) => ({ ...prev, data: fresh, error: null }))
-            chipName.set(known ? packNameOf(fresh, id) : null)
-            // 绑定改了，模型位那一行的 pack 名要跟着换：它读的是 apply 之前的缓存。
-            void labelRefresh(host)
-          },
-          (error) => setState((prev) => ({ ...prev, error: String(error && error.message ? error.message : error) })),
+        pending.push([{ op: 'bind', cwd: cwd, packId: packId === DEFAULT_PACK_ID ? null : packId }])
+      }
+
+      const commit = () => {
+        if (busy) return
+        setBusy(true)
+        pending.commit().then(
+          () => setBusy(false),
+          () => setBusy(false),
         )
       }
 
@@ -2917,6 +3328,9 @@ window.__ModuleLoader__.load({
         h(
           'div',
           { style: S.modal, onClick: (event) => event.stopPropagation() },
+          // 弹层与设置页是两个挂载点：PANEL_CSS 必须在这里再注入一次，
+          // 否则按钮只剩内联尺寸，边框与底色落回浏览器默认（看起来就是一条黑框）。
+          h('style', { key: 'panel-css' }, PANEL_CSS),
           // 插件名常驻在标题上方：这一排 chip 只靠图标区分，弹层里不写明是哪个插件，
           // 从图标点进来的人会先愣一下。
           h('div', { style: { ...S.hint, fontSize: '11px' } }, TITLE),
@@ -2945,25 +3359,60 @@ window.__ModuleLoader__.load({
                 h(
                   'div',
                   { style: { ...S.hint, marginTop: '14px', marginBottom: '6px' } },
-                  '给这个目录换一张 pack',
+                  '换一张 pack：点一行就预览它对这个目录的影响，保存后才生效',
                 ),
-                h(Picker, {
-                  value: boundId === null ? '' : boundId,
-                  options: [{ value: '', label: '默认' }].concat(
-                    packs.filter((pack) => !pack.isDefault).map((pack) => ({ value: pack.id, label: pack.name })),
+                // 平铺全部 pack 而不是「当前值 + 下拉」：下拉要先展开才看得全，
+                // 而这里的选择本来就是「挨个看看别人是什么样」。
+                packs.map((entry) =>
+                  h(
+                    'div',
+                    {
+                      key: entry.id,
+                      className: 'dsh-model-pack-row',
+                      'data-state': entry.id === committed ? 'current' : entry.id === bound ? 'pending' : undefined,
+                      style: {
+                        ...S.packRow,
+                        borderColor: entry.id === bound || entry.id === committed ? T.borderStrong : T.border,
+                      },
+                      onClick: () => bindTo(entry.id),
+                    },
+                    h('span', { style: S.groupName }, entry.name),
+                    // 「当前」标在真正生效的那张上；点了一张还没保存的，标「待保存」。
+                    entry.id === committed
+                      ? h('span', { style: { ...S.hint, marginLeft: 'auto' } }, '当前')
+                      : entry.id === bound
+                        ? h('span', { style: { ...S.hint, marginLeft: 'auto' } }, '待保存')
+                        : null,
                   ),
-                  onChange: (next) => bindTo(next),
-                }),
-                h('div', { style: { ...S.hint, marginTop: '6px' } }, '只影响这个目录里还没发出请求的会话。'),
+                ),
+                h(
+                  'div',
+                  { style: { ...S.hint, marginTop: '6px' } },
+                  '保存后，这个目录里已开着的会话也会在下一个回合边界重新求值。',
+                ),
               ),
+          /*
+           * 底栏：左「关闭」固定不动，右侧才是待保存信息与「撤销 / 保存」。
+           * 关闭按钮的位置不能随待保存状态左右横跳——那等于每次都要重新找它。
+           */
           h(
             'div',
-            { style: { display: 'flex', justifyContent: 'flex-end', marginTop: '14px' } },
-            h('button', { type: 'button', style: S.button(false, false), onClick: props.onClose }, '关闭'),
+            { style: S.bottomBar },
+            h(Button, { variant: 'quiet', onClick: props.onClose }, '关闭'),
+            h(PendingBar, {
+              inline: true,
+              count: pending.count,
+              error: pending.preview.error,
+              busy: busy || pending.preview.loading,
+              onUndo: pending.undo,
+              onDiscard: pending.discard,
+              onCommit: commit,
+            }),
           ),
         ),
       )
     }
+
 
     /**
      * 面板与弹层的错误边界。

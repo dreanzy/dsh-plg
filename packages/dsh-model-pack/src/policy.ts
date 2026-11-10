@@ -112,22 +112,37 @@ interface LoadedPacks {
   readonly warnings: readonly string[]
 }
 
+/** pack 名册文本 → 名册 + UI + 是否来自文件。缺席即出厂内容。 */
+function packsFromText(text: string | undefined, path: string | undefined): LoadedPacks {
+  if (text === undefined) {
+    return { book: EMPTY_PACKS, ui: { ...EMPTY_UI }, defaultFromFile: false, warnings: [] }
+  }
+  const parsed = parsePacks(text, path)
+  return {
+    book: parsed.value.book,
+    ui: parsed.value.ui,
+    defaultFromFile: parsed.value.defaultFromFile,
+    warnings: parsed.warnings,
+  }
+}
+
 /** 读 pack 名册。文件不存在时回落到出厂内容。 */
 async function loadPacks(options: PackPathOptions): Promise<LoadedPacks> {
   const warnings: string[] = []
   const path = packsPath(options)
   const text = await readText(path, warnings)
-  if (text !== undefined) {
-    const parsed = parsePacks(text, path)
-    return {
-      book: parsed.value.book,
-      ui: parsed.value.ui,
-      defaultFromFile: parsed.value.defaultFromFile,
-      warnings: [...warnings, ...parsed.warnings],
-    }
-  }
+  const loaded = packsFromText(text, path)
+  return { ...loaded, warnings: [...warnings, ...loaded.warnings] }
+}
 
-  return { book: EMPTY_PACKS, ui: { ...EMPTY_UI }, defaultFromFile: false, warnings }
+/** 提示词覆盖文本 → 覆盖。缺席即空覆盖。 */
+function promptsFromText(
+  text: string | undefined,
+  path: string | undefined,
+): { value: PromptOverrides; warnings: readonly string[] } {
+  if (text === undefined) return { value: EMPTY_PROMPTS, warnings: [] }
+  const parsed = parsePromptOverrides(text, path)
+  return { value: parsed.value, warnings: parsed.warnings }
 }
 
 /** 读提示词覆盖。文件不存在时覆盖为空。 */
@@ -135,12 +150,18 @@ async function loadPrompts(options: PackPathOptions): Promise<{ value: PromptOve
   const warnings: string[] = []
   const path = promptsPath(options)
   const text = await readText(path, warnings)
-  if (text !== undefined) {
-    const parsed = parsePromptOverrides(text, path)
-    return { value: parsed.value, warnings: [...warnings, ...parsed.warnings] }
-  }
+  const parsed = promptsFromText(text, path)
+  return { value: parsed.value, warnings: [...warnings, ...parsed.warnings] }
+}
 
-  return { value: EMPTY_PROMPTS, warnings }
+/** 绑定表文本 → 绑定。缺席即空表。 */
+function bindingsFromText(
+  text: string | undefined,
+  path: string | undefined,
+): { bindings: Bindings; warnings: readonly string[] } {
+  if (text === undefined) return { bindings: EMPTY_BINDINGS, warnings: [] }
+  const parsed = parseBindings(text, path)
+  return { bindings: parsed.value, warnings: parsed.warnings }
 }
 
 /** 读工作区绑定表。`workspaces.json` 缺席即空表。 */
@@ -148,12 +169,8 @@ async function loadBindings(options: PackPathOptions): Promise<{ bindings: Bindi
   const warnings: string[] = []
   const path = workspacesPath(options)
   const text = await readText(path, warnings)
-  if (text !== undefined) {
-    const parsed = parseBindings(text, path)
-    return { bindings: parsed.value, warnings: [...warnings, ...parsed.warnings] }
-  }
-
-  return { bindings: EMPTY_BINDINGS, warnings }
+  const parsed = bindingsFromText(text, path)
+  return { bindings: parsed.bindings, warnings: [...warnings, ...parsed.warnings] }
 }
 
 /**
@@ -166,7 +183,7 @@ async function loadBindings(options: PackPathOptions): Promise<{ bindings: Bindi
 export interface PackState {
   readonly packs: PackBook
   readonly ui: UiState
-  /** 工作区绑定表（含全部 cwd 的绑定与 `extra`）。 */
+  /** 工作区绑定表。目录清单由宿主提供，这里只有 cwd → pack。 */
   readonly bindings: Bindings
   /** 该 cwd 的原始绑定 id；未绑定为 `null`。 */
   readonly binding: string | null
@@ -182,19 +199,39 @@ export interface PackState {
 }
 
 export async function loadState(cwd: string | null, options: PackPathOptions = {}): Promise<PackState> {
+  /** 只有「读取失败」进这里：解析降级由 `buildState` 按固定顺序记。 */
+  const readWarnings: string[] = []
+  // 三份文件互不依赖：并行读。串行会白付两次往返，而这条路径每次新会话都走。
+  const [packsText, promptsText, workspacesText] = await Promise.all([
+    readText(packsPath(options), readWarnings),
+    readText(promptsPath(options), readWarnings),
+    readText(workspacesPath(options), readWarnings),
+  ])
+  const state = buildState(cwd, packsText, promptsText, workspacesText, options)
+  return { ...state, warnings: [...readWarnings, ...state.warnings] }
+}
+
+/** 三份文本 → 视图状态。读盘与试算共用同一条解析路径，两者的视图不会漂移。 */
+function buildState(
+  cwd: string | null,
+  packsText: string | undefined,
+  promptsText: string | undefined,
+  workspacesText: string | undefined,
+  options: PackPathOptions = {},
+): PackState {
   const warnings: string[] = []
 
-  const loaded = await loadPacks(options)
+  const loaded = packsFromText(packsText, packsPath(options))
   warnings.push(...loaded.warnings)
 
-  const promptsParsed = await loadPrompts(options)
+  const promptsParsed = promptsFromText(promptsText, promptsPath(options))
   warnings.push(...promptsParsed.warnings)
 
-  const cwdKey = normalizeCwd(cwd)
-  const bindingsParsed = await loadBindings(options)
+  const bindingsParsed = bindingsFromText(workspacesText, workspacesPath(options))
   warnings.push(...bindingsParsed.warnings)
   const bindings = bindingsParsed.bindings
 
+  const cwdKey = normalizeCwd(cwd)
   const binding = cwdKey === null ? null : (bindings.bindings[cwdKey] ?? null)
   const bound = binding === null || binding === DEFAULT_PACK_ID ? undefined : loaded.book.packs[binding]
 
@@ -271,7 +308,7 @@ export function resolve(state: PackState, cwd?: string | null): ResolvedPack {
  *
  * `null` 表示删键（= 回到上一层），不是写 null。
  *
- * 与其余三个 pack 包同形的是前四条名册命令与三条绑定命令；
+ * 与其余三个 pack 包同形的是前四条名册命令与 `bind`；
  * `putPack` / `packSession` / `packTier` 是本包特有的内容编辑命令
  * （pack 本身就是内容，没有 item/group 那种逐项开关）。
  */
@@ -283,8 +320,6 @@ export type PackCommand =
   | { readonly op: 'renamePack'; readonly packId: string; readonly name: string }
   | { readonly op: 'deletePack'; readonly packId: string }
   | { readonly op: 'bind'; readonly cwd: string; readonly packId: string | null }
-  | { readonly op: 'addExtra'; readonly cwd: string }
-  | { readonly op: 'removeExtra'; readonly cwd: string }
   | { readonly op: 'showChip'; readonly value: boolean }
   | { readonly op: 'defaultTab'; readonly value: UiState['defaultTab'] }
   | {
@@ -316,8 +351,6 @@ const COMMAND_TARGET: Readonly<Record<PackCommand['op'], CommandTarget>> = {
   renamePack: 'packs',
   deletePack: 'packs',
   bind: 'bindings',
-  addExtra: 'bindings',
-  removeExtra: 'bindings',
   showChip: 'packs',
   defaultTab: 'packs',
   putPrompts: 'prompts',
@@ -656,7 +689,6 @@ function applyToBindings(
   }
 
   const bindings: Record<string, string> = { ...base.bindings }
-  const extra = [...base.extra]
   let changed = false
 
   for (const command of commands) {
@@ -668,31 +700,6 @@ function applyToBindings(
           delete bindings[key]
           changed = true
         }
-      }
-      continue
-    }
-    if (command.op === 'addExtra') {
-      const key = normalizeCwd(command.cwd)
-      if (key === null) {
-        warnings.push('extra 的工作目录不能为空')
-        continue
-      }
-      if (extra.indexOf(key) < 0) {
-        extra.push(key)
-        changed = true
-      }
-      continue
-    }
-    if (command.op === 'removeExtra') {
-      const key = normalizeCwd(command.cwd)
-      if (key === null) {
-        warnings.push('extra 的工作目录不能为空')
-        continue
-      }
-      const at = extra.indexOf(key)
-      if (at >= 0) {
-        extra.splice(at, 1)
-        changed = true
       }
       continue
     }
@@ -718,7 +725,7 @@ function applyToBindings(
 
   // 没有实际变化就不创建文件：workspaces.json 一旦存在，旧工作区层的兼容读
   // 就会关闭，凭空建空文件等于丢掉旧配置。
-  return changed ? serializeBindings({ bindings, extra }) : null
+  return changed ? serializeBindings({ bindings }) : null
 }
 
 interface Targets {
@@ -758,8 +765,8 @@ function targets(commands: readonly PackCommand[]): Targets {
  * 三个文件各自一把锁，固定顺序（pack → 提示词 → 绑定）避免交叉等待；
  * 一个命令命中两个文件时顺序写，不引入跨文件事务。
  *
- * `cwd` 只决定回读时算哪一条绑定与哪一份响应；`bind` / `addExtra` / `removeExtra`
- * 自带目录，所以写入本身不依赖它。
+ * `cwd` 只决定回读时算哪一条绑定与哪一份响应；`bind` 自带目录，
+ * 所以写入本身不依赖它。
  */
 export async function applyCommands(
   cwd: string | null,
@@ -789,5 +796,78 @@ export async function applyCommands(
 
   const state = await loadState(cwd, options)
   return { ...state, warnings: [...state.warnings, ...warnings] }
+}
+
+/**
+ * 试算：把一批命令应用在内存里，返回**不落盘**的视图。
+ *
+ * 面板的待保存改动靠它渲染「改了会是什么样」。应用规则与 `applyCommands` 完全共用
+ * `applyToPacks` / `applyToPrompts` / `applyToBindings`，所以试算结果与真写结果不会
+ * 有第二条求值路径——面板因此不必在浏览器里复制一份求值链。
+ *
+ * 与真写一致：某个文件的命令非法时只跳过那份文件并记 warning，不整批失败。
+ */
+export async function previewCommands(
+  cwd: string | null,
+  commands: readonly PackCommand[],
+  options: PackPathOptions = {},
+): Promise<PackState> {
+  const plan = targets(commands)
+  const warnings: string[] = []
+  /** 只有「读取失败」进这里：与 `loadState` 同一种口径。 */
+  const readWarnings: string[] = []
+  const [packsCurrent, promptsCurrent, workspacesCurrent] = await Promise.all([
+    readText(packsPath(options), readWarnings),
+    readText(promptsPath(options), readWarnings),
+    readText(workspacesPath(options), readWarnings),
+  ])
+
+  let packsText = packsCurrent
+  let promptsText = promptsCurrent
+  let workspacesText = workspacesCurrent
+
+  if (plan.packs) {
+    // seed 承接读侧：文件缺席时以旧配置为起点，与真写同一份起点。
+    const seed = packsFromText(packsCurrent, packsPath(options))
+    packsText = computeText(packsCurrent, 'packs.json', warnings, (current) =>
+      applyToPacks(current, commands, seed, warnings),
+    )
+  }
+  if (plan.prompts) {
+    const seed = promptsFromText(promptsCurrent, promptsPath(options))
+    promptsText = computeText(promptsCurrent, 'prompts.json', warnings, (current) =>
+      applyToPrompts(current, commands, seed.value, warnings),
+    )
+  }
+  if (plan.bindings) {
+    const seed = bindingsFromText(workspacesCurrent, workspacesPath(options))
+    workspacesText = computeText(workspacesCurrent, 'workspaces.json', warnings, (current) =>
+      applyToBindings(current, commands, seed.bindings, warnings),
+    )
+  }
+
+  const state = buildState(cwd, packsText, promptsText, workspacesText, options)
+  return { ...state, warnings: [...readWarnings, ...state.warnings, ...warnings] }
+}
+
+/**
+ * 读 → 改 → 返回文本，不写盘。
+ *
+ * `null` 表示这批命令对这份文件没有实际变化（或原文已损坏），沿用原文即可；
+ * 命令非法时跳过这份文件并记 warning——与 `transact` 的失败口径一致。
+ */
+function computeText(
+  current: string | undefined,
+  label: string,
+  warnings: string[],
+  mutate: (current: string | undefined) => string | null,
+): string | undefined {
+  try {
+    const next = mutate(current)
+    return next === null ? current : next
+  } catch (error) {
+    warnings.push(`${label} 试算失败：${String(error)}`)
+    return current
+  }
 }
 

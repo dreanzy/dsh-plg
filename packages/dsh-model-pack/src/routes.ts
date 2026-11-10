@@ -41,6 +41,11 @@ export interface SupportView {
 export interface RouteDeps {
   loadState(cwd: string | null): Promise<unknown>
   applyCommands(cwd: string | null, commands: readonly PackCommand[]): Promise<unknown>
+  /**
+   * 试算：把命令应用在内存里，返回同一份视图但不落盘、也不触发重新落地。
+   * 面板的待保存改动每一步都用它渲染「改了之后会是什么样」。
+   */
+  previewCommands(cwd: string | null, commands: readonly PackCommand[]): Promise<unknown>
   resolve(state: unknown, cwd: string | null): unknown
   /**
    * 逐键合并提示词覆盖与内置，返回生效值。
@@ -69,7 +74,7 @@ export const ROUTES: { read: string; apply: string } = {
  * 形状对不上时编译期看不出来，由 `parseCommands` 与 policy 的解析共同兜底。
  *
  * 一半与其余三个 pack 包同形（`createPack` / `renamePack` / `deletePack` /
- * `bind` / `addExtra` / `removeExtra` / `showChip` / `defaultTab`）；另一半是本包
+ * `bind` / `showChip` / `defaultTab`）；另一半是本包
  * 特有的内容编辑命令：pack 本身就是内容，没有 item 与 group 那种逐项开关。
  */
 /** 与 `policy.ts` 的 `PackCommand` 是同一份定义：校验形状与落盘共用一种类型，
@@ -84,8 +89,6 @@ const OPS: ReadonlySet<string> = new Set([
   'renamePack',
   'deletePack',
   'bind',
-  'addExtra',
-  'removeExtra',
   'showChip',
   'defaultTab',
   'putPrompts',
@@ -140,7 +143,7 @@ function badRequest(message: string): Envelope {
  * 没有目录就没有那一条绑定。非字符串是坏请求：静默当 null 会让 UI 以为已经绑定，
  * 实际回读的是全局视图。
  *
- * 写入本身不依赖它：`bind` / `addExtra` / `removeExtra` 自带 cwd。
+ * 写入本身不依赖它：`bind` 自带 cwd。
  */
 function readCwd(body: Record<string, unknown> | null): { ok: true; cwd: string | null } | { ok: false; message: string } {
   const raw = body?.['cwd']
@@ -243,13 +246,6 @@ function parseCommands(raw: unknown): { ok: true; commands: ValidCommand[] } | {
           return badField(index, 'packId', '必须是 pack id 或 null')
         }
         commands.push({ op: 'bind', cwd, packId })
-        break
-      }
-      case 'addExtra':
-      case 'removeExtra': {
-        const cwd = record['cwd']
-        if (typeof cwd !== 'string' || cwd.trim() === '') return badField(index, 'cwd', '必须是非空字符串')
-        commands.push({ op, cwd })
         break
       }
       case 'showChip': {
@@ -375,38 +371,52 @@ function buildData(deps: RouteDeps, cwd: string | null, state: unknown): PanelDa
   }
 }
 
+/**
+ * 视图构造函数：`policy` 给出来时按它渲染（试算视图），否则现读一份。
+ *
+ * 探测结果与上一次失败始终取真实运行时——试算不改变它们，也不该让人以为变了。
+ */
+async function buildView(deps: RouteDeps, cwd: string | null, policy?: unknown): Promise<Envelope> {
+  const state = policy === undefined ? await deps.loadState(cwd) : policy
+  return { ok: true, data: buildData(deps, cwd, state) }
+}
+
 /** POST /api/model-pack/read：{ cwd? } → 状态 + 求值结果 + 探测 + 上一次失败原因。 */
 export async function handleRead(deps: RouteDeps, body: Record<string, unknown> | null): Promise<Envelope> {
   try {
     const cwdResult = readCwd(body)
     if (!cwdResult.ok) return badRequest(cwdResult.message)
-    const cwd = cwdResult.cwd
-    const state = await deps.loadState(cwd)
-    return { ok: true, data: buildData(deps, cwd, state) }
+    return await buildView(deps, cwdResult.cwd)
   } catch (error) {
     return internal(deps, '读取模型配置', error)
   }
 }
 
 /**
- * POST /api/model-pack/apply：{ cwd?, commands } → 落盘后的同一份视图。
+ * POST /api/model-pack/apply：{ cwd?, commands, dryRun? } → 同一份视图。
  *
  * 不依赖 sessionId：`bind` 自带 cwd，写入不需要先把会话解析成目录。
  * body 里的 cwd 只决定回读哪一条绑定，缺省就是全局视图。
+ *
+ * `dryRun: true` 只把命令应用在内存里并返回同样的视图，不写盘、不重新落地。
+ * 面板的待保存改动每一步都用它渲染「改了之后会是什么样」。
  */
 export async function handleApply(deps: RouteDeps, body: Record<string, unknown> | null): Promise<Envelope> {
   try {
     const parsed = parseCommands(body?.['commands'])
     if (!parsed.ok) return badRequest(parsed.message)
+    const dryRun = body?.['dryRun'] === true
 
     const cwdResult = readCwd(body)
     if (!cwdResult.ok) return badRequest(cwdResult.message)
     const cwd = cwdResult.cwd
 
-    // applyCommands 的返回值是落盘后重读的完整状态（含本次写入产生的 warning），
-    // 不再单独 loadState：那样会丢掉「默认 pack 不可删除，已忽略」这类说明。
-    const state = await deps.applyCommands(cwd, parsed.commands)
-    return { ok: true, data: buildData(deps, cwd, state) }
+    // 两条路径的返回值都是完整状态（含本次命令产生的 warning），不再单独 loadState：
+    // 那样会丢掉「默认 pack 不可删除，已忽略」这类说明。
+    const state = dryRun
+      ? await deps.previewCommands(cwd, parsed.commands)
+      : await deps.applyCommands(cwd, parsed.commands)
+    return await buildView(deps, cwd, state)
   } catch (error) {
     return internal(deps, '写入模型配置', error)
   }

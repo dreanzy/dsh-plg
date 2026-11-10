@@ -6,7 +6,7 @@
  * `routes` 处理请求。编排顺序见 `hooks.ts` 与 spec §6.1。
  */
 
-import { applyCommands, loadState, resolve, type PackState } from './policy.js'
+import { applyCommands, loadState, previewCommands, resolve, type PackState } from './policy.js'
 import { installHooks, type PluginContext } from './hooks.js'
 import { BUILTIN_PROMPT, resolvePrompt } from './prompt.js'
 import type { PromptOverrides, Route } from './pack.js'
@@ -152,6 +152,9 @@ export function apply(ctx: unknown): void {
         })
         return state
       },
+      // 试算不落盘，也不重新落地：面板每点一次控件都会调它，跟着同步默认模型与重施加
+      // 会把「还没保存」的东西施加到已有会话上。
+      previewCommands: (cwd, commands) => previewCommands(cwd, commands),
       resolve: (state, cwd) => resolve(state as PackState, cwd),
       resolvePrompt: (overrides) => resolvePrompt(overrides as PromptOverrides | undefined),
       builtinPrompt: () => BUILTIN_PROMPT,

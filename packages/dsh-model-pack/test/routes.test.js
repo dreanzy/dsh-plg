@@ -15,6 +15,7 @@ import {
   applyCommands,
   loadState,
   packsPath,
+  previewCommands,
   promptsPath,
   resolve,
   workspacesPath,
@@ -60,6 +61,7 @@ function depsFor(home, overrides = {}) {
   const deps = {
     loadState: (cwd) => loadState(cwd, { home }),
     applyCommands: (cwd, commands) => applyCommands(cwd, commands, { home }),
+    previewCommands: (cwd, commands) => previewCommands(cwd, commands, { home }),
     resolve: (state, cwd) => resolve(state, cwd),
     resolvePrompt: (overrides) => resolvePrompt(overrides),
     builtinPrompt: () => BUILTIN_PROMPT,
@@ -109,7 +111,7 @@ test('read：无文件时返回出厂内置，空 body 合法', async () => {
   assert.equal(result.data.resolved.id, DEFAULT_PACK_ID)
   assert.equal(result.data.resolved.source, 'builtin')
   assert.deepEqual(Object.keys(result.data.state.packs.packs), [DEFAULT_PACK_ID])
-  assert.deepEqual(result.data.state.bindings, { bindings: {}, extra: [] })
+  assert.deepEqual(result.data.state.bindings, { bindings: {} })
   assert.deepEqual(result.data.support, { subagents: true, restrict: true })
   assert.equal(result.data.lastError, null)
 
@@ -287,16 +289,25 @@ test('apply：packSession 与 packTier 编辑 pack 内容', async () => {
   assert.deepEqual(cleared.data.state.packs.packs.p1.tiers, {})
 })
 
-test('apply：addExtra 与 removeExtra 维护手动添加的路径', async () => {
+test('apply：addExtra 与 removeExtra 已删除，按未知命令拒整批', async () => {
   const home = await tempRoot()
   const cwd = await tempRoot()
   const { deps } = depsFor(home)
 
-  const added = await handleApply(deps, { commands: [{ op: 'addExtra', cwd }] })
-  assert.deepEqual(added.data.state.bindings.extra, [normalizeCwd(cwd)])
+  for (const op of ['addExtra', 'removeExtra']) {
+    const result = await handleApply(deps, {
+      commands: [
+        { op: 'bind', cwd, packId: null },
+        { op, cwd },
+      ],
+    })
+    assert.equal(result.ok, false, op)
+    assert.equal(result.error.code, 'bad-request')
+    assert.match(result.error.message, /commands\[1\] op 不是已知操作/)
+  }
 
-  const removed = await handleApply(deps, { commands: [{ op: 'removeExtra', cwd }] })
-  assert.deepEqual(removed.data.state.bindings.extra, [])
+  // 整批拒绝：连前面那条合法命令也没写。
+  assert.equal(existsSync(workspacesPath({ home })), false)
 })
 
 test('apply：showChip 与 defaultTab 落在 ui 段', async () => {
@@ -363,7 +374,6 @@ test('apply：坏形状逐条指出下标', async () => {
     { commands: [{ op: 'packSession', packId: 'p1', session: 'x' }], match: /session 必须是对象或 null/ },
     { commands: [{ op: 'bind', cwd: '', packId: null }], match: /commands\[0\]\.cwd/ },
     { commands: [{ op: 'bind', cwd: 'C:\\work', packId: 1 }], match: /packId/ },
-    { commands: [{ op: 'addExtra' }], match: /commands\[0\]\.cwd/ },
     { commands: [{ op: 'showChip', value: 'yes' }], match: /value 必须是布尔/ },
     { commands: [{ op: 'defaultTab', value: 'groups' }], match: /packs、workspace 或 prompts/ },
     { commands: ['nope'], match: /commands\[0\] 不是对象/ },
@@ -541,6 +551,90 @@ test('apply：putPrompts 传 null 等于删键，恢复内置', async () => {
   assert.equal(cleared.data.prompts.effective.delegation, BUILTIN_PROMPT.delegation)
   assert.equal(cleared.data.prompts.effective.tiers.tier3.label, BUILTIN_PROMPT.tiers.tier3.label)
   assert.deepEqual(cleared.data.prompts.overrides.tiers, {})
+})
+
+/* ------------------------------------------------------------------ *
+ * dryRun：试算，不写盘、不重新落地
+ * ------------------------------------------------------------------ */
+
+test('apply：dryRun 返回试算视图，不落盘、不调用 applyCommands', async () => {
+  const home = await tempRoot()
+  const cwd = await tempRoot()
+  let applied = 0
+  const { deps } = depsFor(home, {
+    // 试算路径不该走到真写：走到就说明 dryRun 被忽略了。
+    applyCommands: async () => {
+      applied += 1
+      throw new Error('不该调用 applyCommands')
+    },
+  })
+
+  const dry = await handleApply(deps, {
+    cwd,
+    dryRun: true,
+    commands: [
+      { op: 'putPack', packId: 'standard', pack: STANDARD },
+      { op: 'bind', cwd, packId: 'standard' },
+    ],
+  })
+  assert.equal(dry.ok, true)
+  assert.equal(applied, 0)
+  // 视图同形：面板可以拿它直接渲染。
+  assert.equal(dry.data.resolved.id, 'standard')
+  assert.equal(dry.data.resolved.source, 'workspace')
+  assert.deepEqual(dry.data.state.packs.packs.standard, STANDARD)
+  assert.equal(typeof dry.data.support, 'object')
+
+  // 磁盘什么都没变：read 仍是出厂内置。
+  const read = await handleRead(deps, { cwd })
+  assert.equal(read.data.resolved.id, DEFAULT_PACK_ID)
+  assert.equal(existsSync(packsPath({ home })), false)
+  assert.equal(existsSync(workspacesPath({ home })), false)
+})
+
+test('apply：dryRun 的视图与真写后重读一致', async () => {
+  const home = await tempRoot()
+  const cwd = await tempRoot()
+  const { deps } = depsFor(home)
+  const commands = [
+    { op: 'createPack', name: '前端' },
+    { op: 'putPack', packId: 'standard', pack: STANDARD },
+    { op: 'bind', cwd, packId: 'standard' },
+    { op: 'putPrompts', delegation: '试算编排' },
+  ]
+
+  const dry = await handleApply(deps, { cwd, dryRun: true, commands })
+  const wet = await handleApply(deps, { cwd, commands })
+
+  assert.deepEqual(dry.data.state.packs, wet.data.state.packs)
+  assert.deepEqual(dry.data.state.bindings, wet.data.state.bindings)
+  assert.deepEqual(dry.data.state.prompts, wet.data.state.prompts)
+  assert.deepEqual(dry.data.resolved, wet.data.resolved)
+  assert.deepEqual(dry.data.prompts, wet.data.prompts)
+})
+
+test('apply：dryRun 非 true 的取值一律当真写', async () => {
+  const home = await tempRoot()
+  const { deps } = depsFor(home)
+
+  for (const dryRun of [false, 'true', 1, null]) {
+    const result = await handleApply(deps, { dryRun, commands: [{ op: 'showChip', value: false }] })
+    assert.equal(result.ok, true)
+    assert.equal(result.data.state.ui.showChip, false)
+    // 写盘了才算数：read 能读回。
+    const read = await handleRead(deps, null)
+    assert.equal(read.data.state.ui.showChip, false)
+  }
+})
+
+test('apply：dryRun 也要过命令解析，坏命令整批拒', async () => {
+  const home = await tempRoot()
+  const { deps } = depsFor(home)
+
+  const result = await handleApply(deps, { dryRun: true, commands: [{ op: 'nope' }] })
+  assert.equal(result.ok, false)
+  assert.equal(result.error.code, 'bad-request')
+  assert.equal(existsSync(packsPath({ home })), false)
 })
 
 /* ------------------------------------------------------------------ *
