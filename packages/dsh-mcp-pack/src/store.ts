@@ -633,7 +633,13 @@ function computeText(
   }
 }
 
-/** 同一批命令可能两次命中同一份文件（packRow 后又 bind），同一句说明只留一条。 */
+/**
+ * 同一句说明只留一条。
+ *
+ * 真写路径里一批命令可能两次读到同一份文件（`bind` 之前要先读 packs 名册），那两处
+ * 失败会记同一句；试算路径每个文件只应用一次，用不到这层去重。两条路径共用这段
+ * 失败说明，保留去重让两边口径一致。
+ */
 function noteWarning(warnings: string[], message: string): void {
   if (!warnings.includes(message)) warnings.push(message)
 }

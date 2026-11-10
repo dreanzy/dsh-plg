@@ -2116,7 +2116,7 @@ window.__ModuleLoader__.load({
           ? h(
               'div',
               null,
-              h(ServersBlock, { data: data, reload: view.reload }),
+              h(ServersBlock, { data: data, reload: view.reload, pending: pending }),
               h(RowsBoard, {
                 data: data,
                 base: base,
@@ -2565,13 +2565,20 @@ window.__ModuleLoader__.load({
         if (!isOwned(row)) return
         // 定义没了，队列里对这一行的开关与归属都落不了地：先剔掉，并把丢了几项说出来。
         const removed = props.pending && props.rowDeps ? props.pending.drop(props.rowDeps(rowKey)) : 0
-        // 定义的增删走独立路由，队列里的命令可能原封不动：试算得重新跑一次，
-        // 否则被删的行还挂在面板上。
-        if (props.pending) props.pending.refresh()
         if (removed > 0 && props.notify) props.notify('已删除「' + rowNameOf(row) + '」，并丢弃对它的 ' + removed + ' 项未保存改动')
         api.servers({ op: 'remove', name: rowNameOf(row) }).then(
           () => {
-            if (props.reload) props.reload()
+            /*
+             * 重读之后才能重算试算视图。
+             *
+             * 定义的增删走独立路由、不经过队列：队列里的命令原封不动时 `entries` 不变，
+             * 试算的 effect 不会重跑。若在重读之前踢那一脚，它算的还是删除前的行清单，
+             * 被删的行照样挂在面板上。
+             */
+            const reloaded = props.reload ? props.reload() : undefined
+            Promise.resolve(reloaded).then(() => {
+              if (props.pending) props.pending.refresh()
+            })
           },
           (error) => setRemoveError(String(error.message || error)),
         )
@@ -2825,7 +2832,10 @@ window.__ModuleLoader__.load({
           () => {
             setBusy(false)
             close()
-            reload()
+            // 与删除同理：重读之后再让试算重算一次，新行才会立刻出现在按试算视图渲染的面板上。
+            Promise.resolve(reload()).then(() => {
+              if (props.pending) props.pending.refresh()
+            })
           },
           (cause) => {
             setBusy(false)
