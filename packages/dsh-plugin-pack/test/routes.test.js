@@ -121,6 +121,9 @@ test('parseCommands 拒绝非法形状', () => {
   assert.equal(parseCommands([{ op: 'bind', cwd: 'D:/x', packId: 3 }]).ok, false)
   assert.equal(parseCommands([{ op: 'defaultTab', value: 'nope' }]).ok, false)
   assert.equal(parseCommands([{ op: 'assign', name: 'x', groupId: 5 }]).ok, false)
+  // 已废弃：手动添加/移除工作区目录的能力整个移除，命令同样必须被拒。
+  assert.equal(parseCommands([{ op: 'addExtra', cwd: 'D:/x' }]).ok, false)
+  assert.equal(parseCommands([{ op: 'removeExtra', cwd: 'D:/x' }]).ok, false)
   // 批量里只要有一条坏，整批拒绝：半懂地写一半比拒掉更糟。
   assert.equal(
     parseCommands([{ op: 'packItem', packId: 'default', name: 'a', value: false }, { op: 'createGroup' }]).ok,
@@ -137,8 +140,6 @@ test('parseCommands 接受每种合法命令', () => {
     { op: 'deletePack', packId: 'p1' },
     { op: 'bind', cwd: 'D:/proj', packId: 'p1' },
     { op: 'bind', cwd: 'D:/proj', packId: null },
-    { op: 'addExtra', cwd: 'D:/proj' },
-    { op: 'removeExtra', cwd: 'D:/proj' },
     { op: 'assign', name: 'plug-a', groupId: null },
     { op: 'createGroup', name: '新组' },
     { op: 'renameGroup', groupId: 'g1', name: '改名' },
@@ -151,7 +152,7 @@ test('parseCommands 接受每种合法命令', () => {
   assert.equal(parsed.ok, true)
   // 这条数目断言是刻意的：新增一种命令却忘了登记进 OPS 白名单时，
   // 它会被当成未知操作拒掉，而只测「合法输入仍合法」是发现不了的。
-  assert.equal(parsed.commands.length, 17)
+  assert.equal(parsed.commands.length, 15)
 })
 
 test('全局面板默认不列官方插件，打开开关后才列', async () => {
@@ -188,7 +189,7 @@ test('全局面板默认不列官方插件，打开开关后才列', async () =>
     ['default'],
   )
   assert.equal(on.value.packs[0].builtin, true)
-  assert.deepEqual(on.value.bindings, { bindings: {}, extra: [] })
+  assert.deepEqual(on.value.bindings, { bindings: {} })
   assert.deepEqual(on.value.ui, { showOfficialPlugins: true, showChip: true, defaultTab: 'groups' })
 })
 
@@ -446,7 +447,6 @@ test('工作区视图带 cwd、绑定、生效 pack 名与 stuck', async () => {
   await writeJson(workspacesFile(home), {
     version: 1,
     bindings: { [normalizeCwd(cwd)]: 'p1' },
-    extra: [],
   })
 
   const agent = { id: 'agent-1', session: { id: 'session-1', header: { cwd } } }
@@ -499,7 +499,6 @@ test('组级覆盖落在 pack 的组记录上，decidedVia 是 group', async () 
   await writeJson(workspacesFile(home), {
     version: 1,
     bindings: { [normalizeCwd(cwd)]: 'p1' },
-    extra: [],
   })
   await writeJson(groupsFile(home), {
     version: 1,
@@ -531,7 +530,6 @@ test('pack 没有记录时跟到 default 的项级记录', async () => {
   await writeJson(workspacesFile(home), {
     version: 1,
     bindings: { [normalizeCwd(cwd)]: 'p1' },
-    extra: [],
   })
 
   const agent = { id: 'agent-1', session: { id: 'session-1', header: { cwd } } }
@@ -574,7 +572,6 @@ test('悬空绑定在工作区视图里退回 default，binding 仍保留原始 
   await writeJson(workspacesFile(home), {
     version: 1,
     bindings: { [normalizeCwd(cwd)]: 'p1-gone' },
-    extra: [],
   })
 
   const agent = { id: 'agent-1', session: { id: 'session-1', header: { cwd } } }
@@ -589,4 +586,71 @@ test('悬空绑定在工作区视图里退回 default，binding 仍保留原始 
     view.value.plugins.map((entry) => entry.pkg),
     ['@deepseek-ai/dsh-thing', 'plug-a'],
   )
+})
+
+test('apply 带 dryRun 时返回试算视图、不落盘、也不重新施加', async () => {
+  const home = await freshHome()
+  await writeJson(packsFile(home), { version: 1, ui: {}, packs: { default: { name: 'default' } } })
+  const before = await readFile(packsFile(home), 'utf8')
+  let reapplied = 0
+
+  const result = await handleApply(
+    fakeCtx(),
+    { commands: [{ op: 'createPack', name: '工作' }], dryRun: true },
+    deps({
+      catalog: feedFor(catalogFor(defaultPlugins)),
+      reapply: async () => {
+        reapplied += 1
+      },
+    }),
+  )
+
+  assert.equal(result.ok, true)
+  // 试算视图里已经多出这张 pack——面板就是拿它渲染「改了之后」。
+  assert.deepEqual(
+    result.value.packs.map((pack) => pack.id),
+    ['default', 'p1'],
+  )
+  assert.equal(result.value.packs[1].name, '工作')
+  // 盘上必须一字不动，也不该触发重新施加：保存才会做那两件事。
+  assert.equal(await readFile(packsFile(home), 'utf8'), before)
+  assert.equal(reapplied, 0)
+})
+
+test('dryRun 的绑定预览走工作区视图，绑定本身不落盘', async () => {
+  const home = await freshHome()
+  const cwd = await mkdtemp(join(tmpdir(), 'dpp-ws-'))
+  await writeJson(packsFile(home), {
+    version: 1,
+    ui: {},
+    packs: { default: { name: 'default' }, p1: { name: '工作' } },
+  })
+  const agent = { id: 'agent-1', session: { id: 'session-1', header: { cwd } } }
+  const ctx = fakeCtx(fakeTools(), { agents: { get: () => agent } })
+
+  const result = await handleApply(
+    ctx,
+    { sessionId: 'session-1', commands: [{ op: 'bind', cwd: cwd, packId: 'p1' }], dryRun: true },
+    deps({ catalog: feedFor(catalogFor(defaultPlugins)) }),
+  )
+
+  assert.equal(result.ok, true)
+  // 视图按试算后的状态渲染：chip 弹层靠这几个字段显示「换过去会是什么样」。
+  assert.equal(result.value.binding, 'p1')
+  assert.equal(result.value.packId, 'p1')
+  assert.equal(result.value.packName, '工作')
+  assert.equal(await fileExists(workspacesFile(home)), false)
+})
+
+test('同一个 dryRun 请求连发两次结果一致：命令是绝对状态，试算可重放', async () => {
+  const home = await freshHome()
+  await writeJson(packsFile(home), { version: 1, ui: {}, packs: { default: { name: 'default' } } })
+  const ctx = fakeCtx()
+  const withCatalog = deps({ catalog: feedFor(catalogFor(defaultPlugins)) })
+  const body = { commands: [{ op: 'createPack', name: '工作' }], dryRun: true }
+
+  const first = await handleApply(ctx, body, withCatalog)
+  const second = await handleApply(ctx, body, withCatalog)
+  assert.deepEqual(second.value.packs, first.value.packs)
+  assert.deepEqual(Object.keys((await readJson(packsFile(home))).packs), ['default'])
 })

@@ -17,7 +17,7 @@ function state(pack, defaultPack, assignments = {}) {
     pack: own,
     // 归属必须同时注册在 groups 里：指向已删分组的 id 按未分组处理。
     groups: { groups: [...new Set(Object.values(assignments))].map((id) => ({ id, name: id })), assignments },
-    bindings: { bindings: {}, extra: [] },
+    bindings: { bindings: {} },
     warnings: [],
   }
 }

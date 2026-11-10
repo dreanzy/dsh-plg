@@ -280,7 +280,6 @@ test('绑定悬空（指向已删除的 pack）时按 default 求值', async () 
   await writeJson(workspacesPath(), {
     version: 1,
     bindings: { [normalizeCwd(cwd)]: 'p1-gone' },
-    extra: [],
   })
 
   const tools = fakeTools()

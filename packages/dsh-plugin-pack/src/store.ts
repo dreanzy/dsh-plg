@@ -22,7 +22,6 @@ import {
   type GroupRegistry,
   type Pack,
   type PackBook,
-  type ParseResult,
   type UiState,
 } from './types.js'
 
@@ -149,22 +148,6 @@ function setKey(
   return next
 }
 
-interface LoadedPacks {
-  readonly book: PackBook
-  readonly ui: UiState
-  readonly warnings: readonly string[]
-}
-
-/** 读 `packs.json`。文件不存在时按空策略处理，`default` 由 `parsePacks` 补齐。 */
-async function loadPacks(): Promise<LoadedPacks> {
-  const parsed = parsePacks(await readText(packsPath()))
-  return { book: parsed.value.book, ui: parsed.value.ui, warnings: parsed.warnings }
-}
-
-async function loadGroups(): Promise<ParseResult<GroupRegistry>> {
-  return parseGroups(await readText(groupsPath()))
-}
-
 /**
  * 当前完整状态，读侧不加锁（原子 rename 保证读到的是完整版本）。
  *
@@ -182,31 +165,47 @@ export interface PolicyState {
   /** 生效的 pack；`packId === 'default'` 时为 `null`（按 default 求值）。 */
   readonly pack: Pack | null
   readonly groups: GroupRegistry
-  /** 工作区绑定表（含全部 cwd 的绑定与 `extra`）。 */
+  /** 工作区绑定表。目录清单由宿主提供，这里只有 cwd → pack。 */
   readonly bindings: Bindings
   readonly warnings: readonly string[]
 }
 
 export async function loadState(cwd: string | null): Promise<PolicyState> {
-  const warnings: string[] = []
-  const loaded = await loadPacks()
-  warnings.push(...loaded.warnings)
-  const packs: PackBook = loaded.book
+  // 三份文件互不依赖：并行读。串行会白付两次往返，而这条路径每次新会话都走。
+  const [packsText, groupsText, workspacesText] = await Promise.all([
+    readText(packsPath()),
+    readText(groupsPath()),
+    readText(workspacesPath()),
+  ])
+  return buildState(cwd, packsText, groupsText, workspacesText)
+}
 
-  const groupsParsed = await loadGroups()
+/** 三份文本 → 视图状态。读盘与试算共用同一条解析路径，两者的视图不会漂移。 */
+function buildState(
+  cwd: string | null,
+  packsText: string | undefined,
+  groupsText: string | undefined,
+  workspacesText: string | undefined,
+): PolicyState {
+  const warnings: string[] = []
+  const parsedPacks = parsePacks(packsText)
+  warnings.push(...parsedPacks.warnings)
+  const packs: PackBook = parsedPacks.value.book
+
+  const groupsParsed = parseGroups(groupsText)
   warnings.push(...groupsParsed.warnings)
 
   const cwdKey = normalizeCwd(cwd)
-  const bindingsParsed = parseBindings(await readText(workspacesPath()))
-  const bindings: Bindings = bindingsParsed.value
-  warnings.push(...bindingsParsed.warnings)
+  const parsedBindings = parseBindings(workspacesText)
+  warnings.push(...parsedBindings.warnings)
+  const bindings: Bindings = parsedBindings.value
 
   const binding = cwdKey === null ? null : (bindings.bindings[cwdKey] ?? null)
   const resolvedId =
     binding === null || binding === DEFAULT_PACK_ID || packs.packs[binding] === undefined ? DEFAULT_PACK_ID : binding
   return {
     packs,
-    ui: loaded.ui,
+    ui: parsedPacks.value.ui,
     binding,
     packId: resolvedId,
     pack: resolvedId === DEFAULT_PACK_ID ? null : (packs.packs[resolvedId] ?? null),
@@ -371,7 +370,6 @@ function applyToBindings(
 ): string | null {
   const parsed = parseBindings(current)
   const bindings: Record<string, string> = { ...parsed.value.bindings }
-  const extra = [...parsed.value.extra]
   let changed = false
 
   for (const command of commands) {
@@ -383,25 +381,6 @@ function applyToBindings(
           delete bindings[key]
           changed = true
         }
-      }
-      continue
-    }
-    if (command.op === 'addExtra') {
-      const key = normalizeCwd(command.cwd)
-      if (key === null) throw new Error('extra 的工作目录不能为空')
-      if (extra.indexOf(key) < 0) {
-        extra.push(key)
-        changed = true
-      }
-      continue
-    }
-    if (command.op === 'removeExtra') {
-      const key = normalizeCwd(command.cwd)
-      if (key === null) throw new Error('extra 的工作目录不能为空')
-      const at = extra.indexOf(key)
-      if (at >= 0) {
-        extra.splice(at, 1)
-        changed = true
       }
       continue
     }
@@ -424,7 +403,7 @@ function applyToBindings(
   }
 
   // 没有实际变化就不创建文件：空文件只会让后续读取多一次解析。
-  return changed ? serializeBindings({ bindings, extra }) : null
+  return changed ? serializeBindings({ bindings }) : null
 }
 
 interface Targets {
@@ -456,8 +435,6 @@ function targets(commands: readonly Command[]): Targets {
         groups = true
         break
       case 'bind':
-      case 'addExtra':
-      case 'removeExtra':
         bindings = true
         break
       default:
@@ -476,12 +453,14 @@ function targets(commands: readonly Command[]): Targets {
  * 读不到名册就判不了，返回 `null` 让调用方整批跳过绑定写入。
  */
 async function loadPackIds(warnings: string[]): Promise<ReadonlySet<string> | null> {
+  let text: string | undefined
   try {
-    return new Set(Object.keys((await loadPacks()).book.packs))
+    text = await readText(packsPath())
   } catch (error) {
     warnings.push(`packs.json 读取失败，已跳过绑定写入：${reasonOf(error)}`)
     return null
   }
+  return new Set(Object.keys(parsePacks(text).value.book.packs))
 }
 
 /** 收尾走读侧：写失败不能变成异常，读失败也不能；两种情况都只留一条 warning。 */
@@ -530,6 +509,70 @@ export async function applyCommands(cwd: string | null, commands: readonly Comma
   }
 
   return await settled(cwd, warnings)
+}
+
+/**
+ * 试算：把一批命令应用在内存里，返回**不落盘**的视图。
+ *
+ * 面板的待保存改动靠它渲染「改了会是什么样」。应用规则与 `applyCommands` 完全共用
+ * `applyToPacks` / `applyToGroups` / `applyToBindings`，所以试算结果与真写结果不会
+ * 有第二条求值路径——面板因此不必在浏览器里复制一份求值链。
+ *
+ * 与真写一致的另一点：读取失败或命令非法都只跳过那份文件并记 warning，不整批抛错。
+ */
+export async function previewCommands(
+  cwd: string | null,
+  commands: readonly Command[],
+): Promise<PolicyState> {
+  const warnings: string[] = []
+  const plan = targets(commands)
+  const [packsCurrent, groupsCurrent, workspacesCurrent] = await Promise.all([
+    readText(packsPath()),
+    readText(groupsPath()),
+    readText(workspacesPath()),
+  ])
+
+  let packsText = packsCurrent
+  let groupsText = groupsCurrent
+  let workspacesText = workspacesCurrent
+
+  if (plan.packs) {
+    packsText = computeText(packsCurrent, 'packs.json', warnings, (current) => applyToPacks(current, commands))
+  }
+  if (plan.groups) {
+    groupsText = computeText(groupsCurrent, 'groups.json', warnings, (current) => applyToGroups(current, commands))
+  }
+  if (plan.bindings) {
+    // 与真写同一顺序：bind 的目标要在 pack 变化之后才判定。
+    const known = new Set(Object.keys(parsePacks(packsText).value.book.packs))
+    workspacesText = computeText(workspacesCurrent, 'workspaces.json', warnings, (current) =>
+      applyToBindings(current, commands, known),
+    )
+  }
+
+  const state = buildState(cwd, packsText, groupsText, workspacesText)
+  return { ...state, warnings: [...warnings, ...state.warnings] }
+}
+
+/**
+ * 读 → 改 → 返回文本，不写盘。
+ *
+ * `null` 表示这批命令对这份文件没有实际变化（或原文已损坏），沿用原文即可；
+ * 命令非法时跳过这份文件并记 warning——试算不该因为一条坏命令把整块视图变成错误。
+ */
+function computeText(
+  current: string | undefined,
+  label: string,
+  warnings: string[],
+  mutate: (current: string | undefined) => string | null,
+): string | undefined {
+  try {
+    const next = mutate(current)
+    return next === null ? current : next
+  } catch (error) {
+    warnings.push(`${label} 更新失败：${reasonOf(error)}`)
+    return current
+  }
 }
 
 /** 未落盘时的空状态，供读取失败的降级路径与测试使用。 */

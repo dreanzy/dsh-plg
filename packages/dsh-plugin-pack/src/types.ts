@@ -16,10 +16,13 @@ export interface PackBook {
   readonly packs: Readonly<Record<string, Pack>>
 }
 
-/** 工作区绑定表。`bindings` 的键是 `normalizeCwd` 之后的 cwd。 */
+/**
+ * 工作区绑定表。`bindings` 的键是 `normalizeCwd` 之后的 cwd。
+ *
+ * 目录清单本身不归这里管：可绑定的目录由宿主提供（开过会话的目录）。
+ */
 export interface Bindings {
   readonly bindings: Readonly<Record<string, string>>
-  readonly extra: readonly string[]
 }
 
 /**
@@ -68,8 +71,6 @@ export type Command =
   | { readonly op: 'renamePack'; readonly packId: string; readonly name: string }
   | { readonly op: 'deletePack'; readonly packId: string }
   | { readonly op: 'bind'; readonly cwd: string; readonly packId: string | null }
-  | { readonly op: 'addExtra'; readonly cwd: string }
-  | { readonly op: 'removeExtra'; readonly cwd: string }
   | { readonly op: 'assign'; readonly name: string; readonly groupId: string | null }
   | { readonly op: 'createGroup'; readonly name: string }
   | { readonly op: 'renameGroup'; readonly groupId: string; readonly name: string }
@@ -91,7 +92,7 @@ export const DEFAULT_PACK_ID = 'default'
 export const DEFAULT_PACK_NAME = '默认'
 
 export const EMPTY_PACK: Pack = { name: DEFAULT_PACK_NAME, items: {}, groups: {} }
-export const EMPTY_BINDINGS: Bindings = { bindings: {}, extra: [] }
+export const EMPTY_BINDINGS: Bindings = { bindings: {} }
 export const EMPTY_UI: UiState = {
   showOfficialPlugins: false,
   showChip: true,

@@ -2,7 +2,7 @@ import { candidateTools, defaultCatalogFeed, type CatalogFeed } from './catalog.
 import { effective, type EffectiveRow } from './effective.js'
 import type { Support, ToolSchemaLike, ToolsFace } from './hooks.js'
 import { defaultPackOf } from './policy.js'
-import { applyCommands, loadState, type PolicyState } from './store.js'
+import { applyCommands, loadState, previewCommands, type PolicyState } from './store.js'
 import {
   DEFAULT_PACK_ID,
   DEFAULT_PACK_NAME,
@@ -504,13 +504,13 @@ export async function handleGlobal(
   ctx: RouteContext,
   body: Record<string, unknown> | null,
   deps: RouteDeps,
-  /** 刚写完的状态：`apply` 传进来，写入失败的说明才能随视图回到面板。 */
-  applied?: PolicyState,
+  /** 试算或刚写完的策略状态；给出时视图按它渲染，但清单仍来自真实快照。 */
+  policy?: PolicyState,
 ): Promise<Envelope<PluginView>> {
   try {
     const sessionId = readString(body, 'sessionId')
     const target = sessionId === null ? null : await resolveSession(ctx, sessionId).catch(() => null)
-    const loaded = applied ?? (await loadState(null))
+    const loaded = policy ?? (await loadState(null))
     const found = await currentCatalog(ctx, deps)
     return {
       ok: true,
@@ -534,10 +534,10 @@ async function buildWorkspaceView(
   agent: unknown,
   live: boolean,
   deps: RouteDeps,
-  /** 刚写完的状态；用法同 `handleGlobal` 的同名参数。 */
-  applied?: PolicyState,
+  /** 试算或刚写完的策略状态；用法同 `handleGlobal` 的同名参数。 */
+  policy?: PolicyState,
 ): Promise<Envelope<WorkspaceView>> {
-  const loaded = applied ?? (await loadState(cwd))
+  const loaded = policy ?? (await loadState(cwd))
   const found = await currentCatalog(ctx, deps)
   const base = buildPluginView({
     loaded,
@@ -590,8 +590,6 @@ const OPS = new Set([
   'renamePack',
   'deletePack',
   'bind',
-  'addExtra',
-  'removeExtra',
   'assign',
   'createGroup',
   'renameGroup',
@@ -691,13 +689,6 @@ export function parseCommands(raw: unknown): { ok: true; commands: Command[] } |
         commands.push({ op: 'bind', cwd, packId })
         break
       }
-      case 'addExtra':
-      case 'removeExtra': {
-        const cwd = readNonEmpty(record, 'cwd')
-        if (cwd === null || cwd.trim() === '') return bad(index, 'cwd 必须是非空字符串')
-        commands.push({ op, cwd })
-        break
-      }
       case 'assign': {
         const name = readNonEmpty(record, 'name')
         if (name === null) return bad(index, 'name 必须是非空字符串')
@@ -734,7 +725,12 @@ export function parseCommands(raw: unknown): { ok: true; commands: Command[] } |
   return { ok: true, commands }
 }
 
-/** POST api/plugin-pack/apply：{ sessionId?, commands }。 */
+/**
+ * `POST api/plugin-pack/apply`：`{ sessionId?, commands, dryRun? }`。
+ *
+ * `dryRun: true` 只把命令应用在内存里并返回同样的视图，不写盘、不重新落地。
+ * 面板的待保存改动每一步都用它渲染「改了之后会是什么样」。
+ */
 export async function handleApply(
   ctx: RouteContext,
   body: Record<string, unknown> | null,
@@ -743,6 +739,7 @@ export async function handleApply(
   try {
     const parsed = parseCommands(body?.['commands'])
     if (!parsed.ok) return { ok: false, error: { code: 'bad-request', message: parsed.message } }
+    const dryRun = body?.['dryRun'] === true
 
     // `bind` 自带 cwd，所以写入本身不再依赖会话；sessionId 只决定回哪种视图。
     const sessionId = readString(body, 'sessionId')
@@ -756,13 +753,17 @@ export async function handleApply(
     }
 
     // 写侧不抛：失败说明在返回状态的 warnings 里。
-    const state = await applyCommands(target?.cwd ?? null, parsed.commands)
-    // 策略写入不产生宿主事件，这条显式调用是「同一会话内改策略立刻生效」的唯一来源。
-    // 失败只降级，不能让写成功的保存报错。
-    try {
-      await deps.reapply()
-    } catch (error) {
-      ctx.logger.warn('dsh-plugin-pack: 保存后重新施加失败（策略已写入）：' + String(error))
+    const state = dryRun
+      ? await previewCommands(target?.cwd ?? null, parsed.commands)
+      : await applyCommands(target?.cwd ?? null, parsed.commands)
+    if (!dryRun) {
+      // 策略写入不产生宿主事件，这条显式调用是「同一会话内改策略立刻生效」的唯一来源。
+      // 失败只降级，不能让写成功的保存报错。
+      try {
+        await deps.reapply()
+      } catch (error) {
+        ctx.logger.warn('dsh-plugin-pack: 保存后重新施加失败（策略已写入）：' + String(error))
+      }
     }
 
     // 写入失败仍返回 ok：`error.code` 只留给命令解析失败与未知会话。
