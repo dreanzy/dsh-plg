@@ -39,11 +39,11 @@ Restart the Host and refresh the page. Two entry points: the chip at the right o
 Edits queue up in the panel; nothing is written until you press Save ([ADR 0006](../../docs/adr/0006-pending-changes-before-commit.md)):
 
 - Flipping a switch, changing a binding, renaming, creating — all of it only enqueues. The panel immediately renders what the change would look like, using a host-side **dry run**.
-- A bar pinned to the bottom of the panel shows the count and offers Undo (drops the last change), Discard all, and Save.
-- While changes are pending the list order is frozen; it re-sorts only after saving. Pending rows carry a vertical rule on the left.
+- A dock pinned to the bottom holds a notice line on top and the pending bar below it: Undo (drops the last change), Discard all, Save.
+- While changes are pending the list order is frozen; it re-sorts only after saving. Touched rows get a tinted background.
 - Closing the panel discards pending changes. That is deliberate: by the time you come back you usually no longer remember what you clicked.
 
-Deleting is the exception: it takes effect immediately and cannot be undone, so the button turns into a red-outlined "确认" and needs a second click.
+Deleting is the exception: it takes effect immediately and cannot be undone, so the button turns into a red-tinted "确认" and needs a second click.
 Pending changes that reference the deleted object are dropped with it, and the panel says how many.
 
 ## Interface
@@ -59,7 +59,7 @@ Pending changes that reference the deleted object are dropped with it, and the p
 | --- | --- |
 | `$DSH_HOME/packs/skill/packs.json` | Pack list: item- and group-level decisions per pack, plus UI switches (chip visibility, default page) |
 | `$DSH_HOME/packs/skill/groups.json` | Group definitions and membership, shared across workspaces |
-| `$DSH_HOME/packs/skill/workspaces.json` | Workspace → pack bindings, plus manually added paths |
+| `$DSH_HOME/packs/skill/workspaces.json` | Workspace → pack bindings |
 
 Workspace directories produce no files at all: the binding table lives in the global home, so project directories stay clean.
 
