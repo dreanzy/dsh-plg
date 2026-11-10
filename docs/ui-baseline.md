@@ -92,7 +92,7 @@ border-radius: var(--dsw-radius-sm)`。裸文字按钮（`padding: 2px 4px`、�
 
 **14. 可点行的状态底色用 `data-state`，不要内联。**
 行同时有「当前」「待保存」和 hover 三种底色，内联写其中一种就把 `:hover` 压死（红线 7）。
-统一用 `.dsh-skill-pack-row` + `data-state="current|pending"`，让 CSS 决定叠加顺序。
+统一用「包名前缀 + `-row`」的类 + `data-state="current|pending"`，让 CSS 决定叠加顺序。
 三态开关（开/关/跟随）是这个面板点得最多的控件，热区 24px 起；它原来只有 19px，
 比被抱怨"太小"的删除按钮还小——小控件要整类地查，不要只改被指出来的那一个。
 

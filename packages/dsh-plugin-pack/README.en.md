@@ -39,7 +39,7 @@ Replace `<owner>/<repo>#<sha>` with the real repository and commit (use a commit
 | --- | --- |
 | `$DSH_HOME/packs/plugin/packs.json` | Pack catalogue and the `ui` section (`showChip`, `defaultTab`) |
 | `$DSH_HOME/packs/plugin/groups.json` | Group definitions and membership, shared across workspaces |
-| `$DSH_HOME/packs/plugin/workspaces.json` | Workspace → pack bindings, plus manually added paths |
+| `$DSH_HOME/packs/plugin/workspaces.json` | Workspace → pack bindings |
 | `$DSH_HOME/packs/plugin/catalog.json` | Attribution scan cache (safe to delete; it rebuilds) |
 
 The three policy files transact independently: editing pressure lands on `packs.json`, while groups and bindings change rarely, so splitting them lets each file be written atomically on its own. After a pack is deleted, keys in the binding table that still point at it become dangling references: the read side evaluates them as `default`, and the write side cleans them up.
@@ -56,7 +56,7 @@ Compatibility reads for the old paths (`$DSH_HOME/plugin-manager/` and `<cwd>/.d
 - **Rows**: the full package name (no stripping of the `@scope/` prefix — `@a/x` and `@b/x` would collide), an official/third-party tag, `N 工具`, `N 段`, `≈M token`, and the switch.
 - **Search**: case-insensitive substring match on the package name. Deliberately not fuzzy: fragments like `dsh` appear everywhere, and fuzzy matching only makes the result harder to identify. Search force-expands every section.
 - **Protected plugins**: the row is tagged "受保护". Disabling one asks for confirmation, and the dialog lists the package name. The list is fixed (file tools, executors, system-prompt, this plugin itself) and no pack can rewrite it.
-- **Submit**: each toggle sends one `apply` immediately; there is no local draft or undo. Batch actions (such as assigning many rows at once) are merged into a single request. A failed save shows the error and re-reads the server state.
+- **Submit**: edits queue up in the panel and are rendered from a host-side **dry run**; nothing is written until you press Save in the bottom dock. List order is frozen while changes are pending and re-sorts only after saving. Closing the panel discards pending changes. Deleting is the exception: it takes effect immediately and cannot be undone, so the button first turns into "确认".
 - **Groups are orthogonal to packs**: groups say which plugins belong together, packs say whether those plugins are on or off for these workspaces. Group switches live in packs alongside item switches; the "分组" page changes no switches.
 - **No cwd row**: the workspace page identifies a workspace by its directory name; the binding keys are normalized paths.
 
@@ -76,7 +76,7 @@ These appear above the list, in this order, and every one of them is seen before
 
 ## Write semantics
 
-Every save submits a set of **intents** (`{ op: 'packItem' | 'packGroup', packId, name, value: boolean | null }`, `createPack` / `renamePack` / `deletePack`, `bind` / `addExtra` / `removeExtra`, the group commands `assign` / `createGroup` / `renameGroup` / `deleteGroup`, and `showChip` / `defaultTab`). The server reads, mutates and writes under a cross-process file lock, comparing no revisions at all. Intents are idempotent and commutative, and the last writer of one key wins, so conflicts such as `stale-revision` cannot occur. `null` deletes the key and returns to follow — writing the same value is not the same thing.
+Every save submits a set of **intents** (`{ op: 'packItem' | 'packGroup', packId, name, value: boolean | null }`, `createPack` / `renamePack` / `deletePack`, `bind`, the group commands `assign` / `createGroup` / `renameGroup` / `deleteGroup`, and `showChip` / `defaultTab`). The server reads, mutates and writes under a cross-process file lock, comparing no revisions at all. Intents are idempotent and commutative, and the last writer of one key wins, so conflicts such as `stale-revision` cannot occur. `null` deletes the key and returns to follow — writing the same value is not the same thing.
 
 `bind` carries its own `cwd`, so writes no longer depend on a session; `sessionId` only selects which view `apply` returns. Binding explicitly to `default` is equivalent to `packId: null`, and no redundant key is persisted.
 

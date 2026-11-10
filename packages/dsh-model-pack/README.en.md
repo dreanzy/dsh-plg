@@ -30,7 +30,7 @@ A binding that points at a deleted pack falls back to `default` and is flagged i
 | --- | --- |
 | `$DSH_HOME/packs/model/packs.json` | pack roster plus the `ui` section |
 | `$DSH_HOME/packs/model/prompts.json` | prompt overrides, orthogonal to packs |
-| `$DSH_HOME/packs/model/workspaces.json` | workspace → pack bindings, plus manually added paths |
+| `$DSH_HOME/packs/model/workspaces.json` | workspace → pack bindings |
 
 Compatibility reads for the legacy paths (`$DSH_HOME/model-scheme/` and `<cwd>/.dsh/model-scheme.json`) have been removed: once the migration finished, those files and their read branches were deleted together. Only the three files above are read now.
 
@@ -60,8 +60,16 @@ Compatibility reads for the legacy paths (`$DSH_HOME/model-scheme/` and `<cwd>/.
 
 Settings has three tabs: **packs | workspace | prompts**. `ui.defaultTab` only decides which tab opens first; switching tabs does not write it. The packs tab creates, renames and deletes packs and edits the selected pack's session route and tiers; `default` has no delete or rename entry. When `ui.showChip === false` the composer chip is not registered.
 
-Write commands on `api/model-pack/apply`: `createPack` / `renamePack` / `deletePack` / `bind` / `addExtra` / `removeExtra` / `showChip` / `defaultTab`, plus this package's content commands `putPack` / `packSession` / `packTier`.
+Write commands on `api/model-pack/apply`: `createPack` / `renamePack` / `deletePack` / `bind` / `showChip` / `defaultTab`, plus this package's content commands `putPack` / `packSession` / `packTier`.
 
+## Editing and saving
+
+Edits queue up in the panel; nothing is written until you press Save (see the root [ADR 0006](../../docs/adr/0006-pending-changes-before-commit.md)). This package used to have a draft-and-save model of its own; the parts that wrote immediately (bindings, creating and deleting packs, the default page) now go through the same queue, so there is no second submit button.
+
+- Session route, the four tiers, tier names, prompts, bindings, creating and renaming all just enqueue. The panel immediately renders what the change would look like, using a host-side **dry run** (`apply` with `dryRun: true`).
+- A bottom dock holds a notice line on top and the pending bar below it: Undo, Discard all, Save.
+- While changes are pending the list order is frozen; it re-sorts only after saving.
+- Closing the panel discards pending changes. Deleting a pack is the exception: it takes effect immediately and cannot be undone.
 ## Degradation
 
 - No `subagents` service: `subagent_tier` is not registered, the delegation prompt section is not injected, and the official `subagent` tool stays visible.

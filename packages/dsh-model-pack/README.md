@@ -63,9 +63,18 @@
 
 ## 面板
 
-设置页三页：**分包 | 工作区 | 提示词**。`ui.defaultTab` 只决定打开时落在哪一页；切换分页不写盘，只有顶部那组单选才改默认页。`分包` 页可新增、改名、删除 pack，并编辑选中 pack 的会话路由与四档；`default` 的删除与改名入口不存在。`工作区` 页列出全部绑定（会话目录、手动添加、只剩绑定的目录），每 20 条一页。`ui.showChip === false` 时 composer 里的 chip 不注册。
+设置页三页：**分包 | 工作区 | 提示词**。`ui.defaultTab` 只决定打开时落在哪一页；切换分页不写盘，只有顶部那组单选才改默认页。`分包` 页可新增、改名、删除 pack，并编辑选中 pack 的会话路由与四档；`default` 的删除与改名入口不存在。`工作区` 页列出全部绑定（会话目录、只剩绑定的目录），每 20 条一页。目录由宿主提供，本页只决定绑定。`ui.showChip === false` 时 composer 里的 chip 不注册。
 
-写命令见 `api/model-pack/apply`：`createPack` / `renamePack` / `deletePack` / `bind` / `addExtra` / `removeExtra` / `showChip` / `defaultTab`，外加本包的内容编辑命令 `putPack` / `packSession` / `packTier`。
+写命令见 `api/model-pack/apply`：`createPack` / `renamePack` / `deletePack` / `bind` / `showChip` / `defaultTab`，外加本包的内容编辑命令 `putPack` / `packSession` / `packTier`。
+
+## 编辑与保存
+
+改动先攒在面板里，点「保存」才写盘（[ADR 0006](../../docs/adr/0006-pending-changes-before-commit.md)）。本包原先就有一套「改草稿 + 按保存」的模型，这次把即时写的那部分（绑定、新建、删除、默认页）也统一进来，不再有两个提交入口：
+
+- 会话路由、四档、档名、提示词、绑定、新建、改名都只是入队；面板立刻按服务端**试算**（`apply` 带 `dryRun: true`）的结果显示改动后的样子。
+- 面板底部是停靠区：上方一行提示，下方是待保存条——「撤销」「放弃全部」「保存」。
+- 待保存期间列表位置不动，保存后才按新值重排。
+- 关闭面板即丢弃未保存的改动。删除 pack 是例外：当场生效、不可撤销，按钮第一下变成「确认」。
 
 ## 安装
 

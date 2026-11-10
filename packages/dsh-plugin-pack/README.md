@@ -72,7 +72,7 @@ dsh plugin --profile <profile> add "github:dreanzy/dsh-plg#<sha>&path:/packages/
 - **行内容**：完整包名（不去 `@scope/` 前缀——`@a/x` 与 `@b/x` 会撞名）、官方/第三方标签、`N 工具`、`N 段`、`≈M token`、开关。
 - **搜索**：包名子串匹配，大小写不敏感。刻意不做模糊匹配：`dsh` 这类片段到处都是，模糊只会让结果更难认。搜索时分区强制展开。
 - **受保护插件**：行标「受保护」。停用它要二次确认，确认框里列出包名。名单固定（读写工具、执行器、system-prompt、本插件自己），不由任何 pack 改写。
-- **提交**：每个开关点击立即发一条 `apply`，没有本地草稿与撤销；批量动作（例如一次归组）合成一条请求。保存失败时显示错误并重新读取服务端状态。
+- **提交**：改动先入队，面板按服务端**试算**的结果显示改动后的样子；点底部停靠区的「保存」才把整批命令一次写盘。待保存期间列表位置冻结，保存后才按新值重排。关闭面板即丢弃未保存的改动。删除是例外：当场生效、不可撤销，按钮第一下变成「确认」。
 - **分组与 pack 正交**：分组描述「哪些插件是一类」，pack 描述「这些插件对这些工作区是开是关」。组开关写在 pack 里，与项开关并列；「分组」页不改任何开关。
 - **组关不掉项级记录**：求值链里项级在组级之前，组内某成员有相反的项级记录时，组开关对它无效。这种组行会标「项级覆盖 N」；把那些项改成「跟随」，组开关才生效。
 - **不显示 cwd**：工作区页按目录名认工作区，绑定表里的键是规范化后的路径。
@@ -93,7 +93,9 @@ dsh plugin --profile <profile> add "github:dreanzy/dsh-plg#<sha>&path:/packages/
 
 ## 写入语义
 
-每次保存提交的是一组**意图**（`{ op: 'packItem' | 'packGroup', packId, name, value: boolean | null }`、`createPack` / `renamePack` / `deletePack`、`bind` / `addExtra` / `removeExtra`、分组的 `assign` / `createGroup` / `renameGroup` / `deleteGroup`、`showChip` / `defaultTab`），服务端在文件锁内读—改—写，不比对版本。命令幂等、可交换，写同一键即后点者赢，所以不存在 `stale-revision` 这类冲突。`null` 表示删掉这条键、回到跟随——写一个同值不等于跟随。
+每次保存提交的是一组**意图**（`{ op: 'packItem' | 'packGroup', packId, name, value: boolean | null }`、`createPack` / `renamePack` / `deletePack`、`bind`、分组的 `assign` / `createGroup` / `renameGroup` / `deleteGroup`、`showChip` / `defaultTab`），服务端在文件锁内读—改—写，不比对版本。命令幂等、可交换，写同一键即后点者赢，所以不存在 `stale-revision` 这类冲突。`null` 表示删掉这条键、回到跟随——写一个同值不等于跟随。
+
+`apply` 另带一个可选 `dryRun: true`：同一套应用规则算完就返回视图，**不写盘**。面板的待保存改动靠它渲染「改了之后是什么样」，浏览器不复制求值链。
 
 `bind` 自带 `cwd`，所以写入不依赖会话；`sessionId` 只决定 apply 返回哪一种视图。显式绑到 `default` 与 `packId: null` 等价，落盘时不留冗余键。
 

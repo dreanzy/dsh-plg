@@ -47,6 +47,14 @@ Settings page → **MCP Pack**: three tabs, Groups / Packs / Workspace. The Grou
 
 The footer's runtime self-check reports whether the host adapters were found, whether the on-demand tools registered, which rows the gate suppressed, and which connections the pool holds.
 
+## Editing and saving
+
+Edits queue up in the panel; nothing is written until you press Save (see the root [ADR 0006](../../docs/adr/0006-pending-changes-before-commit.md)):
+
+- Flipping a switch, changing a binding, creating or renaming all just enqueue. The panel immediately renders what the change would look like, using a host-side **dry run** (`apply` with `dryRun: true`).
+- A bottom dock holds a notice line on top and the pending bar below it: Undo, Discard all, Save.
+- While changes are pending the list order is frozen; touched rows get a tinted background.
+- Closing the panel discards pending changes. Deleting is the exception: it takes effect immediately and cannot be undone, so the button first turns into "确认".
 ## Install
 
 ```sh
