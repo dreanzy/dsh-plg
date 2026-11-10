@@ -21,8 +21,6 @@ import {
   type GroupRegistry,
   type McpPack,
   type PackBook,
-  type RowPatch,
-  type RowPolicy,
   type UiState,
 } from './types.js'
 
@@ -116,53 +114,7 @@ async function transact(
   })
 }
 
-function setKey(
-  map: Readonly<Record<string, boolean>>,
-  key: string,
-  value: boolean | null,
-): Record<string, boolean> {
-  const next = { ...map }
-  if (value === null) delete next[key]
-  else next[key] = value
-  return next
-}
 
-/**
- * 把一份补丁落到一条行策略上。
- *
- * 「键不在补丁里」与「键是 `null`」是两件事：前者不动，后者删掉回跟随。
- * 四个字段全空等于跟随：整条删掉，别留下一个空对象冒充覆盖。
- */
-function applyPatch(
-  rows: Readonly<Record<string, RowPolicy>>,
-  rowKey: string,
-  patch: RowPatch,
-): Record<string, RowPolicy> {
-  const source = rows[rowKey]
-  const next: { enabled?: boolean; mode?: RowPolicy['mode']; tools?: readonly string[]; description?: string } = {
-    ...(source === undefined ? {} : source),
-  }
-  if ('enabled' in patch) {
-    if (patch.enabled === null || patch.enabled === undefined) delete next.enabled
-    else next.enabled = patch.enabled
-  }
-  if ('mode' in patch) {
-    if (patch.mode === null || patch.mode === undefined) delete next.mode
-    else next.mode = patch.mode
-  }
-  if ('tools' in patch) {
-    if (patch.tools === null || patch.tools === undefined) delete next.tools
-    else next.tools = patch.tools
-  }
-  if ('description' in patch) {
-    if (patch.description === null || patch.description === undefined) delete next.description
-    else next.description = patch.description
-  }
-  const out = { ...rows }
-  if (Object.keys(next).length === 0) delete out[rowKey]
-  else out[rowKey] = next
-  return out
-}
 
 interface LoadedPacks {
   readonly book: PackBook
@@ -288,14 +240,6 @@ function applyToGroups(current: string | undefined, commands: readonly Command[]
   return serializeGroups(draft)
 }
 
-function nextGroupId(groups: readonly { id: string }[]): string {
-  const taken = new Set(groups.map((group) => group.id))
-  for (let index = groups.length + 1; ; index += 1) {
-    const candidate = `g${String(index)}`
-    if (!taken.has(candidate)) return candidate
-  }
-}
-
 /**
  * 写 `workspaces.json`。没有实际变化就返回 `null`，不凭空建空文件。
  */
@@ -311,44 +255,7 @@ function applyToBindings(
   return draft.changed ? serializeBindings({ bindings: draft.bindings }) : null
 }
 
-interface Targets {
-  readonly packs: boolean
-  readonly groups: boolean
-  readonly bindings: boolean
-}
 
-function targets(commands: readonly Command[]): Targets {
-  let packs = false
-  let groups = false
-  let bindings = false
-  for (const command of commands) {
-    switch (command.op) {
-      case 'createPack':
-      case 'renamePack':
-      case 'deletePack':
-      case 'packRow':
-      case 'packGroup':
-      case 'showChip':
-      case 'defaultTab':
-        packs = true
-        break
-      case 'assign':
-      case 'createGroup':
-      case 'renameGroup':
-      case 'deleteGroup':
-        groups = true
-        break
-      case 'bind':
-        bindings = true
-        break
-      default:
-        break
-    }
-    // deletePack 还要清绑定，所以同时命中两个文件。
-    if (command.op === 'deletePack') bindings = true
-  }
-  return { packs, groups, bindings }
-}
 
 /** 真正落盘的那一半：前置校验 + 三个文件按固定顺序写。失败照旧抛出，由调用方收成 warning。 */
 async function writeCommands(commands: readonly Command[]): Promise<void> {
