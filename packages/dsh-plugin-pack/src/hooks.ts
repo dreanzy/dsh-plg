@@ -59,11 +59,8 @@ export interface ToolsFace {
   restrict?(filter: RestrictFilter): () => unknown
 }
 
-/** 宿主是否提供两条通道的能力，供面板标红。 */
-export interface Support {
-  readonly restrict: boolean
-  readonly promptFilter: boolean
-}
+import { createCapabilities, type Support } from './capabilities.js'
+export type { Support }
 
 /** agent/created 负载里的 Agent，只取本插件用到的字段。 */
 interface AgentLike {
@@ -291,24 +288,22 @@ export function installHooks(ctx: PluginContext, options?: HooksOptions): HooksH
   /** 身份查不到时按 agent id / session id 回退。 */
   const byId = new Map<string, Snapshot>()
 
-  /** 宿主是否支持过 restrict。一旦确认支持就不再回退。 */
-  let restrictFound = false
-  /** 是否成功订阅过装配事件。 */
-  let promptFilterFound = false
-  /** 各类降级只提示一次：这些分支每次重算都会走到，逐次刷日志没有信息量。 */
-  const warned = new Set<string>()
-
-  const warnOnce = (key: string, message: string): void => {
-    if (warned.has(key)) return
-    warned.add(key)
-    ctx.logger.warn('dsh-plugin-pack: ' + message)
-  }
+  /**
+   * 宿主的支持面：restrict 通道与装配事件的订阅是否都存在。
+   *
+   * 这三件事原来各管一段——一个 flag、一个 warnOnce 集合、一处用到时再探——面板与
+   * 路由各拿一份结论，于是「关掉插件为什么只生效一半」要在三处拼。
+   */
+  const capabilities = createCapabilities(
+    () => ctx.get('tools'),
+    (message) => ctx.logger.warn('dsh-plugin-pack: ' + message),
+  )
 
   const readCatalog = (): Catalog | null => {
     try {
       return feed.read()
     } catch (error) {
-      warnOnce('catalog-read', '读取插件目录失败，本轮不改变限制：' + String(error))
+      capabilities.warnOnce('catalog-read', '读取插件目录失败，本轮不改变限制：' + String(error))
       return null
     }
   }
@@ -346,29 +341,29 @@ export function installHooks(ctx: PluginContext, options?: HooksOptions): HooksH
   const applyOne = async (state: AgentState): Promise<void> => {
     const cwd = cwdOf(state.agent)
     if (cwd === null) {
-      warnOnce('no-cwd', 'agent/created 缺少 cwd，本轮不改变限制')
+      capabilities.warnOnce('no-cwd', 'agent/created 缺少 cwd，本轮不改变限制')
       return
     }
 
     const tools = scopedTools(state.agent)
     if (tools === null) {
-      warnOnce('no-tools', '取不到 agent 作用域的 tools 服务，本轮不改变限制')
+      capabilities.warnOnce('no-tools', '取不到 agent 作用域的 tools 服务，本轮不改变限制')
       return
     }
-    if (typeof tools.restrict === 'function') restrictFound = true
+    if (typeof tools.restrict === 'function') capabilities.noteRestrict(true)
 
     let loaded: PolicyState
     try {
       loaded = await loadState(cwd)
     } catch (error) {
-      warnOnce('policy-read', '读取停用策略失败，本轮不改变限制：' + String(error))
+      capabilities.warnOnce('policy-read', '读取停用策略失败，本轮不改变限制：' + String(error))
       return
     }
 
     const catalog = readCatalog()
     if (catalog === null) {
       // 目录未就绪时连「哪些工具属于谁」都不知道。保持原状，不动掩码也不动快照。
-      warnOnce('catalog-missing', '插件目录尚未就绪，本轮不改变限制')
+      capabilities.warnOnce('catalog-missing', '插件目录尚未就绪，本轮不改变限制')
       return
     }
 
@@ -395,7 +390,7 @@ export function installHooks(ctx: PluginContext, options?: HooksOptions): HooksH
         if (typeof definition?.name === 'string') visible.add(definition.name)
       }
     } catch (error) {
-      warnOnce('inventory', '工具清单不完整，本轮不改变限制：' + String(error))
+      capabilities.warnOnce('inventory', '工具清单不完整，本轮不改变限制：' + String(error))
       return
     }
 
@@ -420,7 +415,7 @@ export function installHooks(ctx: PluginContext, options?: HooksOptions): HooksH
 
       const restrict = tools.restrict
       if (typeof restrict !== 'function') {
-        warnOnce('no-restrict', '当前宿主不支持 tools.restrict()，策略已保存但工具不会生效')
+        capabilities.warnOnce('no-restrict', '当前宿主不支持 tools.restrict()，策略已保存但工具不会生效')
         // 刻意不更新 key：宿主若在运行中补上 restrict，下一次重算还能接上。
         missing = true
         return null
@@ -445,7 +440,7 @@ export function installHooks(ctx: PluginContext, options?: HooksOptions): HooksH
           const unknown = unknownNamesIn(error, candidate)
           const remaining = candidate.filter((name) => !unknown.includes(name))
           if (unknown.length === 0 || remaining.length === 0) {
-            warnOnce(
+            capabilities.warnOnce(
               'restrict-failed',
               '施加限制失败，本会话保持原状（agent=' + state.agent.id + '）：' + String(error),
             )
@@ -552,7 +547,7 @@ export function installHooks(ctx: PluginContext, options?: HooksOptions): HooksH
       }
     } catch (error) {
       // 装配路径上永不抛：抛出去整个请求就没了。
-      warnOnce('assemble', '提示词段过滤失败，本轮按原样装配：' + String(error))
+      capabilities.warnOnce('assemble', '提示词段过滤失败，本轮按原样装配：' + String(error))
       removed = null
     }
 
@@ -586,9 +581,9 @@ export function installHooks(ctx: PluginContext, options?: HooksOptions): HooksH
   let offAssemble: (() => void) | null = null
   try {
     offAssemble = ctx.on('system-prompt/assemble', onAssemble)
-    promptFilterFound = true
+    capabilities.notePromptFilter(true)
   } catch (error) {
-    warnOnce('no-waterfall', '宿主不支持 system-prompt/assemble，停用只对工具生效：' + String(error))
+    capabilities.warnOnce('no-waterfall', '宿主不支持 system-prompt/assemble，停用只对工具生效：' + String(error))
   }
 
   const stopAll = (): void => {
@@ -637,20 +632,7 @@ export function installHooks(ctx: PluginContext, options?: HooksOptions): HooksH
     }
   }
 
-  const support = (): Support => {
-    let restrict = restrictFound
-    if (!restrict) {
-      try {
-        const root = ctx.get('tools')
-        if (typeof root === 'object' && root !== null && typeof (root as ToolsFace).restrict === 'function') {
-          restrict = true
-        }
-      } catch {
-        // 取不到就按不支持显示：面板提示「已保存但不生效」，比误报支持安全。
-      }
-    }
-    return { restrict, promptFilter: promptFilterFound }
-  }
+  const support = (): Support => capabilities.support()
 
   return {
     reapply: applyAll,
