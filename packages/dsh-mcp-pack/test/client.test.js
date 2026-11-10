@@ -91,3 +91,42 @@ test('待保存键覆盖每一类可覆盖命令', () => {
   for (const [command, expected] of CASES) assert.equal(pendingKey(command), expected)
   assert.equal(pendingKey({ op: 'unknown-op' }), null, '可覆盖之外的命令不落格')
 })
+
+test('待保存队列：同键后写覆盖，键为 null 的命令各占一条', () => {
+  const { createQueue, pendingKey } = loadClient().__internals
+  const queue = createQueue(pendingKey)
+  queue.push({ op: 'bind', cwd: 'C:/a' })
+  queue.push({ op: 'bind', cwd: 'C:/a' })
+  assert.equal(queue.count, 1, '同键必须覆盖，不是追加')
+  queue.push({ op: 'createPack', packId: 'p1' })
+  queue.push({ op: 'createPack', packId: 'p1' })
+  assert.equal(queue.count, 3, '没有可覆盖目标的命令每条都独立')
+  assert.equal(queue.keys().size, 1, '只有带键的条目进 keys')
+  assert.equal(queue.commands().length, 3)
+})
+
+test('待保存队列：undo / discard / drop', () => {
+  const { createQueue, pendingKey } = loadClient().__internals
+  const queue = createQueue(pendingKey)
+  queue.push([{ op: 'bind', cwd: 'C:/a' }, { op: 'createPack', packId: 'p1' }, { op: 'createPack', packId: 'p1' }])
+  assert.equal(queue.count, 3)
+  queue.undo()
+  assert.equal(queue.count, 2)
+  assert.equal(queue.drop((command) => command.packId === 'p1'), 1)
+  assert.equal(queue.count, 1)
+  assert.equal(queue.drop(() => true), 1)
+  assert.equal(queue.count, 0)
+  queue.push({ op: 'bind', cwd: 'C:/b' })
+  queue.discard()
+  assert.equal(queue.count, 0)
+})
+
+test('待保存队列：touch 换引用但不改内容，试算才会重跑', () => {
+  const { createQueue, pendingKey } = loadClient().__internals
+  const queue = createQueue(pendingKey)
+  queue.push({ op: 'bind', cwd: 'C:/a' })
+  const before = queue.entries
+  const after = queue.touch()
+  assert.notEqual(after, before, '引用必须换，否则 effect 不会重跑')
+  assert.equal(queue.count, 1)
+})

@@ -844,11 +844,94 @@ window.__ModuleLoader__.load({
      * 队列活在这一次挂载里：关闭面板即丢。跨面板保留会被「我到底存了没」拖住，
      * 而用户关掉面板再回来时通常已经不记得点过什么了。
      */
+    /**
+     * 待保存队列的纯部分：只有条目数组与键规则，不碰 React（见 ADR 0006）。
+     *
+     * `keyOf` 决定「同键后写覆盖」：键不为 null 时先删掉同键的旧条目再追加；新建与
+     * 删除这类没有可覆盖目标的命令键为 null，每条都独立存在。
+     *
+     * 每次变更都换一个新数组：试算 effect 靠引用变化重跑。
+     */
+    function createQueue(keyOf) {
+      let entries = []
+      let uid = 0
+
+      const set = (next) => {
+        entries = next
+        return next
+      }
+
+      return {
+        get entries() {
+          return entries
+        },
+        get count() {
+          return entries.length
+        },
+        /** 被改动命中的键，供行渲染标出「这一行还没保存」。 */
+        keys() {
+          const set = new Set()
+          for (const entry of entries) if (entry.key !== null) set.add(entry.key)
+          return set
+        },
+        commands() {
+          return entries.map((entry) => entry.command)
+        },
+        push(commands) {
+          const list = Array.isArray(commands) ? commands : [commands]
+          const next = entries.slice()
+          for (const command of list) {
+            const key = keyOf(command)
+            if (key !== null) {
+              for (let index = next.length - 1; index >= 0; index -= 1) {
+                if (next[index].key === key) next.splice(index, 1)
+              }
+            }
+            uid += 1
+            next.push({ id: uid, key: key, command: command })
+          }
+          return set(next)
+        },
+        undo() {
+          return set(entries.slice(0, -1))
+        },
+        discard() {
+          return set([])
+        },
+        /** 换一个新引用但内容不变：删除是另一条写盘路径，队列没变也要重算一次试算。 */
+        touch() {
+          return set(entries.slice())
+        },
+        /** 丢掉命中 predicate 的命令，返回丢掉的条数。 */
+        drop(predicate) {
+          const victims = entries.filter((entry) => predicate(entry.command))
+          if (victims.length === 0) return 0
+          set(entries.filter((entry) => !predicate(entry.command)))
+          return victims.length
+        },
+      }
+    }
+
+    /**
+     * 待保存改动。
+     *
+     * 点一下只入队，不发写请求；队列非空时每次变化都用 `dryRun` 试算一次，
+     * 拿服务端算好的视图来渲染——浏览器不复制求值链。
+     * 点「保存」才把整批命令写盘。
+     *
+     * 队列活在这一次挂载里：关闭面板即丢。跨面板保留会被「我到底存了没」拖住，
+     * 而用户关掉面板再回来时通常已经不记得点过什么了。
+     *
+     * 这里只剩两件需要 React 的事：试算的世代号与提交。队列规则全在 `createQueue`，
+     * 因此可以脱离渲染直接测。
+     */
     function usePending(options) {
-      const [entries, setEntries] = useState([])
+      const queueRef = useRef(null)
+      if (queueRef.current === null) queueRef.current = createQueue(pendingKey)
+      const queue = queueRef.current
+      const [entries, setEntries] = useState(queue.entries)
       const [preview, setPreview] = useState({ data: null, loading: false, error: null })
       const seq = useRef(0)
-      const uid = useRef(0)
       const latest = useRef(options)
       latest.current = options
 
@@ -861,7 +944,7 @@ window.__ModuleLoader__.load({
         }
         const mine = (seq.current += 1)
         setPreview((prev) => ({ data: prev.data, loading: true, error: null }))
-        latest.current.preview(entries.map((entry) => entry.command)).then(
+        latest.current.preview(queue.commands()).then(
           (data) => {
             if (mine === seq.current) setPreview({ data: data, loading: false, error: null })
           },
@@ -873,106 +956,46 @@ window.__ModuleLoader__.load({
         )
       }, [entries])
 
-      /*
-       * 队列的实时快照，**由每个变更函数同步维护**。
-       *
-       * 不能只在渲染期赋值：`commit` / `drop` 是在事件回调里同步调用的，那时还没重渲染，
-       * 读到的是上一次渲染的队列。「改完文字直接点保存」正是这种情况——失焦刚把最后一条
-       * 命令塞进队列，紧接着的点击就要读它，而 `setEntries` 还没生效，改动就丢了。
-       */
-      const entriesRef = useRef(entries)
-
-      /** 同步写入快照并交给 React：两处永远是同一份。 */
+      /** 把队列的新数组交给 React：队列自己同步持有同一份，事件回调里读到的永远是最新。 */
       const apply = useCallback((next) => {
-        entriesRef.current = next
         setEntries(next)
         return next
       }, [])
 
-      const push = useCallback(
-        (commands) => {
-          const list = Array.isArray(commands) ? commands : [commands]
-          const next = entriesRef.current.slice()
-          for (const command of list) {
-            const key = pendingKey(command)
-            if (key !== null) {
-              for (let index = next.length - 1; index >= 0; index -= 1) {
-                if (next[index].key === key) next.splice(index, 1)
-              }
-            }
-            uid.current += 1
-            next.push({ id: uid.current, key: key, command: command })
-          }
-          apply(next)
-        },
-        [apply],
-      )
+      const push = useCallback((commands) => apply(queue.push(commands)), [apply, queue])
+      const undo = useCallback(() => apply(queue.undo()), [apply, queue])
+      const discard = useCallback(() => apply(queue.discard()), [apply, queue])
+      const refresh = useCallback(() => apply(queue.touch()), [apply, queue])
 
-      const undo = useCallback(() => {
-        apply(entriesRef.current.slice(0, -1))
-      }, [apply])
-
-      const discard = useCallback(() => {
-        apply([])
-      }, [apply])
-
-      /**
-       * 强制让那份试算重算一次。
-       *
-       * 删除走另一条写盘路径：队列里的命令原封不动时 `entries` 不变、effect 不会重跑，
-       * 被删掉的对象就会一直留在按试算视图渲染的面板上。删除后必须踢一脚。
-       */
-      const refresh = useCallback(() => {
-        apply(entriesRef.current.slice())
-      }, [apply])
-      /**
-       * 丢弃过时的试算结果。
-       *
-       * 写盘会换掉 base，而手里的试算视图是基于**旧** base 算的：被删掉的对象会
-       * 多留在屏幕上一次往返的时间，看起来就是「删了没反应，过一会儿才消失」。
-       * 写盘之后先丢掉它，面板立刻回落到新的真实视图，紧接着再按新 base 重算。
-       */
       const resetPreview = useCallback(() => {
         seq.current += 1
         setPreview({ data: null, loading: false, error: null })
       }, [])
 
-      /**
-       * 丢掉命中 predicate 的命令，返回丢掉了几条。
-       *
-       * 删除是当场写盘的，队列里引用被删对象的命令（改它的名、给它设开关、
-       * 绑到它、把它归到被删的组）在删除之后都落不了地，留着只会在保存时报错。
-       */
       const drop = useCallback(
         (predicate) => {
-          const victims = entriesRef.current.filter((entry) => predicate(entry.command))
-          if (victims.length === 0) return 0
-          apply(entriesRef.current.filter((entry) => !predicate(entry.command)))
-          return victims.length
+          const dropped = queue.drop(predicate)
+          if (dropped > 0) apply(queue.entries)
+          return dropped
         },
-        [apply],
+        [apply, queue],
       )
 
       const commit = useCallback(async () => {
-        const commands = entriesRef.current.map((entry) => entry.command)
+        const commands = queue.commands()
         if (commands.length === 0) return true
         try {
           const data = await latest.current.apply(commands)
-          apply([])
+          apply(queue.discard())
           latest.current.onApplied(data)
           return true
         } catch (error) {
           setPreview((prev) => ({ ...prev, error: String(error.message || error) }))
           return false
         }
-      }, [apply])
+      }, [apply, queue])
 
-      /** 被改动命中的键，供行渲染标出「这一行还没保存」。 */
-      const keys = useMemo(() => {
-        const set = new Set()
-        for (const entry of entries) if (entry.key !== null) set.add(entry.key)
-        return set
-      }, [entries])
+      const keys = useMemo(() => queue.keys(), [entries, queue])
 
       return {
         entries: entries,
@@ -983,12 +1006,11 @@ window.__ModuleLoader__.load({
         discard: discard,
         drop: drop,
         refresh: refresh,
-      resetPreview: resetPreview,
+        resetPreview: resetPreview,
         commit: commit,
         count: entries.length,
       }
     }
-
     /** 停靠区上方那一行提示：说清楚发生了什么，给一个关掉它的入口。 */
     function NoticeBar(props) {
       return h(
@@ -3066,7 +3088,7 @@ window.__ModuleLoader__.load({
 
     return {
       // 测试出口：只供 test/ 断言结构与纯逻辑用，运行期不要读它。
-      __internals: { pendingKey, usePending, TABS, GroupsPage, PackSettings, WorkspacePage, PendingBar, CHIP_CSS },
+      __internals: { pendingKey, createQueue, usePending, TABS, GroupsPage, PackSettings, WorkspacePage, PendingBar, CHIP_CSS },
       // `remote` 与 `remote.session` 都是独立服务名：只声明 `remote` 拿不到 session。
       // 声明是「服务在不在 ctx 上」的唯一开关；取用仍要 try/catch（ctx.get 对取不到的
       // 已声明服务会抛错）。缺了这两个，工作区页读不到任何目录。
