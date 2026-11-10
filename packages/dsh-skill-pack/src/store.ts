@@ -156,19 +156,29 @@ export interface PolicyState {
   /** 生效的 pack；`packId === 'default'` 时为 `null`（按 default 求值）。 */
   readonly pack: Pack | null
   readonly groups: GroupRegistry
-  /** 工作区绑定表（含全部 cwd 的绑定与 `extra`）。 */
+  /** 工作区绑定表。目录清单由宿主提供，这里只有 cwd → pack。 */
   readonly bindings: Bindings
   readonly warnings: readonly string[]
 }
 
 export async function loadState(cwd: string | null): Promise<PolicyState> {
-  const warnings: string[] = []
   // 三份文件互不依赖：并行读。串行会白付两次往返，而这条路径每次新会话都走。
   const [packsText, groupsText, workspacesText] = await Promise.all([
     readText(packsPath()),
     readText(groupsPath()),
     readText(workspacesPath()),
   ])
+  return buildState(cwd, packsText, groupsText, workspacesText)
+}
+
+/** 三份文本 → 视图状态。读盘与试算共用同一条解析路径，两者的视图不会漂移。 */
+function buildState(
+  cwd: string | null,
+  packsText: string | undefined,
+  groupsText: string | undefined,
+  workspacesText: string | undefined,
+): PolicyState {
+  const warnings: string[] = []
   const parsedPacks = parsePacks(packsText)
   warnings.push(...parsedPacks.warnings)
   const { packs } = parsedPacks.value.book
@@ -298,6 +308,9 @@ function applyToGroups(current: string | undefined, commands: readonly Command[]
     if (command.op === 'createGroup') {
       const name = command.name.trim()
       if (name === '') throw new Error('分组名不能为空')
+      // 重名必须在写入前拦住：同一批命令里的前一条已经进 `groups`，所以这条检查
+      // 对批量新建同样成立。放过去就会在名册里留下两张同名分组，界面上无法区分。
+      if (groups.some((group) => group.name === name)) throw new Error(`分组名已存在：${name}`)
       // id 稳定且与名字脱钩：改名不需要扫任何工程文件。
       const id = nextGroupId(groups)
       groups = [...groups, { id, name }]
@@ -307,6 +320,9 @@ function applyToGroups(current: string | undefined, commands: readonly Command[]
       const name = command.name.trim()
       if (name === '') throw new Error('分组名不能为空')
       if (!known().has(command.groupId)) throw new Error(`未知分组：${command.groupId}`)
+      if (groups.some((group) => group.id !== command.groupId && group.name === name)) {
+        throw new Error(`分组名已存在：${name}`)
+      }
       groups = groups.map((group) =>
         group.id === command.groupId ? { id: group.id, name } : group,
       )
@@ -351,7 +367,6 @@ function applyToBindings(
 ): string | null {
   const parsed = parseBindings(current)
   const bindings: Record<string, string> = { ...parsed.value.bindings }
-  const extra = [...parsed.value.extra]
   let changed = false
 
   for (const command of commands) {
@@ -363,25 +378,6 @@ function applyToBindings(
           delete bindings[key]
           changed = true
         }
-      }
-      continue
-    }
-    if (command.op === 'addExtra') {
-      const key = normalizeCwd(command.cwd)
-      if (key === null) throw new Error('extra 的工作目录不能为空')
-      if (extra.indexOf(key) < 0) {
-        extra.push(key)
-        changed = true
-      }
-      continue
-    }
-    if (command.op === 'removeExtra') {
-      const key = normalizeCwd(command.cwd)
-      if (key === null) throw new Error('extra 的工作目录不能为空')
-      const at = extra.indexOf(key)
-      if (at >= 0) {
-        extra.splice(at, 1)
-        changed = true
       }
       continue
     }
@@ -404,7 +400,7 @@ function applyToBindings(
   }
 
   // 没有实际变化就不创建文件：只改 pack 的批量命令不该顺手留下一个空绑定文件。
-  return changed ? serializeBindings({ bindings, extra }) : null
+  return changed ? serializeBindings({ bindings }) : null
 }
 
 interface Targets {
@@ -436,8 +432,6 @@ function targets(commands: readonly Command[]): Targets {
         groups = true
         break
       case 'bind':
-      case 'addExtra':
-      case 'removeExtra':
         bindings = true
         break
       default:
@@ -489,6 +483,70 @@ export async function applyCommands(cwd: string | null, commands: readonly Comma
     // 写失败后连回读也失败时，仍要给出一个能渲染的状态：宁可面板空一轮，也不抛。
     note(warnings, `读取最新状态失败：${String(error)}`)
     return { ...emptyState(), warnings }
+  }
+}
+
+/**
+ * 试算：把一批命令应用在内存里，返回**不落盘**的视图。
+ *
+ * 面板的待保存改动靠它渲染「改了会是什么样」。应用规则与 `applyCommands` 完全共用
+ * `applyToPacks` / `applyToGroups` / `applyToBindings`，所以试算结果与真写结果不会
+ * 有第二条求值路径——面板因此不必在浏览器里复制一份求值链。
+ *
+ * 与真写一致：某个文件的解析或命令非法时只跳过那份文件并记 warning，不整批失败。
+ */
+export async function previewCommands(
+  cwd: string | null,
+  commands: readonly Command[],
+): Promise<PolicyState> {
+  const warnings: string[] = []
+  const plan = targets(commands)
+  const [packsCurrent, groupsCurrent, workspacesCurrent] = await Promise.all([
+    readText(packsPath()),
+    readText(groupsPath()),
+    readText(workspacesPath()),
+  ])
+
+  let packsText = packsCurrent
+  let groupsText = groupsCurrent
+  let workspacesText = workspacesCurrent
+
+  if (plan.packs) {
+    packsText = computeText(packsCurrent, 'packs.json', warnings, (current) => applyToPacks(current, commands))
+  }
+  if (plan.groups) {
+    groupsText = computeText(groupsCurrent, 'groups.json', warnings, (current) => applyToGroups(current, commands))
+  }
+  if (plan.bindings) {
+    // 与真写同一顺序：bind 的目标要在 pack 变化之后才判定。
+    const known = new Set(Object.keys(parsePacks(packsText).value.book.packs))
+    workspacesText = computeText(workspacesCurrent, 'workspaces.json', warnings, (current) =>
+      applyToBindings(current, commands, known),
+    )
+  }
+
+  const state = buildState(cwd, packsText, groupsText, workspacesText)
+  return { ...state, warnings: [...warnings, ...state.warnings] }
+}
+
+/**
+ * 读 → 改 → 返回文本，不写盘。
+ *
+ * `null` 表示这批命令对这份文件没有实际变化（或原文已损坏），沿用原文即可；
+ * 命令非法时跳过这份文件并记 warning——与 `writeFileSafely` 的失败口径一致。
+ */
+function computeText(
+  current: string | undefined,
+  label: string,
+  warnings: string[],
+  mutate: (current: string | undefined) => string | null,
+): string | undefined {
+  try {
+    const next = mutate(current)
+    return next === null ? current : next
+  } catch (error) {
+    note(warnings, `${label} 更新失败：${String(error)}`)
+    return current
   }
 }
 

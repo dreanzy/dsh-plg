@@ -115,7 +115,7 @@ async function makeWorkspace(options = {}) {
   if (options.bind !== undefined) bindings[normalizeCwd(cwd)] = options.bind
   await writeFile(
     join(stateDir, 'workspaces.json'),
-    `${JSON.stringify({ version: 1, bindings, extra: [] }, null, 2)}\n`,
+    `${JSON.stringify({ version: 1, bindings }, null, 2)}\n`,
   )
   return { home, cwd, stateDir }
 }
@@ -191,7 +191,7 @@ test('绑定只影响自己的工作区，别的 cwd 仍按 default 求值', asy
   )
   await writeFile(
     join(stateDir, 'workspaces.json'),
-    `${JSON.stringify({ version: 1, bindings: { [normalizeCwd(boundCwd)]: 'p1' }, extra: [] })}\n`,
+    `${JSON.stringify({ version: 1, bindings: { [normalizeCwd(boundCwd)]: 'p1' } })}\n`,
   )
 
   const boundSkills = fakeSkills(rows)
@@ -280,7 +280,7 @@ test('多个会话的重新落地并发执行', async () => {
       packId: 'default',
       pack: null,
       groups: { groups: [], assignments: {} },
-      bindings: { bindings: {}, extra: [] },
+      bindings: { bindings: {} },
       warnings: [],
     },
     warnings: [],

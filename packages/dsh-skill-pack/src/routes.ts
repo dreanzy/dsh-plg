@@ -2,7 +2,7 @@ import { defaultPackOf } from './policy.js'
 import { effective } from './effective.js'
 import { projectedCwd } from './hooks.js'
 import { isOfficialSkill, type SkillSummaryLike, type SkillsFace } from './inventory.js'
-import { applyCommands, type PolicyState } from './store.js'
+import { applyCommands, previewCommands, type PolicyState } from './store.js'
 import type { ScopeSnapshot, SnapshotValue } from './snapshot.js'
 import {
   DEFAULT_PACK_ID,
@@ -319,12 +319,14 @@ export async function handleGlobal(
   ctx: RouteContext,
   deps: RouteDeps,
   sessionId?: string,
+  /** 试算后的策略状态；给出时视图按它渲染，但清单仍来自真实快照。 */
+  policy?: PolicyState,
 ): Promise<Envelope<GlobalView>> {
   try {
     const skills = rootSkills(ctx)
     if (skills === null) return { ok: false, error: { code: 'internal', message: 'skills 服务不可用' } }
     const view = await readAnyView(ctx, deps, sessionId)
-    const state = view.policy
+    const state = policy ?? view.policy
     return {
       ok: true,
       value: {
@@ -350,6 +352,8 @@ async function buildWorkspaceView(
   live: boolean,
   stuck: readonly string[],
   deps: RouteDeps,
+  /** 试算后的策略状态；给出时视图按它渲染，但清单仍来自真实快照。 */
+  policy?: PolicyState,
 ): Promise<Envelope<WorkspaceView>> {
   const skills = rootSkills(ctx)
   if (skills === null) return { ok: false, error: { code: 'internal', message: 'skills 服务不可用' } }
@@ -358,7 +362,7 @@ async function buildWorkspaceView(
   // 非 live 的会话没有 scope，但 cwd 仍要传：绑定表按 cwd 解析，丢掉它会让
   // 已关闭会话的工作区视图退回 default，显示成「没绑定」。
   const view = await deps.snapshot.refresh(cwd, agent)
-  const state = view.policy
+  const state = policy ?? view.policy
   const defaultPack = defaultPackOf(state.packs)
   return {
     ok: true,
@@ -409,8 +413,6 @@ const OPS = new Set([
   'renamePack',
   'deletePack',
   'bind',
-  'addExtra',
-  'removeExtra',
   'assign',
   'createGroup',
   'renameGroup',
@@ -510,13 +512,6 @@ export function parseCommands(raw: unknown): { ok: true; commands: Command[] } |
         commands.push({ op: 'bind', cwd, packId })
         break
       }
-      case 'addExtra':
-      case 'removeExtra': {
-        const cwd = readNonEmpty(record, 'cwd')
-        if (cwd === null || cwd.trim() === '') return bad(index, 'cwd 必须是非空字符串')
-        commands.push({ op, cwd })
-        break
-      }
       case 'assign': {
         const name = readNonEmpty(record, 'name')
         if (name === null) return bad(index, 'name 必须是非空字符串')
@@ -572,7 +567,12 @@ function withWriteWarnings(
   return { ok: true, value }
 }
 
-/** `POST api/skill-pack/apply`：`{ sessionId?, commands }`。 */
+/**
+ * `POST api/skill-pack/apply`：`{ sessionId?, commands, dryRun? }`。
+ *
+ * `dryRun: true` 只把命令应用在内存里并返回同样的视图，不写盘、不重新落地。
+ * 面板的待保存改动每一步都用它渲染「改了之后会是什么样」。
+ */
 export async function handleApply(
   ctx: RouteContext,
   body: Record<string, unknown> | null,
@@ -581,6 +581,7 @@ export async function handleApply(
   try {
     const parsed = parseCommands(body?.['commands'])
     if (!parsed.ok) return { ok: false, error: { code: 'bad-request', message: parsed.message } }
+    const dryRun = body?.['dryRun'] === true
 
     // `bind` 自带 cwd，所以写入本身不再依赖会话；sessionId 只决定回哪种视图。
     const sessionId = readString(body, 'sessionId')
@@ -594,17 +595,21 @@ export async function handleApply(
     }
 
     // 写入失败不抛，只把说明塞进 state.warnings；下面把它并进返回的视图。
-    const state = await applyCommands(target?.cwd ?? null, parsed.commands)
-    // 保存不触碰 skill 注册表，因此不会发出 skills/change；这条显式调用是
-    // 「同一会话内改策略立刻生效」的唯一来源。失败只降级，不能让写成功的保存报错。
-    try {
-      await deps.reapply()
-    } catch (error) {
-      ctx.logger.warn(`dsh-skill-pack: 保存后重新落地失败（策略已写入）：${String(error)}`)
+    const state = dryRun
+      ? await previewCommands(target?.cwd ?? null, parsed.commands)
+      : await applyCommands(target?.cwd ?? null, parsed.commands)
+    if (!dryRun) {
+      // 保存不触碰 skill 注册表，因此不会发出 skills/change；这条显式调用是
+      // 「同一会话内改策略立刻生效」的唯一来源。失败只降级，不能让写成功的保存报错。
+      try {
+        await deps.reapply()
+      } catch (error) {
+        ctx.logger.warn(`dsh-skill-pack: 保存后重新落地失败（策略已写入）：${String(error)}`)
+      }
     }
 
-    if (target === null) return withWriteWarnings(await handleGlobal(ctx, deps), state.warnings)
-    const view = await buildWorkspaceView(ctx, target.cwd, target.agent, target.live, deps.stuck(), deps)
+    if (target === null) return withWriteWarnings(await handleGlobal(ctx, deps, undefined, state), state.warnings)
+    const view = await buildWorkspaceView(ctx, target.cwd, target.agent, target.live, deps.stuck(), deps, state)
     return withWriteWarnings(view, state.warnings)
   } catch (error) {
     // 写入失败已经在 warnings 里，走不到这里；命令解析失败走上面的 bad-request。

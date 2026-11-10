@@ -19,7 +19,7 @@ function policyOf(items = {}, overrides = {}) {
     packId: overrides.packId ?? 'default',
     pack: overrides.pack ?? null,
     groups: { groups: [], assignments: overrides.assignments ?? {} },
-    bindings: { bindings: {}, extra: [] },
+    bindings: { bindings: {} },
     warnings: [],
   }
 }

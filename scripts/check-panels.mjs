@@ -31,8 +31,18 @@ const fakeReact = {
 /** 每个面板的断言。count 表示出现次数，未写表示「至少一次」。 */
 const RULES = {
   'dsh-skill-pack': {
-    // 后一条：绑定下拉必须把内置 default 过滤掉，否则「默认」会出现两次。
-    must: { 'TABS': 1, 'GroupsPage': 1, 'PackSettings': 1, 'WorkspacePage': 1, 'pack.id !== DEFAULT_PACK_ID': 2 },
+    // 绑定下拉必须把内置 default 过滤掉，否则「默认」会出现两次。chip 弹层改成平铺
+    // 列表后不再有第二处下拉，但两个新结构必须一直在：待保存队列与它的确认条。
+    must: {
+      'TABS': 1,
+      'GroupsPage': 1,
+      'PackSettings': 1,
+      'WorkspacePage': 1,
+      'pack.id !== DEFAULT_PACK_ID': 1,
+      'usePending': 1,
+      'PendingBar': 1,
+      'dryRun': 1,
+    },
     // 侧栏入口与单机开关已废弃：这两个字符串一旦回潮，就是又有人把面板挂回侧栏。
     mustNot: ['sidebar.panellist', 'showSidebarEntry'],
   },

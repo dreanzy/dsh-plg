@@ -177,7 +177,13 @@ export function parsePacks(text: string | undefined): ParseResult<ParsedPacks> {
   return { value: { book: { packs }, ui }, warnings }
 }
 
-/** 解析 `workspaces.json`。绑定键与 `extra` 都在读取时归一，缺失即空表。 */
+/**
+ * 解析 `workspaces.json`。绑定键在读取时归一，缺失即空表。
+ *
+ * 早期版本这里还有一个 `extra` 数组（手动添加、不属于任何会话的目录）。那个能力已经
+ * 移除：目录由宿主提供，本插件只决定绑定。旧文件里的 `extra` 读取时直接忽略，下次写盘
+ * 就自然消失——不做迁移，也不为它保留任何分支。
+ */
 export function parseBindings(text: string | undefined): ParseResult<Bindings> {
   const warnings: string[] = []
   const raw = readJson(text, warnings)
@@ -210,33 +216,9 @@ export function parseBindings(text: string | undefined): ParseResult<Bindings> {
     }
   }
 
-  const extra: string[] = []
-  const rawExtra = raw['extra']
-  if (rawExtra !== undefined) {
-    if (!Array.isArray(rawExtra)) {
-      warnings.push('extra 不是数组，已忽略')
-    } else {
-      let capped = false
-      for (const entry of rawExtra) {
-        if (typeof entry !== 'string') {
-          warnings.push('extra 里有非字符串元素，已忽略')
-          continue
-        }
-        if (extra.length >= MAX_NAMES) {
-          if (!capped) {
-            warnings.push(`extra 超过 ${MAX_NAMES} 项，已只保留前 ${MAX_NAMES} 项`)
-            capped = true
-          }
-          continue
-        }
-        const normalized = normalizeCwd(entry)
-        if (normalized === null) continue
-        if (!extra.includes(normalized)) extra.push(normalized)
-      }
-    }
-  }
-
-  return { value: { bindings, extra }, warnings }
+  // 旧版 `extra` 直接忽略：它不影响求值，也不该在面板上常驻一条告警。
+  // 下次这份文件被重写时它就自然消失。
+  return { value: { bindings }, warnings }
 }
 
 /**
@@ -333,14 +315,14 @@ export function serializePacks(packs: Readonly<Record<string, Pack>>, ui: UiStat
   return serializeRecord(out)
 }
 
-/** 序列化 `workspaces.json`：绑定键排序，`extra` 保持用户添加顺序。 */
+/** 序列化 `workspaces.json`：绑定键排序，只写 `bindings`。 */
 export function serializeBindings(bindings: Bindings): string {
   const out: Record<string, string> = {}
   for (const key of Object.keys(bindings.bindings).sort()) {
     const packId = bindings.bindings[key]
     if (packId !== undefined) out[key] = packId
   }
-  return serializeRecord({ version: 1, bindings: out, extra: [...bindings.extra] })
+  return serializeRecord({ version: 1, bindings: out })
 }
 
 export function serializeGroups(registry: GroupRegistry): string {

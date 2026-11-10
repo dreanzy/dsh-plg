@@ -121,6 +121,9 @@ test('parseCommands 拒绝非法形状', () => {
   assert.equal(parseCommands([{ op: 'assign', name: 'x', groupId: 5 }]).ok, false)
   // 已废弃：侧栏入口不再注册，命令必须被拒，而不是静默忽略。
   assert.equal(parseCommands([{ op: 'showSidebarEntry', value: false }]).ok, false)
+  // 已废弃：手动添加/移除工作区目录的能力整个移除，命令同样必须被拒。
+  assert.equal(parseCommands([{ op: 'addExtra', cwd: 'D:/x' }]).ok, false)
+  assert.equal(parseCommands([{ op: 'removeExtra', cwd: 'D:/x' }]).ok, false)
 })
 
 test('parseCommands 接受每种合法命令', () => {
@@ -373,7 +376,7 @@ test('工作区视图返回绑定与每项的来源 pack', async () => {
   })
   await writeFile(
     workspacesFile(home),
-    `${JSON.stringify({ version: 1, bindings: { [normalizeCwd(cwd)]: 'p1' }, extra: [] })}\n`,
+    `${JSON.stringify({ version: 1, bindings: { [normalizeCwd(cwd)]: 'p1' } })}\n`,
   )
 
   const skills = fakeSkills()
@@ -440,4 +443,43 @@ test('packs.json 坏掉时 apply 仍返回 ok:true，拒写说明落在 warnings
   assert.equal(result.ok, true)
   assert.match(result.value.warnings.join('\n'), /packs\.json 不是合法 JSON，已拒绝写入/)
   assert.equal(await readFile(packsFile(home), 'utf8'), broken)
+})
+
+test('apply 带 dryRun 时返回试算视图、不落盘、也不重新落地', async () => {
+  const home = await freshHome()
+  await writePacks(home, { default: { name: '默认', items: {} } })
+  const before = await readFile(packsFile(home), 'utf8')
+  let reapplied = 0
+  const skills = fakeSkills()
+  const deps = depsWith(skills, {
+    reapply: async () => {
+      reapplied += 1
+    },
+  })
+
+  const result = await handleApply(
+    fakeCtx(skills),
+    { commands: [{ op: 'createPack', name: '工作' }], dryRun: true },
+    deps,
+  )
+
+  assert.equal(result.ok, true)
+  // 试算视图里已经多出这张 pack——面板就是拿它渲染「改了之后」。
+  assert.equal(result.value.packs.length, 2)
+  assert.equal(result.value.packs[1].name, '工作')
+  assert.equal(await readFile(packsFile(home), 'utf8'), before)
+  assert.equal(reapplied, 0)
+})
+
+test('同一个 dryRun 请求连发两次结果一致：命令是绝对状态，试算可重放', async () => {
+  const home = await freshHome()
+  await writePacks(home, { default: { name: '默认', items: {} } })
+  const skills = fakeSkills()
+  const deps = depsWith(skills)
+  const body = { commands: [{ op: 'createPack', name: '工作' }], dryRun: true }
+
+  const first = await handleApply(fakeCtx(skills), body, deps)
+  const second = await handleApply(fakeCtx(skills), body, deps)
+  assert.deepEqual(second.value.packs, first.value.packs)
+  assert.equal(fileExists(packsFile(home)) ? (await readJson(packsFile(home))).packs.p1 : undefined, undefined)
 })
