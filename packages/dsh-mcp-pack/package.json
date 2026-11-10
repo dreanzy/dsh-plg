@@ -1,6 +1,6 @@
 {
   "name": "@dreanzy/dsh-mcp-pack",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "按工作区控制 MCP 服务器的可见性与加载方式：连接时机、工具过滤、按 pack 分组。",
   "keywords": [
     "dsh",
