@@ -1,3 +1,4 @@
+import { OPS, filesOf, type BindingsDraft, type GroupsDraft, type PacksDraft } from './ops.js'
 import { readText, storePaths } from '@dreanzy/dsh-pack-core'
 import { mkdir } from 'node:fs/promises'
 import { dirname } from 'node:path'
@@ -269,113 +270,24 @@ function nextPackId(packs: Readonly<Record<string, McpPack>>): string {
 }
 
 /** 写 packs.json。文件缺席时从缺省名册起步。 */
+/** 写 `packs.json`。文件缺席时从空策略起写，`default` 由 `parsePacks` 补齐。 */
 function applyToPacks(current: string | undefined, commands: readonly Command[]): string {
   assertWritable(current, 'packs.json')
   const parsed = parsePacks(current).value
-  const ui = { ...parsed.ui }
-  const packs: Record<string, McpPack> = { ...parsed.book.packs }
-
-  for (const command of commands) {
-    switch (command.op) {
-      case 'createPack': {
-        const name = requireName(command.name)
-        assertNameFree(packs, name)
-        const id = nextPackId(packs)
-        packs[id] = { name, groups: {}, rows: {} }
-        break
-      }
-      case 'renamePack': {
-        if (command.packId === DEFAULT_PACK_ID) throw new Error('默认 pack 不可改名')
-        const pack = findPack(packs, command.packId)
-        const name = requireName(command.name)
-        assertNameFree(packs, name, command.packId)
-        packs[command.packId] = { ...pack, name }
-        break
-      }
-      case 'deletePack': {
-        if (command.packId === DEFAULT_PACK_ID) throw new Error('默认 pack 不可删除')
-        findPack(packs, command.packId)
-        delete packs[command.packId]
-        break
-      }
-      case 'packRow': {
-        const pack = findPack(packs, command.packId)
-        packs[command.packId] = { ...pack, rows: applyPatch(pack.rows, command.rowKey, command.patch) }
-        break
-      }
-      case 'packGroup': {
-        const pack = findPack(packs, command.packId)
-        packs[command.packId] = { ...pack, groups: setKey(pack.groups, command.groupId, command.value) }
-        break
-      }
-      case 'showChip':
-        ui.showChip = command.value
-        break
-      case 'defaultTab':
-        ui.defaultTab = command.value
-        break
-      default:
-        break
-    }
-  }
-
-  return serializePacks(packs, ui)
+  const draft: PacksDraft = { packs: { ...parsed.book.packs }, ui: { ...parsed.ui } }
+  for (const command of commands) OPS[command.op].applyPacks?.(draft, command)
+  return serializePacks(draft.packs, draft.ui)
 }
 
-/** 写 groups.json。文件缺席时从空注册表起步。 */
+/** 写 `groups.json`。文件缺席时从空注册表起写。 */
 function applyToGroups(current: string | undefined, commands: readonly Command[]): string {
   assertWritable(current, 'groups.json')
   const parsed = current === undefined ? EMPTY_GROUPS : parseGroups(current).value
-  const assignments = { ...parsed.assignments }
-  let groups = [...parsed.groups]
-  const known = () => new Set(groups.map((group) => group.id))
-
-  for (const command of commands) {
-    if (command.op === 'createGroup') {
-      const name = command.name.trim()
-      if (name === '') throw new Error('分组名不能为空')
-      // 重名必须在写入前拦住：同一批命令里的前一条已经进 `groups`，所以这条检查
-      // 对批量新建同样成立。放过去就会在名册里留下两张同名分组，界面上无法区分。
-      if (groups.some((group) => group.name === name)) throw new Error(`分组名已存在：${name}`)
-      // id 稳定且与名字脱钩：改名不需要扫任何工程文件。
-      const id = nextGroupId(groups)
-      groups = [...groups, { id, name }]
-      continue
-    }
-    if (command.op === 'renameGroup') {
-      const name = command.name.trim()
-      if (name === '') throw new Error('分组名不能为空')
-      if (!known().has(command.groupId)) throw new Error(`未知分组：${command.groupId}`)
-      if (groups.some((group) => group.id !== command.groupId && group.name === name)) {
-        throw new Error(`分组名已存在：${name}`)
-      }
-      groups = groups.map((group) => (group.id === command.groupId ? { id: group.id, name } : group))
-      continue
-    }
-    if (command.op === 'deleteGroup') {
-      if (!known().has(command.groupId)) throw new Error(`未知分组：${command.groupId}`)
-      groups = groups.filter((group) => group.id !== command.groupId)
-      // 成员回到未分组。各 pack 残留的组开关决定保留：组重建后语义不恢复（id 已变），
-      // 但它们不影响求值——孤儿 gid 永远不会被任何行命中。
-      for (const [rowKey, groupId] of Object.entries(assignments)) {
-        if (groupId === command.groupId) delete assignments[rowKey]
-      }
-      continue
-    }
-    if (command.op !== 'assign') continue
-    if (command.groupId === null) {
-      delete assignments[command.rowKey]
-      continue
-    }
-    if (!known().has(command.groupId)) {
-      throw new Error(`未知分组：${command.groupId}`)
-    }
-    assignments[command.rowKey] = command.groupId
-  }
-  return serializeGroups({ groups, assignments })
+  const draft: GroupsDraft = { groups: [...parsed.groups], assignments: { ...parsed.assignments } }
+  for (const command of commands) OPS[command.op].applyGroups?.(draft, command)
+  return serializeGroups(draft)
 }
 
-/** 造一个短且稳定的分组 id。 */
 function nextGroupId(groups: readonly { id: string }[]): string {
   const taken = new Set(groups.map((group) => group.id))
   for (let index = groups.length + 1; ; index += 1) {
@@ -384,6 +296,9 @@ function nextGroupId(groups: readonly { id: string }[]): string {
   }
 }
 
+/**
+ * 写 `workspaces.json`。没有实际变化就返回 `null`，不凭空建空文件。
+ */
 function applyToBindings(
   current: string | undefined,
   commands: readonly Command[],
@@ -391,41 +306,9 @@ function applyToBindings(
 ): string | null {
   assertWritable(current, 'workspaces.json')
   const parsed = parseBindings(current)
-  const bindings: Record<string, string> = { ...parsed.value.bindings }
-  let changed = false
-
-  for (const command of commands) {
-    if (command.op === 'deletePack') {
-      // 删除 pack 后清理指向它的绑定；残留的悬空键也能读（按 default 求值），
-      // 这里主动清是为了不让文件无限积累垃圾。
-      for (const [key, packId] of Object.entries(bindings)) {
-        if (packId === command.packId) {
-          delete bindings[key]
-          changed = true
-        }
-      }
-      continue
-    }
-    if (command.op !== 'bind') continue
-    const key = normalizeCwd(command.cwd)
-    if (key === null) throw new Error('绑定的工作目录不能为空')
-    if (command.packId === null || command.packId === DEFAULT_PACK_ID) {
-      // 显式绑到 default 与解除绑定等价，落盘时不留冗余键。
-      if (bindings[key] !== undefined) {
-        delete bindings[key]
-        changed = true
-      }
-      continue
-    }
-    if (!knownPacks.has(command.packId)) throw new Error(`未知 pack：${command.packId}`)
-    if (bindings[key] !== command.packId) {
-      bindings[key] = command.packId
-      changed = true
-    }
-  }
-
-  // 没有实际变化就不创建文件：避免产生无意义的空文件。
-  return changed ? serializeBindings({ bindings }) : null
+  const draft: BindingsDraft = { bindings: { ...parsed.value.bindings }, changed: false }
+  for (const command of commands) OPS[command.op].applyBindings?.(draft, command, knownPacks)
+  return draft.changed ? serializeBindings({ bindings: draft.bindings }) : null
 }
 
 interface Targets {
@@ -469,7 +352,7 @@ function targets(commands: readonly Command[]): Targets {
 
 /** 真正落盘的那一半：前置校验 + 三个文件按固定顺序写。失败照旧抛出，由调用方收成 warning。 */
 async function writeCommands(commands: readonly Command[]): Promise<void> {
-  const plan = targets(commands)
+  const files = filesOf(commands)
   // 名册读不出来时无从校验 pack id：整批作罢，别写到一个看不见的名册上。
   let known: Set<string>
   try {
@@ -504,13 +387,13 @@ async function writeCommands(commands: readonly Command[]): Promise<void> {
     }
   }
 
-  if (plan.packs) {
+  if (files.has('packs')) {
     await transact(packsPath(), 'packs.json', (current) => applyToPacks(current, commands))
   }
-  if (plan.groups) {
+  if (files.has('groups')) {
     await transact(groupsPath(), 'groups.json', (current) => applyToGroups(current, commands))
   }
-  if (plan.bindings) {
+  if (files.has('bindings')) {
     // bind 的合法目标要在 pack 写完之后再读：同一批命令里可能有 createPack / deletePack。
     await transact(workspacesPath(), 'workspaces.json', (current) => applyToBindings(current, commands, known))
   }
@@ -577,7 +460,7 @@ export async function previewCommands(
   commands: readonly Command[],
 ): Promise<PolicyState> {
   const warnings: string[] = []
-  const plan = targets(commands)
+  const files = filesOf(commands)
   const [packsCurrent, groupsCurrent, workspacesCurrent] = await Promise.all([
     readText(packsPath()),
     readText(groupsPath()),
@@ -588,13 +471,13 @@ export async function previewCommands(
   let groupsText = groupsCurrent
   let workspacesText = workspacesCurrent
 
-  if (plan.packs) {
+  if (files.has('packs')) {
     packsText = computeText(packsCurrent, 'packs.json', warnings, (current) => applyToPacks(current, commands))
   }
-  if (plan.groups) {
+  if (files.has('groups')) {
     groupsText = computeText(groupsCurrent, 'groups.json', warnings, (current) => applyToGroups(current, commands))
   }
-  if (plan.bindings) {
+  if (files.has('bindings')) {
     // 与真写同一顺序：bind 的目标要在 pack 变化之后才判定。
     const known = new Set(Object.keys(parsePacks(packsText).value.book.packs))
     workspacesText = computeText(workspacesCurrent, 'workspaces.json', warnings, (current) =>
