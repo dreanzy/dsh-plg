@@ -174,6 +174,9 @@ importers:
       '@deepseek-ai/dsh-home-paths':
         specifier: ^0.2.0-rc.2 || ^0.2.1-0 || ^0.2.2-rc.0
         version: 0.2.2-rc.1(@deepseek-ai/cordis@4.1.0)
+      '@dreanzy/dsh-pack-core':
+        specifier: workspace:^
+        version: link:../dsh-pack-core
       '@modelcontextprotocol/sdk':
         specifier: ^1.32.2
         version: 1.32.2(zod@4.6.7)
@@ -196,6 +199,22 @@ importers:
       '@deepseek-ai/dsh-home-paths':
         specifier: ^0.2.0-rc.2 || ^0.2.1-0 || ^0.2.2-rc.0
         version: 0.2.2-rc.1(@deepseek-ai/cordis@4.1.0)
+      '@dreanzy/dsh-pack-core':
+        specifier: workspace:^
+        version: link:../dsh-pack-core
+    devDependencies:
+      '@types/node':
+        specifier: ^22.0.0
+        version: 22.20.5
+      typescript:
+        specifier: ^5.0.0
+        version: 5.9.3
+
+  packages/dsh-pack-core:
+    dependencies:
+      '@deepseek-ai/dsh-home-paths':
+        specifier: ^0.2.0-rc.2 || ^0.2.1-0 || ^0.2.2-rc.0
+        version: 0.2.2-rc.1(@deepseek-ai/cordis@4.1.0)
     devDependencies:
       '@types/node':
         specifier: ^22.0.0
@@ -212,6 +231,9 @@ importers:
       '@deepseek-ai/dsh-home-paths':
         specifier: ^0.2.0-rc.2 || ^0.2.1-0 || ^0.2.2-rc.0
         version: 0.2.2-rc.1(@deepseek-ai/cordis@4.1.0)
+      '@dreanzy/dsh-pack-core':
+        specifier: workspace:^
+        version: link:../dsh-pack-core
     devDependencies:
       '@types/node':
         specifier: ^22.0.0
@@ -228,6 +250,9 @@ importers:
       '@deepseek-ai/dsh-home-paths':
         specifier: ^0.2.0-rc.2 || ^0.2.1-0 || ^0.2.2-rc.0
         version: 0.2.2-rc.1(@deepseek-ai/cordis@4.1.0)
+      '@dreanzy/dsh-pack-core':
+        specifier: workspace:^
+        version: link:../dsh-pack-core
     devDependencies:
       '@types/node':
         specifier: ^22.0.0
