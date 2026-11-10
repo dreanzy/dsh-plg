@@ -18,7 +18,7 @@
  * 发布前会先用 whoami 确认登录：没登录就把 `npm login` 拉起来，登录不成功一个包都不发。
  */
 import { spawnSync } from 'node:child_process'
-import { readFileSync } from 'node:fs'
+import { readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { createInterface } from 'node:readline/promises'
 import { fileURLToPath } from 'node:url'
@@ -177,6 +177,28 @@ async function ensureLogin() {
 }
 
 /** 发布一个包，失败或超时时询问是否重试。 */
+/**
+ * 发布前把 `workspace:^` 换成真实版本，发完换回来。
+ *
+ * npm 不认 pnpm 的 workspace 协议，留着它 `npm publish` 直接报 EUNSUPPORTEDPROTOCOL。
+ * 只有发布这一小段窗口里改清单：工作区里的源码始终是 workspace:^，这样 pnpm 才会把
+ * core link 成目录，而不是从 registry 装一份——后者会让改源码不再生效，且不报错。
+ */
+async function withRealCoreVersion(dir, run) {
+  const path = join(root, 'packages', dir, 'package.json')
+  const original = readFileSync(path, 'utf8')
+  const marker = '"@dreanzy/dsh-pack-core": "workspace:^"'
+  if (!original.includes(marker)) return run()
+  const core = JSON.parse(readFileSync(join(root, 'packages', 'dsh-pack-core', 'package.json'), 'utf8'))
+  const patched = original.replace(marker, '"@dreanzy/dsh-pack-core": "^' + core.version + '"')
+  writeFileSync(path, patched, 'utf8')
+  try {
+    return await run()
+  } finally {
+    writeFileSync(path, original, 'utf8')
+  }
+}
+
 async function publishOne(dir) {
   const manifest = readManifest(dir)
   const { name, version } = manifest
@@ -289,7 +311,7 @@ if (dryRun) {
 } else if (!(await ensureLogin())) {
   process.exit(1)
 }
-for (const dir of targets) results.push(await publishOne(dir))
+for (const dir of targets) results.push(await withRealCoreVersion(dir, () => publishOne(dir)))
 
 const failed = results.filter((result) => !result.ok)
 console.log('\n=== 汇总 ===')

@@ -70,7 +70,7 @@
     "prepublishOnly": "tsc -p tsconfig.json && node --test --test-isolation=none test/"
   },
   "dependencies": {
-    "@dreanzy/dsh-pack-core": "^0.1.0",
+    "@dreanzy/dsh-pack-core": "workspace:^",
     "@deepseek-ai/dsh-atomic-write": "^0.2.0-rc.2 || ^0.2.1-0 || ^0.2.2-rc.0",
     "@deepseek-ai/dsh-home-paths": "^0.2.0-rc.2 || ^0.2.1-0 || ^0.2.2-rc.0",
     "@modelcontextprotocol/sdk": "^1.32.2"
