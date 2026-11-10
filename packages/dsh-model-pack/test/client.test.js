@@ -2,6 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import vm from 'node:vm'
+import { pendingKeyOf } from '@dreanzy/dsh-pack-core'
 
 /**
  * 客户端面板的测试面。
@@ -89,7 +90,11 @@ test('待保存键覆盖每一类可覆盖命令', () => {
     // ADR-0006 记的差异：提示词补丁每条只带自己那几个键，按单键去重会丢键。
     [{ op: 'putPrompts' }, null],
   ]
-  for (const [command, expected] of CASES) assert.equal(pendingKey(command), expected)
+  for (const [command, expected] of CASES) {
+    assert.equal(pendingKey(command), expected)
+    // 服务端与客户端算出来的键必须逐字相同，否则同一格改动不会被去重。
+    assert.equal(pendingKeyOf(command), expected, '服务端规则与客户端漂移了：' + String(command.op))
+  }
   assert.equal(pendingKey({ op: 'unknown-op' }), null, '可覆盖之外的命令不落格')
 })
 

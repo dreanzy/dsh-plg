@@ -17,3 +17,5 @@ export type { Envelope, ErrorCode } from './protocol.js'
 export { storePaths, readText, type StorePaths } from './store.js'
 
 export { createResolver, normalizeCwd, type Decision, type GroupRegistryLike, type PackLike, type Resolver, type ResolverInput } from './policy.js'
+
+export { pendingKeyOf, PENDING_KEY_RULES, type PendingKeyCommand } from './pendingKeys.js'

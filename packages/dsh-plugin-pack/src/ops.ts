@@ -1,3 +1,4 @@
+import { pendingKeyOf } from '@dreanzy/dsh-pack-core'
 import { normalizeCwd } from './policy.js'
 import {
   DEFAULT_PACK_ID,
@@ -163,7 +164,7 @@ const PACK_ITEM: OpSpec = {
     if (value === undefined) return 'value 必须是布尔或 null'
     return { op: 'packItem', packId, name, value }
   },
-  key: (command) => (command.op === 'packItem' ? `packItem:${command.packId}:${command.name}` : null),
+  key: (command) => pendingKeyOf(command),
   applyPacks(draft, command) {
     if (command.op !== 'packItem') return
     const pack = findPack(draft.packs, command.packId)
@@ -183,7 +184,7 @@ const PACK_GROUP: OpSpec = {
     if (value === undefined) return 'value 必须是布尔或 null'
     return { op: 'packGroup', packId, groupId, value }
   },
-  key: (command) => (command.op === 'packGroup' ? `packGroup:${command.packId}:${command.groupId}` : null),
+  key: (command) => pendingKeyOf(command),
   applyPacks(draft, command) {
     if (command.op !== 'packGroup') return
     const pack = findPack(draft.packs, command.packId)
@@ -219,7 +220,7 @@ const RENAME_PACK: OpSpec = {
     if (name === null) return 'name 必须是非空字符串'
     return { op: 'renamePack', packId, name }
   },
-  key: (command) => (command.op === 'renamePack' ? `renamePack:${command.packId}` : null),
+  key: (command) => pendingKeyOf(command),
   applyPacks(draft, command) {
     if (command.op !== 'renamePack') return
     if (command.packId === DEFAULT_PACK_ID) throw new Error('默认 pack 不可改名')
@@ -270,7 +271,7 @@ const BIND: OpSpec = {
     }
     return { op: 'bind', cwd, packId }
   },
-  key: (command) => (command.op === 'bind' ? `bind:${normalizeCwd(command.cwd) ?? command.cwd}` : null),
+  key: (command) => pendingKeyOf(command),
   applyBindings(draft, command, knownPacks) {
     if (command.op !== 'bind') return
     const key = normalizeCwd(command.cwd)
@@ -303,7 +304,7 @@ const ASSIGN: OpSpec = {
     }
     return { op: 'assign', name, groupId }
   },
-  key: (command) => (command.op === 'assign' ? `assign:${command.name}` : null),
+  key: (command) => pendingKeyOf(command),
   applyGroups(draft, command) {
     if (command.op !== 'assign') return
     if (command.groupId === null) {
@@ -346,7 +347,7 @@ const RENAME_GROUP: OpSpec = {
     if (groupId === null) return 'groupId 必须是非空字符串'
     return { op: 'renameGroup', groupId, name }
   },
-  key: (command) => (command.op === 'renameGroup' ? `renameGroup:${command.groupId}` : null),
+  key: (command) => pendingKeyOf(command),
   applyGroups(draft, command) {
     if (command.op !== 'renameGroup') return
     const name = groupNameOf(command)
