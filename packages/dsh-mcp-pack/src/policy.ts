@@ -242,7 +242,12 @@ export function parsePacks(text: string | undefined): ParseResult<ParsedPacks> {
   return { value: { book: { packs }, ui }, warnings }
 }
 
-/** 解析 `workspaces.json`。绑定键与 `extra` 都在读取时归一，缺失即空表。 */
+/**
+ * 解析 `workspaces.json`。绑定键在读取时归一，缺失即空表。
+ *
+ * 旧文件里的 `extra`（手动添加的路径）读时忽略、**不产生 warning**，下次写盘自然消失：
+ * 那是一个已经删掉的能力，把它报成告警只会让用户去修一个无能为力的键。
+ */
 export function parseBindings(text: string | undefined): ParseResult<Bindings> {
   const warnings: string[] = []
   const raw = readJson(text, warnings)
@@ -270,25 +275,7 @@ export function parseBindings(text: string | undefined): ParseResult<Bindings> {
     }
   }
 
-  const extra: string[] = []
-  const rawExtra = raw['extra']
-  if (rawExtra !== undefined) {
-    if (!Array.isArray(rawExtra)) {
-      warnings.push('extra 不是数组，已忽略')
-    } else {
-      for (const entry of rawExtra) {
-        if (typeof entry !== 'string') {
-          warnings.push('extra 里有非字符串元素，已忽略')
-          continue
-        }
-        const normalized = normalizeCwd(entry)
-        if (normalized === null) continue
-        if (!extra.includes(normalized)) extra.push(normalized)
-      }
-    }
-  }
-
-  return { value: { bindings, extra }, warnings }
+  return { value: { bindings }, warnings }
 }
 
 /**
@@ -392,14 +379,14 @@ export function serializePacks(packs: Readonly<Record<string, McpPack>>, ui: UiS
   return serializeRecord(out)
 }
 
-/** 序列化 `workspaces.json`：绑定键排序，`extra` 保持用户添加顺序。 */
+/** 序列化 `workspaces.json`：只写绑定，键排序。 */
 export function serializeBindings(bindings: Bindings): string {
   const out: Record<string, string> = {}
   for (const key of Object.keys(bindings.bindings).sort()) {
     const packId = bindings.bindings[key]
     if (packId !== undefined) out[key] = packId
   }
-  return serializeRecord({ version: 1, bindings: out, extra: [...bindings.extra] })
+  return serializeRecord({ version: 1, bindings: out })
 }
 
 export function serializeGroups(registry: GroupRegistry): string {

@@ -312,24 +312,27 @@ test('往返：序列化后再解析得到同一份 pack 名册与 ui', () => {
   assert.deepEqual(round.value.ui, ui)
 })
 
-test('bindings 解析把键归一，并保留 extra', () => {
+test('bindings 解析把键归一，旧文件里的 extra 读时忽略', () => {
   const rawKey = 'D:\\Proj\\Sub\\'
   const expected = normalizeCwd(rawKey)
   const parsed = parseBindings(JSON.stringify({ bindings: { [rawKey]: 'p1' }, extra: [rawKey, rawKey] }))
   assert.deepEqual(parsed.value.bindings, { [expected]: 'p1' })
-  assert.deepEqual(parsed.value.extra, [expected])
+  // 手动添加路径的能力已移除：那个键读时忽略，**不产生 warning**。
+  assert.equal('extra' in parsed.value, false)
+  assert.deepEqual(parsed.warnings, [])
 })
 
 test('bindings 坏数据降级成空表且留 warning', () => {
   const parsed = parseBindings(JSON.stringify({ bindings: { '': 'p1', x: 3 }, extra: 'nope' }))
-  assert.deepEqual(parsed.value, { bindings: {}, extra: [] })
-  assert.equal(parsed.warnings.length, 3)
+  assert.deepEqual(parsed.value, { bindings: {} })
+  // 两条 bindings 的告警；`extra` 不是数组也不再算一条。
+  assert.equal(parsed.warnings.length, 2)
 })
 
-test('bindings 序列化按 cwd 排序', () => {
-  const text = serializeBindings({ bindings: { 'd:/b': 'p2', 'd:/a': 'p1' }, extra: [] })
+test('bindings 序列化按 cwd 排序，且不再写 extra', () => {
+  const text = serializeBindings({ bindings: { 'd:/b': 'p2', 'd:/a': 'p1' } })
   assert.equal(text.indexOf('"d:/a"') < text.indexOf('"d:/b"'), true)
-  assert.match(text, /"extra": \[\]/u)
+  assert.equal(text.includes('"extra"'), false)
 })
 
 test('组序列化排序 id 与成员', () => {

@@ -38,7 +38,7 @@ function policyOf({ pack = null, packId = 'default', defaultPack = emptyPack(), 
     packId: pack === null ? 'default' : packId,
     pack,
     groups: { groups: groupIds.map((id) => ({ id, name: id })), assignments },
-    bindings: { bindings: binding === null ? {} : { 'd:/proj': binding }, extra: [] },
+    bindings: { bindings: binding === null ? {} : { 'd:/proj': binding } },
     warnings: [],
   }
 }

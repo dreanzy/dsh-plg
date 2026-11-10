@@ -72,10 +72,14 @@ export interface PackBook {
   readonly packs: Readonly<Record<string, McpPack>>
 }
 
-/** 工作区绑定表。`bindings` 的键是 `normalizeCwd` 之后的 cwd。 */
+/**
+ * 工作区绑定表。`bindings` 的键是 `normalizeCwd` 之后的 cwd。
+ *
+ * 只有绑定：目录从哪来回宿主管（开过会话的目录），本插件只决定「目录 → pack」。
+ * 早期版本的 `extra`（手动添加的路径）整个移除，旧文件里的那个键读时忽略。
+ */
 export interface Bindings {
   readonly bindings: Readonly<Record<string, string>>
-  readonly extra: readonly string[]
 }
 
 /** 设置页的三页，顺序固定。 */
@@ -130,8 +134,6 @@ export type Command =
   | { readonly op: 'renamePack'; readonly packId: string; readonly name: string }
   | { readonly op: 'deletePack'; readonly packId: string }
   | { readonly op: 'bind'; readonly cwd: string; readonly packId: string | null }
-  | { readonly op: 'addExtra'; readonly cwd: string }
-  | { readonly op: 'removeExtra'; readonly cwd: string }
   | { readonly op: 'assign'; readonly rowKey: string; readonly groupId: string | null }
   | { readonly op: 'createGroup'; readonly name: string }
   | { readonly op: 'renameGroup'; readonly groupId: string; readonly name: string }
@@ -152,7 +154,7 @@ export const DEFAULT_PACK_ID = 'default'
 export const DEFAULT_PACK_NAME = '默认'
 
 export const EMPTY_PACK: McpPack = { name: DEFAULT_PACK_NAME, groups: {}, rows: {} }
-export const EMPTY_BINDINGS: Bindings = { bindings: {}, extra: [] }
+export const EMPTY_BINDINGS: Bindings = { bindings: {} }
 export const EMPTY_UI: UiState = { showChip: true, defaultTab: 'groups' }
 export const EMPTY_GROUPS: GroupRegistry = { groups: [], assignments: {} }
 

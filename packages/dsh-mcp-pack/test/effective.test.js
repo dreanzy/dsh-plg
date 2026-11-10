@@ -28,7 +28,7 @@ function policyOf({ pack = null, packId = 'default', defaultPack, groups = { gro
     packId: pack === null ? 'default' : packId,
     pack,
     groups,
-    bindings: { bindings: {}, extra: [] },
+    bindings: { bindings: {} },
     warnings: [],
   }
 }

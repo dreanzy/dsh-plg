@@ -75,6 +75,57 @@ window.__ModuleLoader__.load({
       '.dsh-mcp-pack-chip:focus-visible { outline: var(--dsw-focus-ring-width, 2px) solid var(--dsw-alias-state-business-primary); outline-offset: 2px }' +
       '@container (max-width: 640px) { .dsh-mcp-pack-chip-text { display: none } }'
 
+    /**
+     * 待保存行的底色。
+     *
+     * 原先用左侧 `inset` 竖条，真机上它紧贴行首的箭头与文字，`inset` 阴影又没法
+     * 给文字让出间距，压字比不标更糟。改成整行浅底：与官方标记「当前项」同一套
+     * 做法（pack 行就是浅底），也不会和任何文字抢位置。
+     */
+    const PENDING_BG =
+      'color-mix(in srgb, var(--dsw-alias-state-business-tertiary, rgba(65,118,230,0.16)) 55%, transparent)'
+
+    /**
+     * 面板按钮与待保存标记的样式。
+     *
+     * 尺寸抄官方设置页的行内操作按钮（`ModelsSection.module.css` 的
+     * `.rowActions .secondaryButton`）：高 28px、左右 10px、12px 字、`--dsw-radius-sm`。
+     * 颜色一律留在类里：内联写 `background` / `color` 会压掉 `:hover`（ui-baseline 红线 7）。
+     *
+     * 删除确认态抄官方的危险按钮：红字 + 红描边，hover 用
+     * `--dsw-alias-interactive-bg-hover-danger`。官方二次确认是弹窗，这里压成行内两段，
+     * 所以描边比官方常态更明显——它是「已经进入危险态」的唯一提示。
+     */
+    const PANEL_CSS =
+      '.dsh-mcp-pack-btn { transition: background 120ms ease, border-color 120ms ease, color 120ms ease }' +
+      '.dsh-mcp-pack-btn-secondary { border-color: var(--dsw-alias-border-l1, rgba(127,127,127,0.3)); background: transparent; color: var(--dsw-alias-label-primary, inherit) }' +
+      '.dsh-mcp-pack-btn-secondary:hover:not(:disabled) { background: var(--dsw-alias-interactive-bg-hover) }' +
+      // 确认条上的次要按钮：无边框、浅灰底。照官方弹窗的「取消」——透明底 + 描边在浅色面板上
+      // 会读成一条黑框，有底色才显得是按钮而不是一个框。
+      '.dsh-mcp-pack-btn-quiet { border-color: transparent; background: var(--dsw-alias-interactive-bg-hover, rgba(127,127,127,0.12)); color: var(--dsw-alias-label-primary, inherit) }' +
+      '.dsh-mcp-pack-btn-quiet:hover:not(:disabled) { background: var(--dsw-alias-interactive-bg-hover-solid, var(--dsw-alias-interactive-bg-hover)) }' +
+      // 主操作：实心。官方弹窗的「保存」就是这个范式（`button-primary-fill` + `label-primary-foreground`）。
+      '.dsh-mcp-pack-btn-primary { border-color: transparent; background: var(--dsw-alias-button-primary-fill, #1f2328); color: var(--dsw-alias-label-primary-foreground, #fff) }' +
+      '.dsh-mcp-pack-btn-primary:hover:not(:disabled) { background: var(--dsw-alias-button-primary-hover, #33383f) }' +
+      '.dsh-mcp-pack-btn-danger { border-color: transparent; background: transparent; color: var(--dsw-alias-state-error-primary, #c0392b) }' +
+      '.dsh-mcp-pack-btn-danger:hover:not(:disabled) { background: var(--dsw-alias-interactive-bg-hover-danger, rgba(192,57,43,0.12)) }' +
+      // 确认态照官方的 dangerButton：无边框，只换底色与字重。
+      // 官方没有任何"加红描边"的危险按钮，那是我自己发明的，观感上像被框住的一块错误。
+      '.dsh-mcp-pack-btn-danger[data-armed="true"] { border-color: transparent; background: var(--dsw-alias-interactive-bg-hover-danger, rgba(192,57,43,0.14)); color: var(--dsw-alias-state-error-primary, #c0392b); font-weight: 500 }' +
+      '.dsh-mcp-pack-btn-danger[data-armed="true"]:hover:not(:disabled) { background: var(--dsw-alias-interactive-bg-hover-danger, rgba(192,57,43,0.22)) }' +
+      '.dsh-mcp-pack-btn:disabled { opacity: 0.4; cursor: default }' +
+      '.dsh-mcp-pack-btn:focus-visible { outline: var(--dsw-focus-ring-width, 2px) solid var(--dsw-alias-state-business-primary); outline-offset: 2px }' +
+      /*
+       * 可点行的底色与 hover 全走类。
+       *
+       * 这几行的底色原本是内联写的（当前项灰底 / 待保存浅蓝），内联会压掉 `:hover`
+       * ——红线 7 那条坑。改成 `data-state` 交给 CSS，两种状态与 hover 才能共存。
+       */
+      '.dsh-mcp-pack-row { transition: background 120ms ease; cursor: pointer }' +
+      '.dsh-mcp-pack-row:hover { background: var(--dsw-alias-interactive-bg-hover, rgba(127,127,127,0.08)) }' +
+      '.dsh-mcp-pack-row[data-state="current"] { background: rgba(127,127,127,0.16) }' +
+      '.dsh-mcp-pack-row[data-state="pending"] { background: ' + PENDING_BG + ' }'
+
     // ---------- 传输 ----------
 
     const PATHS = {
@@ -116,8 +167,15 @@ window.__ModuleLoader__.load({
       // 带上当前会话：服务端优先用它的 scope 读清单，否则会退回到「恰好排第一的那个会话」。
       global: (sessionId) => post(PATHS.global, sessionId ? { sessionId: sessionId } : {}),
       workspace: (sessionId) => post(PATHS.workspace, { sessionId: sessionId }),
-      apply: (commands, sessionId) =>
-        post(PATHS.apply, sessionId ? { sessionId: sessionId, commands: commands } : { commands: commands }),
+      /**
+       * `dryRun` 只把命令应用在内存里、返回同一份视图，不写盘——待保存改动靠它渲染。
+       */
+      apply: (commands, sessionId, dryRun) => {
+        const body = { commands: commands }
+        if (sessionId) body.sessionId = sessionId
+        if (dryRun === true) body.dryRun = true
+        return post(PATHS.apply, body)
+      },
       diag: () => post(PATHS.diag, {}),
       servers: (payload) => post(PATHS.servers, payload),
     }
@@ -153,6 +211,14 @@ window.__ModuleLoader__.load({
       trackOff: 'rgba(127, 127, 127, 0.30)',
       knob: 'var(--dsw-alias-bg-layer-1, #111111)',
       knobOff: 'rgba(255, 255, 255, 0.92)',
+      /*
+       * 待保存行的底色。
+       *
+       * 原先用左侧 `inset` 竖条，真机上它紧贴行首的箭头与文字，`inset` 阴影又没法
+       * 给文字让出间距，压字比不标更糟。改成整行浅底：与官方标记「当前项」同一套
+       * 做法（pack 行就是浅底），也不会和任何文字抢位置。
+       */
+      pendingBg: PENDING_BG,
     }
 
     const S = {
@@ -185,17 +251,71 @@ window.__ModuleLoader__.load({
         whiteSpace: 'nowrap',
         transition: 'background 120ms ease, color 120ms ease, border-color 120ms ease',
       }),
-      /** 行内的动作按钮（新建、添加、关闭）：与分段按钮同观感，不引新样式。 */
-      action: {
-        padding: '4px 10px',
-        cursor: 'pointer',
-        borderRadius: '6px',
-        border: '1px solid ' + T.border,
-        background: 'transparent',
-        color: T.text,
+      /**
+       * 行内操作按钮的尺寸与排布。颜色、hover、危险态全部在 `PANEL_CSS` 里——
+       * 内联写 `background` / `color` 会压掉 CSS 的 `:hover`（ui-baseline 红线 7）。
+       * 尺寸对齐官方设置页行内按钮：高 28px、左右 10px、12px 字、radius-sm。
+       */
+      btn: {
+        display: 'inline-flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        boxSizing: 'border-box',
+        height: '28px',
+        padding: '0 10px',
+        borderWidth: '.5px',
+        borderStyle: 'solid',
+        borderRadius: 'var(--dsw-radius-sm, 8px)',
         fontSize: '12px',
-        lineHeight: 1.4,
+        lineHeight: '18px',
         whiteSpace: 'nowrap',
+        cursor: 'pointer',
+      },
+      /**
+       * 底部停靠区：提示行 + 待保存条。贴住面板底边，内容再长也一直看得见。
+       * 分隔线只在停靠区顶沿画一条，内部两行之间不再加线。
+       */
+      dock: {
+        position: 'sticky',
+        bottom: 0,
+        zIndex: 20,
+        background: 'var(--dsw-alias-bg-layer-1, Canvas)',
+        borderTop: '1px solid var(--dsw-alias-border-l2, rgba(127,127,127,0.55))',
+      },
+      /** 提示行：警告色浅底，右侧一个关闭。 */
+      noticeBar: {
+        display: 'flex',
+        alignItems: 'center',
+        gap: '8px',
+        padding: '8px 12px',
+        background: 'var(--dsw-alias-state-warn-tertiary, rgba(245,158,11,0.14))',
+      },
+      /** 待保存条：不贴边，位置由 `dock` 决定。 */
+      pendingBar: {
+        display: 'flex',
+        alignItems: 'center',
+        gap: '8px',
+        padding: '10px 12px',
+      },
+      /** 弹层里的同一条：不贴边、不画分隔线，交给外层的 `bottomBar`。 */
+      pendingInline: {
+        display: 'flex',
+        alignItems: 'center',
+        gap: '8px',
+        flex: '1 1 auto',
+        minWidth: 0,
+      },
+      /**
+       * 弹层的底栏：左「关闭」右「待保存 + 撤销/保存」。
+       * 「关闭」位置固定在最左：它一会儿在左一会儿在右，只会让人重新找一次按钮。
+       */
+      bottomBar: {
+        display: 'flex',
+        alignItems: 'center',
+        gap: '8px',
+        marginTop: '14px',
+        paddingTop: '10px',
+        borderTop: '1px solid var(--dsw-alias-border-l2, rgba(127,127,127,0.55))',
       },
       group: { borderRadius: '8px', border: '1px solid ' + T.border, marginBottom: '8px' },
       groupHead: { display: 'flex', alignItems: 'center', gap: '8px', padding: '8px 10px', cursor: 'pointer' },
@@ -355,6 +475,25 @@ window.__ModuleLoader__.load({
         boxShadow: '0 18px 48px rgba(0,0,0,0.28)',
         fontSize: '13px',
       },
+      /**
+       * 吸顶的区块标题。
+       *
+       * 分包页第二块有几百行，滚到中段时「包内开关：哪张 pack」早就滚出视口了，
+       * 而这一块每一行都在往这张 pack 里写决定。标题跟着滚走等于让人盲改。
+       * `top: 0` 相对最近的滚动祖先（宿主的设置弹层内容区）；要是宿主自己也吸顶，
+       * 这里会被压住——那就只能退回不吸顶，别硬加偏移量去猜。
+       */
+      blockTitleSticky: {
+        position: 'sticky',
+        top: 0,
+        zIndex: 5,
+        padding: '6px 0',
+        marginBottom: '6px',
+        background: 'var(--dsw-alias-bg-layer-1, Canvas)',
+        fontSize: '12px',
+        fontWeight: 600,
+        color: T.text,
+      },
       block: { marginTop: '16px', paddingTop: '12px', borderTop: '1px solid ' + T.border },
       blockTitle: { fontSize: '12px', fontWeight: 600, color: T.text, marginBottom: '6px' },
       packRow: {
@@ -429,38 +568,69 @@ window.__ModuleLoader__.load({
         color: T.text,
         fontSize: '12px',
       },
-      reset: {
-        padding: 0,
-        margin: 0,
-        border: 'none',
-        background: 'transparent',
-        font: 'inherit',
-        color: 'inherit',
-        cursor: 'pointer',
-        textAlign: 'left',
-        display: 'inline-flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        boxSizing: 'border-box',
-      },
     }
 
+    /**
+     * 面板按钮。颜色全部在 `PANEL_CSS` 里，这里只给尺寸与语义。
+     *
+     * 尺寸抄官方设置页的行内操作按钮（28px 高、左右 10px、12px 字、radius-sm），
+     * 比原来的裸文字热区大一倍以上——裸文字只有字号那么高，指针要精确压住才点得中。
+     */
+    function Button(props) {
+      const variant = props.variant || (props.danger === true ? 'danger' : 'secondary')
+      const className = 'dsh-mcp-pack-btn dsh-mcp-pack-btn-' + variant
+      return h(
+        'button',
+        {
+          type: 'button',
+          disabled: props.disabled === true,
+          className: className,
+          style: { ...S.btn, ...(props.style || {}) },
+          title: props.title || '',
+          ref: props.innerRef,
+          'data-armed': variant === 'danger' && props.armed === true ? 'true' : undefined,
+          onClick: props.onClick,
+        },
+        props.children,
+      )
+    }
+
+    /**
+     * 删除的二次确认：第一次点变成「确认」（红字 + 红描边），再点一次才执行。
+     *
+     * 不用弹窗：这类删除都发生在列表行里，弹窗要额外一次「关闭」动作；
+     * 行内二次确认把成本压到一次点击，误点的代价只是多看一眼。
+     * 进入确认态后 4 秒自动撤销，点别处也撤销，避免一直停在危险状态。
+     *
+     * 删除是唯一「点了就没了」的动作（不进待保存队列），
+     * 所以确认态必须比常态明显：文案换成「确认」、红字、加红描边。
+     */
     function ConfirmButton(props) {
       const [armed, setArmed] = useState(false)
+      const boxRef = useRef(null)
       const disabled = props.disabled === true
       useEffect(() => {
         if (!armed) return undefined
         const timer = setTimeout(() => setArmed(false), 4000)
         return () => clearTimeout(timer)
       }, [armed])
+      useEffect(() => {
+        if (!armed) return undefined
+        const onDown = (event) => {
+          const node = boxRef.current
+          if (node && node.contains(event.target)) return
+          setArmed(false)
+        }
+        document.addEventListener('mousedown', onDown, true)
+        return () => document.removeEventListener('mousedown', onDown, true)
+      }, [armed])
       return h(
-        'button',
+        Button,
         {
-          type: 'button',
+          danger: true,
+          armed: armed,
           disabled: disabled,
-          style: armed
-            ? { ...S.reset, color: T.error, fontWeight: 600, whiteSpace: 'nowrap' }
-            : props.style || S.reset,
+          innerRef: boxRef,
           title: armed ? '再点一次确认删除' : props.title || '',
           onClick: (event) => {
             event.stopPropagation()
@@ -473,7 +643,197 @@ window.__ModuleLoader__.load({
             props.onConfirm()
           },
         },
-        armed ? props.confirmLabel || '删除' : props.label || '✕',
+        armed ? props.confirmLabel || '确认' : props.label || '删除',
+      )
+    }
+
+    /**
+     * 面板内输入框的 Esc 只作用于输入框自己，不冒泡。
+     *
+     * 宿主的设置弹层把 Esc 当「关闭面板」：改名途中按 Esc 想反悔，
+     * 结果整个面板关掉，改了一半的名字也一起没了。
+     */
+    function stopEscape(event) {
+      if (event.key === 'Escape') event.stopPropagation()
+    }
+
+    /** 每条命令命中哪一格状态。同键后写覆盖，队列里永远只有最后一次取值。 */
+    function pendingKey(command) {
+      switch (command.op) {
+        case 'packRow':
+          return 'packRow:' + command.packId + ':' + command.rowKey
+        case 'packGroup':
+          return 'packGroup:' + command.packId + ':' + command.groupId
+        case 'bind':
+          return 'bind:' + command.cwd
+        case 'assign':
+          return 'assign:' + command.rowKey
+        case 'renamePack':
+          return 'renamePack:' + command.packId
+        case 'renameGroup':
+          return 'renameGroup:' + command.groupId
+        default:
+          // 新建与删除没有可覆盖的目标：每条都是独立一次决定。
+          return null
+      }
+    }
+
+    /**
+     * 待保存改动。
+     *
+     * 点一下只入队，不发写请求；队列非空时每次变化都用 `dryRun` 试算一次，
+     * 拿服务端算好的视图来渲染——浏览器不复制求值链（根术语表「生效视图」）。
+     * 点「保存」才把整批命令写盘。
+     *
+     * 队列活在这一次挂载里：关闭面板即丢。跨面板保留会被「我到底存了没」拖住，
+     * 而用户关掉面板再回来时通常已经不记得点过什么了。
+     */
+    function usePending(options) {
+      const [entries, setEntries] = useState([])
+      const [preview, setPreview] = useState({ data: null, loading: false, error: null })
+      const seq = useRef(0)
+      const uid = useRef(0)
+      const latest = useRef(options)
+      latest.current = options
+
+      useEffect(() => {
+        if (entries.length === 0) {
+          // 队列空了就让上一次在途的试算作废，避免它的响应把视图改回「有改动」。
+          seq.current += 1
+          setPreview({ data: null, loading: false, error: null })
+          return
+        }
+        const mine = (seq.current += 1)
+        setPreview((prev) => ({ data: prev.data, loading: true, error: null }))
+        latest.current.preview(entries.map((entry) => entry.command)).then(
+          (data) => {
+            if (mine === seq.current) setPreview({ data: data, loading: false, error: null })
+          },
+          (error) => {
+            if (mine === seq.current) {
+              setPreview((prev) => ({ data: prev.data, loading: false, error: String(error.message || error) }))
+            }
+          },
+        )
+      }, [entries])
+
+      const push = useCallback((commands) => {
+        const list = Array.isArray(commands) ? commands : [commands]
+        setEntries((prev) => {
+          const next = prev.slice()
+          for (const command of list) {
+            const key = pendingKey(command)
+            if (key !== null) {
+              for (let index = next.length - 1; index >= 0; index -= 1) {
+                if (next[index].key === key) next.splice(index, 1)
+              }
+            }
+            uid.current += 1
+            next.push({ id: uid.current, key: key, command: command })
+          }
+          return next
+        })
+      }, [])
+
+      const undo = useCallback(() => setEntries((prev) => prev.slice(0, -1)), [])
+      const discard = useCallback(() => setEntries([]), [])
+
+      /**
+       * 丢掉命中 predicate 的命令，返回丢掉了几条。
+       *
+       * 删除是当场写盘的，队列里引用被删对象的命令（改它的名、给它设开关、
+       * 绑到它）在删除之后都落不了地，留着只会在保存时报错。
+       */
+      const drop = useCallback(
+        (predicate) => {
+          const victims = entries.filter((entry) => predicate(entry.command))
+          if (victims.length === 0) return 0
+          setEntries((prev) => prev.filter((entry) => !predicate(entry.command)))
+          return victims.length
+        },
+        [entries],
+      )
+
+      const commit = useCallback(async () => {
+        const commands = entries.map((entry) => entry.command)
+        if (commands.length === 0) return true
+        try {
+          const data = await latest.current.apply(commands)
+          setEntries([])
+          latest.current.onApplied(data)
+          return true
+        } catch (error) {
+          setPreview((prev) => ({ ...prev, error: String(error.message || error) }))
+          return false
+        }
+      }, [entries])
+
+      /** 被改动命中的键，供行渲染标出「这一行还没保存」。 */
+      const keys = useMemo(() => {
+        const set = new Set()
+        for (const entry of entries) if (entry.key !== null) set.add(entry.key)
+        return set
+      }, [entries])
+
+      return {
+        entries: entries,
+        keys: keys,
+        preview: preview,
+        push: push,
+        undo: undo,
+        discard: discard,
+        drop: drop,
+        commit: commit,
+        count: entries.length,
+      }
+    }
+
+    /** 停靠区上方那一行提示：说清楚发生了什么，给一个关掉它的入口。 */
+    function NoticeBar(props) {
+      return h(
+        'div',
+        { style: S.noticeBar },
+        h(
+          'span',
+          {
+            style: {
+              ...S.hint,
+              flex: '1 1 auto',
+              minWidth: 0,
+              color: 'var(--dsw-alias-state-warn-label, #b7791f)',
+            },
+          },
+          props.text,
+        ),
+        h(Button, { variant: 'quiet', onClick: props.onClose, title: '关闭提示' }, '关闭'),
+      )
+    }
+
+    /** 底部待保存条：左计数与错误，右「撤销 / 放弃全部 / 保存」。 */
+    function PendingBar(props) {
+      if (props.count === 0) return null
+      const busy = props.busy === true
+      // 设置页里贴住底边（内容很长，要一直看得见）；弹层里不贴，由外层底栏排布。
+      const inline = props.inline === true
+      const style = inline ? S.pendingInline : S.pendingBar
+      return h(
+        'div',
+        { style: style },
+        // 弹层里「关闭」占住最左，这里先把空位弹开，让文字与按钮一起靠右。
+        inline ? h('span', { key: 'spacer', style: { flex: '1 1 auto' } }) : null,
+        h(
+          'span',
+          {
+            style: { ...S.hint, flex: inline ? '0 0 auto' : '1 1 auto', color: props.error ? T.error : undefined },
+          },
+          props.error ? '未保存：' + props.error : '已改 ' + props.count + ' 项，尚未保存',
+        ),
+        h(Button, { variant: 'quiet', onClick: props.onUndo, disabled: busy }, '撤销'),
+        // 只有一项时「撤销」与「放弃全部」做的是同一件事，多一个按钮只是多一次选择。
+        props.count > 1
+          ? h(Button, { variant: 'quiet', onClick: props.onDiscard, disabled: busy }, '放弃全部')
+          : null,
+        h(Button, { variant: 'primary', onClick: props.onCommit, disabled: busy }, busy ? '保存中…' : '保存'),
       )
     }
 
@@ -599,8 +959,19 @@ window.__ModuleLoader__.load({
               disabled: props.disabled,
               style: {
                 ...S.segItem(active === option.value),
-                fontSize: '11px',
-                padding: '2px 7px',
+                /*
+                 * 三态是这个面板里点得最多的控件。原来是 11px 字 + 2px 7px 内距，
+                 * 热区只有 19px 高——比被抱怨"太小"的删除按钮还小一截。
+                 * 高度按官方控件档位取 24px（一排三个，28 会显得笨重）。
+                 */
+                display: 'inline-flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                boxSizing: 'border-box',
+                height: '24px',
+                padding: '0 10px',
+                fontSize: '12px',
+                lineHeight: '18px',
                 opacity: props.disabled ? 0.45 : 1,
                 cursor: props.disabled ? 'not-allowed' : 'pointer',
               },
@@ -922,12 +1293,12 @@ window.__ModuleLoader__.load({
       }
     }
 
+    /** `bindings` 段兼容读：只有绑定表，旧文件里残留的 `extra` 不再消费。 */
     function bindingsOf(data) {
       const bindings = data && data.bindings ? data.bindings : null
-      if (bindings === null || typeof bindings !== 'object') return { bindings: {}, extra: [] }
+      if (bindings === null || typeof bindings !== 'object') return { bindings: {} }
       return {
         bindings: bindings.bindings && typeof bindings.bindings === 'object' ? bindings.bindings : {},
-        extra: Array.isArray(bindings.extra) ? bindings.extra : [],
       }
     }
 
@@ -1175,32 +1546,59 @@ window.__ModuleLoader__.load({
       )
 
       // 错误拆在外面，出口仍是 state.error：两处调用点一行都不用改。
-      return { state: { loading: state.loading, data: state.data, error: errorState }, run: run, reload: load }
+      return {
+        state: { loading: state.loading, data: state.data, error: errorState },
+        run: run,
+        reload: load,
+        /** 把一次写盘返回的视图直接装进去：保存与试算返回的是同一种视图，不必再读一遍。 */
+        accept: useCallback((data) => {
+          nextRequestId()
+          setErrorState(null)
+          setState({ loading: false, data: data })
+          refreshChipName(env.sessionId)
+        }, []),
+      }
     }
 
     /** 新建分组。组定义跨工作区共享，建一次处处可用。 */
     function GroupCreator(props) {
       const [name, setName] = useState('')
+      const existing = Array.isArray(props.existing) ? props.existing : []
       const submit = () => {
         const trimmed = name.trim()
         if (trimmed === '') return
+        /*
+         * 重名在这里就拦住，而不是交给服务端拒绝。
+         * 服务端也会拒（`applyToGroups` 里有校验），但那一步失败意味着整份 groups.json
+         * 这次不应用——界面上表现为「点了新建，什么都没出现」，比当场说一句难懂得多。
+         */
+        if (existing.indexOf(trimmed) >= 0) {
+          if (props.onReject) props.onReject('已存在同名分组：' + trimmed)
+          return
+        }
         props.onCreate(trimmed)
         setName('')
       }
       return h(
         'div',
-        { style: { marginBottom: '8px', display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' } },
-        h('input', {
-          style: { ...S.input, flex: '0 0 200px' },
-          placeholder: '新分组名',
-          value: name,
-          onChange: (event) => setName(event.target.value),
-          onKeyDown: (event) => {
-            if (event.key === 'Enter') submit()
-          },
-        }),
-        h('button', { type: 'button', style: S.action, onClick: submit }, '新建分组'),
-        h('span', { style: S.hint }, '分组对全部 pack 共享；这里改的是成员归属，不是开关。'),
+        { style: { marginTop: '0', marginBottom: '8px' } },
+        h(
+          'div',
+          { style: { display: 'flex', gap: '8px', alignItems: 'center' } },
+          h('input', {
+            style: { ...S.input, flex: '0 0 200px' },
+            placeholder: '新分组名',
+            value: name,
+            onChange: (event) => setName(event.target.value),
+            onKeyDown: (event) => {
+              stopEscape(event)
+              if (event.key === 'Enter') submit()
+            },
+          }),
+          h(Button, { onClick: submit }, '新建分组'),
+        ),
+        // 说明单独占一行：与输入框、按钮挤在同一行时，它会被压成两行贴在按钮右边。
+        h('div', { style: { ...S.hint, marginTop: '4px' } }, '分组对全部 pack 共享；这里改的是成员归属，不是开关。'),
       )
     }
 
@@ -1249,6 +1647,40 @@ window.__ModuleLoader__.load({
 
 
     /**
+     * 策略文件的告警。
+     *
+     * 写入失败不再是错误信封：它和既有的读告警一样，跟着视图的 `warnings` 回来，
+     * 所以面板得有一处能看见。默认折起只显示条数——正常情况一条都没有，出现时才
+     * 占位置；展开才列出全文。
+     */
+    function Warnings(props) {
+      const [open, setOpen] = useState(false)
+      const list = Array.isArray(props.warnings) ? props.warnings : []
+      if (list.length === 0) return null
+      return h(
+        'div',
+        { style: { marginTop: '8px' } },
+        h(
+          'button',
+          {
+            type: 'button',
+            'aria-expanded': open,
+            style: { ...S.badge, cursor: 'pointer' },
+            onClick: () => setOpen(!open),
+          },
+          (open ? '▾ ' : '▸ ') + list.length + ' 条告警',
+        ),
+        open
+          ? h(
+              'div',
+              { style: { ...S.hint, marginTop: '4px' } },
+              list.map((warning, index) => h('div', { key: index }, warning)),
+            )
+          : null,
+      )
+    }
+
+    /**
      * chip 的弹层：这张 pack 与默认差在哪，就地切换。
      *
      * 选「默认」发 `packId: null`（解除绑定），不是写一个 default 的 id——
@@ -1258,6 +1690,17 @@ window.__ModuleLoader__.load({
       const open = props.open === true
       const sessionId = props.sessionId
       const [state, setState] = useState({ loading: false, error: null, data: null })
+      const [busy, setBusy] = useState(false)
+
+      useEffect(() => {
+        if (!open) return undefined
+        // 居中模态只靠点遮罩退出会让人以为卡住了；Esc 是这类弹层的默认手势。
+        const onKey = (event) => {
+          if (event.key === 'Escape') props.onClose()
+        }
+        document.addEventListener('keydown', onKey, true)
+        return () => document.removeEventListener('keydown', onKey, true)
+      }, [open, props.onClose])
 
       useEffect(() => {
         if (!open) return undefined
@@ -1277,27 +1720,60 @@ window.__ModuleLoader__.load({
         }
       }, [open, sessionId])
 
+      const preview = useCallback((commands) => api.apply(commands, sessionId, true), [sessionId])
+      const applyCommands = useCallback((commands) => api.apply(commands, sessionId), [sessionId])
+      const accept = useCallback((view) => {
+        setState({ loading: false, error: null, data: view })
+        chipName.set(view && view.packId !== DEFAULT_PACK_ID ? view.packName : null)
+      }, [])
+      const pending = usePending({ preview: preview, apply: applyCommands, onApplied: accept })
+
+      /*
+       * 弹层关掉就丢弃待保存改动——它与设置面板一样，只活在「这一次打开」里。
+       * 用 ref 记上一次的开合：否则 open 为 false 的每次渲染都会 setEntries([])，
+       * 而那个新数组引用会触发下一轮渲染，自己把自己点着。
+       */
+      const wasOpen = useRef(false)
+      useEffect(() => {
+        if (wasOpen.current && !open) pending.discard()
+        wasOpen.current = open
+      }, [open])
+
       if (!open) return null
 
-      const data = state.data
-      const bindTo = (value) => {
-        const cwd = data ? data.cwd : null
-        if (typeof cwd !== 'string' || cwd === '') return
-        // 带 sessionId 才拿得到 WorkspaceView（`binding` / `cwd`）；不带只回 GlobalView。
-        api.apply([{ op: 'bind', cwd: cwd, packId: value === DEFAULT_PACK_ID ? null : value }], sessionId).then(
-          (view) => {
-            setState({ loading: false, error: null, data: view })
-            chipName.set(view && view.binding !== null ? view.packName : null)
-          },
-          (error) => setState((prev) => ({ ...prev, error: String(error.message || error) })),
-        )
-      }
+      const base = state.data
+      // 点一行只是入队：面板按试算视图显示「换过去之后长什么样」，点「保存」才真绑。
+      const data = pending.preview.data !== null ? pending.preview.data : base
 
       // 生效的 pack 就是 default 时没有差异可言：整块只留一句说明。
       const usingDefault = data !== null && (data.binding === null || data.packId === DEFAULT_PACK_ID)
       const rows = data !== null && !usingDefault ? diffOf(data) : []
-      const packs = data !== null && Array.isArray(data.packs) ? data.packs : []
-      const bound = data !== null && data.binding !== null && hasPack(packs, data.binding) ? data.binding : DEFAULT_PACK_ID
+      /** 试算后的绑定：点一行就会变成它，但还没保存。 */
+      const bound =
+        data !== null && data.binding !== null && hasPack(data.packs, data.binding) ? data.binding : DEFAULT_PACK_ID
+      /*
+       * 真实绑定另算一份。
+       *
+       * 「当前」必须标在真正生效的那一张上：如果跟着试算视图走，点一下就会把新选的那张
+       * 标成「当前」，而 chip 上的名字还没变——两处说法打架。
+       */
+      const committed =
+        base !== null && base.binding !== null && hasPack(base.packs, base.binding) ? base.binding : DEFAULT_PACK_ID
+
+      const bindTo = (packId) => {
+        const cwd = base !== null ? base.cwd : null
+        if (typeof cwd !== 'string' || cwd === '') return
+        pending.push([{ op: 'bind', cwd: cwd, packId: packId === DEFAULT_PACK_ID ? null : packId }])
+      }
+
+      const commit = () => {
+        if (busy) return
+        setBusy(true)
+        pending.commit().then(
+          () => setBusy(false),
+          () => setBusy(false),
+        )
+      }
 
       return h(
         'div',
@@ -1305,6 +1781,9 @@ window.__ModuleLoader__.load({
         h(
           'div',
           { style: S.modal, onClick: (event) => event.stopPropagation() },
+          // 弹层与设置页是两个挂载点：PANEL_CSS 必须在这里再注入一次，
+          // 否则按钮只剩内联尺寸，边框与底色落回浏览器默认（看起来就是一条黑框）。
+          h('style', { key: 'panel-css' }, PANEL_CSS),
           // 插件名常驻在标题上方：这一排 chip 只靠图标区分，弹层里不写明是哪个插件，
           // 从图标点进来的人会先愣一下。
           h('div', { style: { ...S.hint, fontSize: '11px' } }, TITLE),
@@ -1315,6 +1794,7 @@ window.__ModuleLoader__.load({
             h('span', { style: { ...S.hint, marginLeft: 'auto' } }, '当前工作区'),
           ),
           state.error ? h('div', { style: { ...S.error, marginTop: '8px' } }, state.error) : null,
+          h(Warnings, { warnings: data === null ? null : data.warnings }),
           data === null
             ? h('div', { style: S.empty }, state.loading ? '加载中…' : '读不到当前工作区')
             : h(
@@ -1333,7 +1813,7 @@ window.__ModuleLoader__.load({
                               'div',
                               {
                                 key: row.key,
-                                style: { display: 'flex', alignItems: 'center', gap: '8px', padding: '4px 0' },
+                                style: { display: 'flex', alignItems: 'center', gap: '8px', padding: '4px 8px' },
                               },
                               h(
                                 'span',
@@ -1344,33 +1824,67 @@ window.__ModuleLoader__.load({
                                 },
                                 row.name,
                               ),
-                              row.on !== null
-                                ? h('span', { style: row.on ? S.badge : { ...S.badge, color: T.text } }, row.on ? '开' : '关')
-                                : null,
+                              h(
+                                'span',
+                                { style: row.on ? S.badge : { ...S.badge, color: T.text } },
+                                row.on ? '开' : '关',
+                              ),
                             ),
                           ),
                     ),
                 h(
                   'div',
                   { style: { ...S.hint, marginTop: '14px', marginBottom: '6px' } },
-                  '给这个目录换一张 pack',
+                  '换一张 pack：点一行就预览它对这个目录的影响，保存后才生效',
                 ),
-                h(Picker, {
-                  value: bound,
-                  options: [
-                    { value: DEFAULT_PACK_ID, label: '默认' },
-                    ...packs
-                      .filter((pack) => pack.id !== DEFAULT_PACK_ID)
-                      .map((pack) => ({ value: pack.id, label: pack.name })),
-                  ],
-                  onChange: (next) => bindTo(next),
-                }),
-                h('div', { style: { ...S.hint, marginTop: '6px' } }, '只影响这个目录里新开的会话。'),
+                // 平铺全部 pack 而不是「当前值 + 下拉」：下拉要先展开才看得全，
+                // 而这里的选择本来就是「挨个看看别人是什么样」。
+                data.packs.map((entry) =>
+                  h(
+                    'div',
+                    {
+                      key: entry.id,
+                      className: 'dsh-mcp-pack-row',
+                      'data-state':
+                        entry.id === committed ? 'current' : entry.id === bound ? 'pending' : undefined,
+                      style: {
+                        ...S.packRow,
+                        borderColor: entry.id === bound || entry.id === committed ? T.borderStrong : T.border,
+                      },
+                      onClick: () => bindTo(entry.id),
+                    },
+                    h('span', { style: S.groupName }, entry.id === DEFAULT_PACK_ID ? '默认' : entry.name),
+                    // 「当前」标在真正生效的那张上；点了一张还没保存的，标「待保存」。
+                    entry.id === committed
+                      ? h('span', { style: { ...S.hint, marginLeft: 'auto' } }, '当前')
+                      : entry.id === bound
+                        ? h('span', { style: { ...S.hint, marginLeft: 'auto' } }, '待保存')
+                        : null,
+                  ),
+                ),
+                h(
+                  'div',
+                  { style: { ...S.hint, marginTop: '6px' } },
+                  '保存后，这个目录里已开着的会话也会在下一个回合边界重新求值。',
+                ),
               ),
+          /*
+           * 底栏：左「关闭」固定不动，右侧才是待保存信息与「撤销 / 保存」。
+           * 关闭按钮的位置不能随待保存状态左右横跳——那等于每次都要重新找它。
+           */
           h(
             'div',
-            { style: { display: 'flex', justifyContent: 'flex-end', marginTop: '14px' } },
-            h('button', { type: 'button', style: S.action, onClick: props.onClose }, '关闭'),
+            { style: S.bottomBar },
+            h(Button, { variant: 'quiet', onClick: props.onClose }, '关闭'),
+            h(PendingBar, {
+              inline: true,
+              count: pending.count,
+              error: pending.preview.error,
+              busy: busy || pending.preview.loading,
+              onUndo: pending.undo,
+              onDiscard: pending.discard,
+              onCommit: commit,
+            }),
           ),
         ),
       )
@@ -1403,19 +1917,22 @@ window.__ModuleLoader__.load({
     /**
      * 设置 → MCP Pack。
      *
-     * 三页：分组管结构（行与分组），分包管 pack 名册与包内开关，工作区管目录到
-     * pack 的绑定。「当前页」与「默认页」是两件事：切页只改当前页，打开设置时落在
-     * 哪一页由顶部那组选项写盘（`ui.defaultTab`）——两者混成一个状态时，
-     * 「临时看一眼分包」会顺手改掉用户的默认页。
+     * 四页：MCP 管全局默认（加载方式、工具规则、描述）与托管定义，分组管结构（行与
+     * 分组），分包管 pack 名册与包内开关，工作区管目录到 pack 的绑定。「当前页」与
+     * 「默认页」是两件事：切页只改当前页，打开设置时落在哪一页由顶部那组选项写盘
+     * （`ui.defaultTab`）——两者混成一个状态时，「临时看一眼分包」会顺手改掉用户的默认页。
+     *
+     * 开关、绑定、归属、改名一律先入队（`usePending`），点「保存」才整批写盘；
+     * 删除是当场写盘的例外。
      */
     function SettingsPanel(props) {
       const host = props.host
       const view = useGlobalView()
-      const state = view.state
-      const run = view.run
+      const { state, run, accept } = view
       // 当前页只由分页按钮切；初值取 `ui.defaultTab`，之后不再跟随任何外部请求。
       const [tab, setTab] = useState(null)
       const [diag, setDiag] = useState(null)
+      const [busy, setBusy] = useState(false)
 
       useEffect(() => {
         let alive = true
@@ -1445,28 +1962,81 @@ window.__ModuleLoader__.load({
                 : '已采集') +
             '）'
 
-      const data = state.data
+      const preview = useCallback((commands) => api.apply(commands, undefined, true), [])
+      const apply = useCallback((commands) => api.apply(commands), [])
+      const pending = usePending({ preview: preview, apply: apply, onApplied: accept })
+      const [notice, setNotice] = useState(null)
+
+      /**
+       * 入队并清掉上一条提示。
+       *
+       * 提示不自动消失：它是「删除把你没保存的改动带走了」这句唯一交代，
+       * 用户可能正切页、正滚列表，4 秒后就看不见等于没说。
+       * 下一次真的改动时它自然让位。
+       */
+      const enqueue = (commands) => {
+        setNotice(null)
+        pending.push(commands)
+      }
+
+      /** 当场说一句：用于重名这类「点了但没生效」的情况。 */
+      const notify = (text) => setNotice(text)
+
+      /**
+       * 删除是当场写盘的：队列里引用被删对象的命令先剔掉，再写。
+       * 丢掉条数要说出来——无声丢改动比丢改动本身更糟。
+       */
+      const deleteWith = (what, predicate, commands) => {
+        const removed = pending.drop(predicate)
+        run(commands)
+        setNotice(removed > 0 ? '已删除「' + what + '」，并丢弃对它的 ' + removed + ' 项未保存改动' : null)
+      }
+
+      /** 引用某个分组的待保存命令：改它的名、给它设组级开关、把行归到它。 */
+      const groupDeps = (groupId) => (command) => {
+        if (command.op === 'packGroup' || command.op === 'renameGroup') return command.groupId === groupId
+        if (command.op === 'assign') return command.groupId === groupId
+        return false
+      }
+
+      /** 引用某张 pack 的待保存命令：改名、行级/组级开关、绑定到它。 */
+      const packDeps = (packId) => (command) => command.packId === packId
+
+      /** 引用某一行的待保存命令：行级开关、归属。托管定义删掉后这些命令落不了地。 */
+      const rowDeps = (rowKey) => (command) => {
+        if (command.op === 'packRow') return command.rowKey === rowKey
+        if (command.op === 'assign') return command.rowKey === rowKey
+        return false
+      }
+
+      const base = state.data
+      // 有待保存改动时，面板按「试算视图」渲染；否则就是真实视图。
+      const data = pending.preview.data !== null ? pending.preview.data : base
       const ui = uiOf(data)
       const current = tab !== null ? tab : ui.defaultTab
 
       if (state.loading) return h('div', { style: S.hint }, '加载中…')
       if (!data) return h('div', { style: S.error }, state.error || '读取失败')
 
-      const packs = Array.isArray(data.packs) ? data.packs : []
-      const groups = groupsOf(data)
-      const rows = rowsOf(data)
-      const bindings = bindingsOf(data)
-      const warnings = Array.isArray(data.warnings) ? data.warnings : []
+      const commit = () => {
+        if (busy) return
+        setBusy(true)
+        pending.commit().then(
+          () => setBusy(false),
+          () => setBusy(false),
+        )
+      }
 
       return h(
         'div',
         { style: { fontSize: '13px', color: T.text } },
+        h('style', { key: 'panel-css' }, PANEL_CSS),
         h('div', { style: S.title }, TITLE),
 
         h(
           'div',
           { style: { ...S.hint, marginTop: '8px' } },
-          '一张 pack 是一套具名策略：工作区绑到哪个 pack，就按哪套开关生效；未绑定按默认。加载方式、工具规则与描述是每台 server 的全局默认，在「MCP」页改；分包页只决定每张 pack 的开关。',
+          '一张 pack 是一套具名策略：工作区绑到哪个 pack，就按哪套开关生效；未绑定按默认。加载方式、工具规则与描述是每台 server 的全局默认，在「MCP」页改；分包页只决定每张 pack 的开关。改动先攒着，点「保存」才写盘。',
         ),
         data.complete === false
           ? h(
@@ -1475,25 +2045,7 @@ window.__ModuleLoader__.load({
               '行扫描不完整：列表可能缺少条目。这里的开关只对已经发现的行生效，不会抹掉没扫到的决定。',
             )
           : null,
-        // 写入被拒的说明与读警告走同一处：写失败不再变成一条错误横幅，用户要在这里
-        // 看见原因。折起来只占一行，展开看全文——警告多时不该把正文挤下去。
-        warnings.length > 0
-          ? h(
-              'details',
-              { style: S.probeWarn },
-              h(
-                'summary',
-                { style: { ...S.hint, color: T.warn, cursor: 'pointer' } },
-                h('span', { style: S.badge }, warnings.length + ' 条'),
-                ' 策略文件与写入的告警',
-              ),
-              h(
-                'ul',
-                { style: { margin: '6px 0 0', paddingLeft: '18px' } },
-                warnings.map((line, index) => h('li', { key: String(index) }, line)),
-              ),
-            )
-          : null,
+        h(Warnings, { warnings: data.warnings }),
 
         h(
           'div',
@@ -1529,20 +2081,52 @@ window.__ModuleLoader__.load({
                     }),
                 }),
               ),
-              h(GroupsPage, { rows: rows, groups: groups, run: run }),
+              h(GroupsPage, {
+                data: data,
+                base: base,
+                queue: enqueue,
+                pending: pending,
+                notify: notify,
+                onDeleteGroup: (groupId, name) =>
+                  deleteWith(name, groupDeps(groupId), [{ op: 'deleteGroup', groupId: groupId }]),
+              }),
             )
           : null,
         current === 'servers'
           ? h(
               'div',
               null,
-              h(ServersBlock, { rows: rows, reload: view.reload }),
-              h(RowsBoard, { rows: rows, defaultPack: defaultPackOf(packs), run: run, reload: view.reload }),
+              h(ServersBlock, { data: data, reload: view.reload }),
+              h(RowsBoard, {
+                data: data,
+                base: base,
+                queue: enqueue,
+                pending: pending,
+                notify: notify,
+                rowDeps: rowDeps,
+                reload: view.reload,
+              }),
             )
           : null,
-        current === 'packs' ? h(PackSettings, { packs: packs, groups: groups, rows: rows, run: run }) : null,
+        current === 'packs'
+          ? h(PackSettings, {
+              data: data,
+              base: base,
+              queue: enqueue,
+              pending: pending,
+              notify: notify,
+              onDeletePack: (packId, name) =>
+                deleteWith(name, packDeps(packId), [{ op: 'deletePack', packId: packId }]),
+            })
+          : null,
         current === 'workspace'
-          ? h(WorkspacePage, { packs: packs, bindings: bindings, run: run, host: host })
+          ? h(WorkspacePage, {
+              data: data,
+              base: base,
+              queue: enqueue,
+              pending: pending,
+              host: host,
+            })
           : null,
 
         // 运行期自检放页面最末：适配器、闸门、连接池的数字只在排查时看，
@@ -1567,6 +2151,29 @@ window.__ModuleLoader__.load({
             diagText || '读取中…',
           ),
         ),
+        /*
+         * 底部停靠区：提示在上、待保存条在下，两行一起贴住底边。
+         *
+         * 提示原先放在标题下面，滚到分包页中段就看不见了——而它讲的正是「删除把你
+         * 没保存的改动带走了」这种当场必须知道的事。停靠区两行都常驻，谁在谁在。
+         */
+        notice !== null || pending.count > 0
+          ? h(
+              'div',
+              { style: S.dock },
+              notice !== null
+                ? h(NoticeBar, { text: notice, onClose: () => setNotice(null) })
+                : null,
+              h(PendingBar, {
+                count: pending.count,
+                error: pending.preview.error,
+                busy: busy || pending.preview.loading,
+                onUndo: pending.undo,
+                onDiscard: pending.discard,
+                onCommit: commit,
+              }),
+            )
+          : null,
       )
     }
 
@@ -1584,15 +2191,19 @@ window.__ModuleLoader__.load({
      * 字的行，所以组名命中时整组保留。
      */
     function GroupsPage(props) {
-      const rows = props.rows
-      const groups = props.groups
-      const run = props.run
+      const data = props.data
+      const base = props.base || props.data
+      const queue = props.queue
+      const pending = props.pending || { count: 0, keys: new Set() }
+      const frozen = pending.count > 0
       const [query, setQuery] = useState('')
       const [collapsed, setCollapsed] = useState({})
       const [editing, setEditing] = useState(null)
       /** 批量归组的目标分组；`null` 表示还没选，`''` 表示未分组。 */
       const [bulkGroup, setBulkGroup] = useState(null)
 
+      const rows = rowsOf(data)
+      const groups = groupsOf(data)
       const registry = groups.groups
       const needle = query.trim().toLowerCase()
 
@@ -1614,9 +2225,25 @@ window.__ModuleLoader__.load({
           byId.get(gid).push(row)
         }
         const byName = (a, b) => rowNameOf(a).localeCompare(rowNameOf(b), 'zh') || rowKeyOf(a).localeCompare(rowKeyOf(b))
+        /*
+         * 待保存期间冻结排序：分组按**改动前**的名字排。
+         *
+         * 不能直接按新名字排：改完名的那一组会立刻跳到新位置，下一次点击就落在别的组上。
+         * 也不能按 `base` 数组的原始位置排——列表平时是按名字排的，两者顺序本来就不同，
+         * 那样一进入待保存状态反而会重排一次（第一版就是这么错的）。
+         * 正确的冻结是「沿用改动前的排序键」：组 id 与行键都不变，只有分组名要回溯。
+         */
+        const baseGroupName = new Map()
+        for (const group of base.groups ? base.groups.groups : []) baseGroupName.set(group.id, group.name)
+        const sortGroups = (list) =>
+          list.slice().sort((a, b) => {
+            const left = frozen && baseGroupName.has(a.id) ? baseGroupName.get(a.id) : a.name
+            const right = frozen && baseGroupName.has(b.id) ? baseGroupName.get(b.id) : b.name
+            return String(left).localeCompare(String(right), 'zh')
+          })
         // 未分组恒在最上：新发现的行先落这里，用户第一眼要看到的就是它。
         const out = [{ id: null, name: '未分组', rows: loose.sort(byName) }]
-        for (const group of [...registry].sort((a, b) => a.name.localeCompare(b.name, 'zh'))) {
+        for (const group of sortGroups(registry)) {
           const members = byId.get(group.id) || []
           const groupHit = needle !== '' && group.name.toLowerCase().indexOf(needle) >= 0
           out.push({
@@ -1626,19 +2253,18 @@ window.__ModuleLoader__.load({
           })
         }
         return out
-      }, [rows, groups.groups, needle])
+      }, [rows, registry, needle, base, frozen])
 
       const searching = needle !== ''
       const total = buckets.reduce((sum, bucket) => sum + bucket.rows.length, 0)
       /** 当前筛选命中的行（跨分组拍平），批量归组的对象。 */
       const matched = buckets.reduce((list, bucket) => list.concat(bucket.rows), [])
       const assignTo = (row, groupId) =>
-        run([{ op: 'assign', rowKey: rowKeyOf(row), groupId: groupId === '' ? null : groupId }])
-      // 一次 apply 带上 N 条 assign，只发一条请求：逐个发在几十行时会被乱序返回的
-      // 响应来回覆盖。
+        queue([{ op: 'assign', rowKey: rowKeyOf(row), groupId: groupId === '' ? null : groupId }])
+      // 一批 assign 走同一次请求：逐个发在几十行时会被乱序返回的响应来回覆盖。
       const assignAll = () => {
         if (matched.length === 0) return
-        run(
+        queue(
           matched.map((row) => ({
             op: 'assign',
             rowKey: rowKeyOf(row),
@@ -1647,12 +2273,18 @@ window.__ModuleLoader__.load({
         )
       }
       const bulkReady = bulkGroup !== null && matched.length > 0
-      const applyStyle = {
-        ...S.segItem(false),
-        border: '1px solid ' + T.border,
-        borderRadius: '6px',
-        opacity: bulkReady ? 1 : 0.45,
-        cursor: bulkReady ? 'pointer' : 'not-allowed',
+
+      /** 改名：重名在这里先拦，别留给服务端拒掉整份 groups.json。 */
+      const renameGroup = (groupId, current, next) => {
+        const trimmed = String(next || '').trim()
+        if (trimmed === '' || trimmed === current) return
+        const clash = registry.some((group) => group.id !== groupId && group.name === trimmed)
+        if (clash) {
+          // 「点了但没生效」必须当场说一句，否则界面上就是什么都没发生。
+          if (props.notify) props.notify('已存在同名分组：' + trimmed)
+          return
+        }
+        queue([{ op: 'renameGroup', groupId: groupId, name: trimmed }])
       }
 
       return h(
@@ -1663,7 +2295,11 @@ window.__ModuleLoader__.load({
           { style: { ...S.hint, marginBottom: '6px' } },
           '点分组展开成员，在行内直接改归属。开关与加载方式不在这里——去「分包」页按 pack 设置。',
         ),
-        h(GroupCreator, { onCreate: (name) => run([{ op: 'createGroup', name: name }]) }),
+        h(GroupCreator, {
+          onCreate: (name) => queue([{ op: 'createGroup', name: name }]),
+          existing: registry.map((group) => group.name),
+          onReject: props.notify,
+        }),
         h(
           'div',
           { style: S.bar },
@@ -1672,6 +2308,7 @@ window.__ModuleLoader__.load({
             placeholder: '搜索 server 名、描述或分组名',
             value: query,
             onChange: (event) => setQuery(event.target.value),
+            onKeyDown: stopEscape,
           }),
           h('span', { style: S.hint }, total + ' 行'),
         ),
@@ -1692,21 +2329,14 @@ window.__ModuleLoader__.load({
               onChange: (next) => setBulkGroup(next),
             }),
           ),
-          // 「未分组」会清掉这些行的归属，所以要第二次确认；选具体分组只是覆盖。
-          bulkGroup === ''
-            ? h(ConfirmButton, {
-                label: '应用',
-                confirmLabel: '确认清空归属',
-                title: '把这些行移出所在分组（只清归属，不删 server）',
-                disabled: !bulkReady,
-                style: applyStyle,
-                onConfirm: assignAll,
-              })
-            : h(
-                'button',
-                { type: 'button', disabled: !bulkReady, style: applyStyle, onClick: assignAll },
-                '应用',
-              ),
+          h(
+            Button,
+            {
+              onClick: assignAll,
+              disabled: !bulkReady,
+            },
+            '应用',
+          ),
         ),
         buckets.map((bucket) => {
           const key = bucket.id === null ? '__loose' : bucket.id
@@ -1723,7 +2353,13 @@ window.__ModuleLoader__.load({
             { key: key, style: S.group },
             h(
               'div',
-              { style: S.groupHead, onClick: () => setCollapsed({ ...collapsed, [key]: !isCollapsed }) },
+              {
+                style: S.groupHead,
+                className: 'dsh-mcp-pack-row',
+                'data-state':
+                  bucket.id !== null && pending.keys.has('renameGroup:' + bucket.id) ? 'pending' : undefined,
+                onClick: () => setCollapsed({ ...collapsed, [key]: !isCollapsed }),
+              },
               h('span', { style: { opacity: 0.5, width: '12px' } }, isCollapsed ? '▸' : '▾'),
               // 未分组的 id 就是 null，与「没有在改名」共享同一个值，所以这里必须
               // 先判 bucket.id !== null，否则未分组一进来就被渲染成输入框。
@@ -1734,40 +2370,54 @@ window.__ModuleLoader__.load({
                     style: S.groupInput,
                     onClick: (event) => event.stopPropagation(),
                     onBlur: (event) => {
-                      const trimmed = String(event.target.value || '').trim()
+                      const next = event.target.value
                       setEditing(null)
-                      if (trimmed === '' || trimmed === bucket.name) return
-                      run([{ op: 'renameGroup', groupId: bucket.id, name: trimmed }])
+                      renameGroup(bucket.id, bucket.name, next)
                     },
                     onKeyDown: (event) => {
                       if (event.key === 'Enter') event.target.blur()
                       if (event.key === 'Escape') {
+                        // 不拦住冒泡，宿主的设置弹层会把这次 Esc 当成「关闭面板」。
+                        event.stopPropagation()
                         event.target.value = bucket.name
                         event.target.blur()
                       }
                     },
                   })
-                : h('span', { style: S.groupName }, bucket.name),
+                : h(
+                    'span',
+                    {
+                      style: S.groupName,
+                      title: bucket.id !== null ? '双击改名' : '',
+                      // 双击即改名：改名的常见入口就是「看见名字想改」，不必先去点按钮。
+                      onDoubleClick:
+                        bucket.id !== null
+                          ? (event) => {
+                              event.stopPropagation()
+                              setEditing(bucket.id)
+                            }
+                          : undefined,
+                    },
+                    bucket.name,
+                  ),
               h('span', { style: S.badge }, bucket.rows.length + ' 行'),
               bucket.id !== null && editing !== bucket.id
                 ? h(
-                    'button',
+                    Button,
                     {
-                      type: 'button',
-                      style: S.reset,
                       title: '重命名分组',
                       onClick: (event) => {
                         event.stopPropagation()
                         setEditing(bucket.id)
                       },
                     },
-                    '✎',
+                    '编辑',
                   )
                 : null,
               bucket.id !== null
                 ? h(ConfirmButton, {
-                    title: '删除分组（成员回到未分组）',
-                    onConfirm: () => run([{ op: 'deleteGroup', groupId: bucket.id }]),
+                    title: '删除分组（成员回到未分组，不可撤销）',
+                    onConfirm: () => props.onDeleteGroup(bucket.id, bucket.name),
                   })
                 : null,
             ),
@@ -1824,10 +2474,8 @@ window.__ModuleLoader__.load({
      * 表示删掉这条键、回到内置缺省。合并规则仍在服务端，这里不做本地推导。
      */
     function RowsBoard(props) {
-      const rows = props.rows
-      const defaultPack = props.defaultPack
-      const run = props.run
-      const reload = props.reload
+      const rows = rowsOf(props.data)
+      const defaultPack = defaultPackOf(Array.isArray(props.data.packs) ? props.data.packs : [])
       return h(
         'div',
         { style: S.block },
@@ -1860,7 +2508,16 @@ window.__ModuleLoader__.load({
         rows.length === 0
           ? h('div', { style: S.empty }, '还没有发现 MCP 服务器。')
           : rows.map((row) =>
-              h(RowEditor, { key: rowKeyOf(row), row: row, defaultPack: defaultPack, run: run, reload: reload }),
+              h(RowEditor, {
+                key: rowKeyOf(row),
+                row: row,
+                defaultPack: defaultPack,
+                queue: props.queue,
+                pending: props.pending,
+                notify: props.notify,
+                rowDeps: props.rowDeps,
+                reload: props.reload,
+              }),
             ),
       )
     }
@@ -1869,7 +2526,7 @@ window.__ModuleLoader__.load({
     function RowEditor(props) {
       const row = props.row
       const defaultPack = props.defaultPack
-      const run = props.run
+      const queue = props.queue
       const [open, setOpen] = useState(false)
       const [removeError, setRemoveError] = useState(null)
       const rowKey = rowKeyOf(row)
@@ -1881,12 +2538,18 @@ window.__ModuleLoader__.load({
       // 生效值由宿主下发；这里只贴标签，不再重算链。
       const activeMode = MODE_LABELS[row.mode] ? row.mode : DEFAULT_MODE
       const toolCount = Array.isArray(row.tools) ? row.tools.length : 0
-      const patch = (delta) => run([{ op: 'packRow', packId: DEFAULT_PACK_ID, rowKey: rowKey, patch: delta }])
+      // 全局默认值的改动同样先入队：它和开关一样是策略，攒着点「保存」才写盘。
+      const patch = (delta) => queue([{ op: 'packRow', packId: DEFAULT_PACK_ID, rowKey: rowKey, patch: delta }])
       // 托管服务器的连接定义可以就地删掉；只关开关定义仍然在，与删除是两件事。
       const removeOwned = () => {
         if (!isOwned(row)) return
+        // 定义没了，队列里对这一行的开关与归属都落不了地：先剔掉，并把丢了几项说出来。
+        const removed = props.pending && props.rowDeps ? props.pending.drop(props.rowDeps(rowKey)) : 0
+        if (removed > 0 && props.notify) props.notify('已删除「' + rowNameOf(row) + '」，并丢弃对它的 ' + removed + ' 项未保存改动')
         api.servers({ op: 'remove', name: rowNameOf(row) }).then(
-          () => props.reload(),
+          () => {
+            if (props.reload) props.reload()
+          },
           (error) => setRemoveError(String(error.message || error)),
         )
       }
@@ -1927,10 +2590,9 @@ window.__ModuleLoader__.load({
           ),
           isOwned(row)
             ? h(ConfirmButton, {
-                // 未确认态用 ✕，与其余三包的删除入口一致；红色只在确认态出现。
+                // 文案走「删除 → 确认」两段：红色只在确认态出现。
                 title: '删除这台托管 server 的定义（所有工作区都不再发现它）',
                 onConfirm: removeOwned,
-                style: { ...S.reset, flex: '0 0 auto' },
               })
             : null,
         ),
@@ -2007,7 +2669,8 @@ window.__ModuleLoader__.load({
       const pack = props.pack
       const groups = props.groups
       const isDefault = props.isDefault
-      const run = props.run
+      const queue = props.queue
+      const pending = props.pending || { count: 0, keys: new Set() }
       const [open, setOpen] = useState(false)
       const rowKey = rowKeyOf(row)
       const gid = groupIdOf(row)
@@ -2030,7 +2693,13 @@ window.__ModuleLoader__.load({
         null,
         h(
           'div',
-          { style: S.lineHead, onClick: () => setOpen(!open) },
+          {
+            style: S.lineHead,
+            className: 'dsh-mcp-pack-row',
+            // 待保存优先于「当前」：这一行更重要的是「还没保存」。
+            'data-state': pending.keys.has('packRow:' + pack.id + ':' + rowKey) ? 'pending' : undefined,
+            onClick: () => setOpen(!open),
+          },
           h(Chevron, { open: open }),
           h(
             'div',
@@ -2055,7 +2724,7 @@ window.__ModuleLoader__.load({
             h(TriState, {
               value: enabled,
               allowInherit: !isDefault,
-              onChange: (next) => run([{ op: 'packRow', packId: pack.id, rowKey: rowKey, patch: { enabled: next } }]),
+              onChange: (next) => queue([{ op: 'packRow', packId: pack.id, rowKey: rowKey, patch: { enabled: next } }]),
             }),
           ),
         ),
@@ -2092,7 +2761,6 @@ window.__ModuleLoader__.load({
      * 定义，不动任何开关；新增走同一个 `servers` 路由，成功与否都整页重读一次。
      */
     function ServersBlock(props) {
-      const rows = props.rows
       const reload = props.reload
       const [adding, setAdding] = useState(false)
       const [name, setName] = useState('')
@@ -2204,25 +2872,29 @@ window.__ModuleLoader__.load({
               h(
                 'div',
                 { style: { display: 'flex', justifyContent: 'flex-end', gap: '8px', marginTop: '8px' } },
-                h('button', { type: 'button', style: S.action, onClick: close }, '取消'),
-                h('button', { type: 'button', style: S.action, disabled: busy, onClick: submit }, busy ? '保存中…' : '保存'),
+                h(Button, { variant: 'quiet', onClick: close }, '取消'),
+                h(Button, { variant: 'primary', disabled: busy, onClick: submit }, busy ? '保存中…' : '保存'),
               ),
             )
           : h(
               'div',
               { style: { display: 'flex', justifyContent: 'flex-end', marginTop: '8px' } },
-              h('button', { type: 'button', style: S.action, onClick: () => setAdding(true) }, '新增服务器'),
+              h(Button, { onClick: () => setAdding(true) }, '新增服务器'),
             ),
         error ? h('div', { style: S.error }, error) : null,
       )
     }
 
-    /** 「分包」页：包名册 → 包内开关 → 托管服务器，自上而下三块。 */
+    /** 「分包」页：包名册 → 包内开关，自上而下两块。工作区绑定与托管定义不在这一页。 */
     function PackSettings(props) {
-      const packs = props.packs
-      const groups = props.groups
-      const rows = props.rows
-      const run = props.run
+      const data = props.data
+      const base = props.base || props.data
+      const queue = props.queue
+      const pending = props.pending || { count: 0, keys: new Set() }
+      const frozen = pending.count > 0
+      const packs = Array.isArray(data.packs) ? data.packs : []
+      const groups = groupsOf(data)
+      const rows = rowsOf(data)
       const defaultPack = defaultPackOf(packs)
       const [selected, setSelected] = useState(DEFAULT_PACK_ID)
       const [query, setQuery] = useState('')
@@ -2233,6 +2905,31 @@ window.__ModuleLoader__.load({
       const packMissing = pack === null && packs.length > 0
       /** `default` 没有上一层，未记录直接显示成「开」，排序也按开算。 */
       const isDefault = pack === null || pack.id === DEFAULT_PACK_ID
+
+      /*
+       * 排序键的来源：待保存期间用改动前的 pack（`sortPack`），位置因此不会跟着
+       * 未保存的值乱跳；保存之后才按新值重排。
+       */
+      const basePacks = Array.isArray(base.packs) ? base.packs : []
+      const basePack = frozen ? packById(basePacks, selected) : pack
+      const sortPack = basePack !== null ? basePack : pack
+      const sortDefault = frozen ? defaultPackOf(basePacks) : defaultPack
+      /** 分组在改动前的名字：冻结排序时用它当键，否则改名的组会立刻跳位。 */
+      const baseGroupName = useMemo(() => {
+        const map = new Map()
+        for (const group of groupsOf(base).groups) map.set(group.id, group.name)
+        return map
+      }, [base])
+      /** 这张 pack 有没有未保存的改动：改名、行级或组级开关任一命中即算。 */
+      const dirtyOf = (packId) => {
+        const rowPrefix = 'packRow:' + packId + ':'
+        const groupPrefix = 'packGroup:' + packId + ':'
+        for (const key of pending.keys) {
+          if (key === 'renamePack:' + packId) return true
+          if (key.indexOf(rowPrefix) === 0 || key.indexOf(groupPrefix) === 0) return true
+        }
+        return false
+      }
 
       const items = useMemo(() => {
         const needle = query.trim().toLowerCase()
@@ -2257,25 +2954,31 @@ window.__ModuleLoader__.load({
         // 顺序是「开 > 关 > 跟随(开) > 跟随(关)」：显式决定过的排在前面，
         // 跟随项再按它会落到开还是关区分。落点与 RowLine 同一套：选中 pack 的组记录
         // 优先，其余是宿主按 default 求出的值。同档按 server 名排。
-        const landingOf = (row) => groupValueOf(pack, groupIdOf(row)) ?? row.openGlobal
+        //
+        // 待保存期间排序键取自改动前的那份视图（`sortPack`）：否则拨一个开关就把行
+        // 挪到另一档，下一次点击会落在别的行上。
+        const landingOf = (row) => groupValueOf(sortPack, groupIdOf(row)) ?? row.openGlobal
         return visible.sort((a, b) => {
-          const left = rankOf(fieldOf(pack, rowKeyOf(a), 'enabled'), isDefault, landingOf(a))
-          const right = rankOf(fieldOf(pack, rowKeyOf(b), 'enabled'), isDefault, landingOf(b))
+          const left = rankOf(fieldOf(sortPack, rowKeyOf(a), 'enabled'), isDefault, landingOf(a))
+          const right = rankOf(fieldOf(sortPack, rowKeyOf(b), 'enabled'), isDefault, landingOf(b))
           if (left !== right) return left - right
           return rowNameOf(a).localeCompare(rowNameOf(b), 'zh') || rowKeyOf(a).localeCompare(rowKeyOf(b))
         })
-      }, [rows, groups, query, pack, isDefault])
+      }, [rows, groups, query, sortPack, sortDefault, isDefault])
 
       /** 分组同样「开 > 关 > 跟随(开) > 跟随(关)」；跟随落点用 default 的组记录。 */
       const orderedGroups = useMemo(() => {
-        const inheritOf = (gid) => groupValueOf(defaultPack, gid) ?? true
+        const inheritOf = (gid) => groupValueOf(sortDefault, gid) ?? true
         return [...groups.groups].sort((a, b) => {
-          const left = rankOf(groupValueOf(pack, a.id), isDefault, inheritOf(a.id))
-          const right = rankOf(groupValueOf(pack, b.id), isDefault, inheritOf(b.id))
+          const left = rankOf(groupValueOf(sortPack, a.id), isDefault, inheritOf(a.id))
+          const right = rankOf(groupValueOf(sortPack, b.id), isDefault, inheritOf(b.id))
           if (left !== right) return left - right
-          return a.name.localeCompare(b.name, 'zh')
+          // 兜底按「改动前」的名字：否则改个组名，这一组就跳到新位置。
+          const leftName = frozen && baseGroupName.has(a.id) ? baseGroupName.get(a.id) : a.name
+          const rightName = frozen && baseGroupName.has(b.id) ? baseGroupName.get(b.id) : b.name
+          return String(leftName).localeCompare(String(rightName), 'zh')
         })
-      }, [groups.groups, pack, defaultPack, isDefault])
+      }, [groups.groups, sortPack, isDefault, sortDefault, frozen, baseGroupName])
 
       const groupCounts = useMemo(() => {
         const counts = {}
@@ -2294,8 +2997,23 @@ window.__ModuleLoader__.load({
       const createPack = () => {
         const trimmed = newName.trim()
         if (trimmed === '') return
-        run([{ op: 'createPack', name: trimmed }])
+        // 与分组同理：重名在这里就说清楚，别留给服务端拒掉整份文件。
+        if (packs.some((entry) => entry.name === trimmed)) {
+          if (props.notify) props.notify('已存在同名 pack：' + trimmed)
+          return
+        }
+        queue([{ op: 'createPack', name: trimmed }])
         setNewName('')
+      }
+      /** 改名：重名先拦住，与新建同一条口径。 */
+      const renamePack = (packId, current, next) => {
+        const trimmed = String(next || '').trim()
+        if (trimmed === '' || trimmed === current) return
+        if (packs.some((entry) => entry.id !== packId && entry.name === trimmed)) {
+          if (props.notify) props.notify('已存在同名 pack：' + trimmed)
+          return
+        }
+        queue([{ op: 'renamePack', packId: packId, name: trimmed }])
       }
       const overrides = (entry) =>
         Object.keys(entry.rows || {}).length + Object.keys(entry.groups || {}).length
@@ -2314,10 +3032,12 @@ window.__ModuleLoader__.load({
               'div',
               {
                 key: entry.id,
+                className: 'dsh-mcp-pack-row',
+                // 待保存优先于「当前选中」：这一行更重要的是「还没保存」。
+                'data-state': dirtyOf(entry.id) ? 'pending' : entry.id === pack.id ? 'current' : undefined,
                 style: {
                   ...S.packRow,
                   borderColor: entry.id === pack.id ? T.borderStrong : T.border,
-                  background: entry.id === pack.id ? 'rgba(127, 127, 127, 0.16)' : 'transparent',
                 },
                 onClick: () => setSelected(entry.id),
               },
@@ -2328,14 +3048,15 @@ window.__ModuleLoader__.load({
                     style: S.groupInput,
                     onClick: (event) => event.stopPropagation(),
                     onBlur: (event) => {
-                      const trimmed = String(event.target.value || '').trim()
+                      const next = event.target.value
                       setEditing(null)
-                      if (trimmed === '' || trimmed === entry.name) return
-                      run([{ op: 'renamePack', packId: entry.id, name: trimmed }])
+                      renamePack(entry.id, entry.name, next)
                     },
                     onKeyDown: (event) => {
                       if (event.key === 'Enter') event.target.blur()
                       if (event.key === 'Escape') {
+                        // 不拦住冒泡，宿主的设置弹层会把这次 Esc 当成「关闭面板」。
+                        event.stopPropagation()
                         event.target.value = entry.name
                         event.target.blur()
                       }
@@ -2343,7 +3064,16 @@ window.__ModuleLoader__.load({
                   })
                 : h(
                   'span',
-                  { style: S.groupName, title: entry.builtin ? '未绑定的工作区按它运行' : undefined },
+                  {
+                    style: S.groupName,
+                    title: entry.builtin ? '未绑定的工作区按它运行' : '双击改名',
+                    onDoubleClick: entry.builtin
+                      ? undefined
+                      : (event) => {
+                          event.stopPropagation()
+                          setEditing(entry.id)
+                        },
+                  },
                   entry.name,
                 ),
               h('span', { style: S.badge }, overrides(entry) + ' 条覆盖'),
@@ -2352,24 +3082,22 @@ window.__ModuleLoader__.load({
               entry.builtin
                 ? null
                 : h(
-                    'button',
+                    Button,
                     {
-                      type: 'button',
-                      style: S.reset,
                       title: '重命名 pack',
                       onClick: (event) => {
                         event.stopPropagation()
                         setEditing(entry.id)
                       },
                     },
-                    '✎',
+                    '编辑',
                   ),
               entry.builtin
                 ? null
                 : h(ConfirmButton, {
-                    title: '删除 pack（指向它的绑定会变成悬空引用，按默认 求值）',
+                    title: '删除 pack（指向它的绑定会变成悬空引用，按默认 求值；不可撤销）',
                     onConfirm: () => {
-                      run([{ op: 'deletePack', packId: entry.id }])
+                      props.onDeletePack(entry.id, entry.name)
                       if (entry.id === selected) setSelected(DEFAULT_PACK_ID)
                     },
                   }),
@@ -2384,10 +3112,11 @@ window.__ModuleLoader__.load({
               value: newName,
               onChange: (event) => setNewName(event.target.value),
               onKeyDown: (event) => {
+                stopEscape(event)
                 if (event.key === 'Enter') createPack()
               },
             }),
-            h('button', { type: 'button', style: S.action, onClick: createPack }, '新建 pack'),
+            h(Button, { onClick: createPack }, '新建 pack'),
           ),
         ),
 
@@ -2398,7 +3127,7 @@ window.__ModuleLoader__.load({
           h(
             'div',
             { style: { display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' } },
-            h('div', { style: S.blockTitle }, '包内开关：' + pack.name),
+            h('div', { style: S.blockTitleSticky }, '包内开关：' + pack.name),
             h('span', { style: S.stat }, rows.length + ' 行'),
           ),
           h(
@@ -2421,6 +3150,9 @@ window.__ModuleLoader__.load({
                       gap: '10px',
                       padding: '4px 0',
                       borderTop: '1px solid ' + T.border,
+                      background: pending.keys.has('packGroup:' + pack.id + ':' + group.id)
+                        ? T.pendingBg
+                        : undefined,
                     },
                   },
                   h('span', { style: { ...S.groupName, flex: '1 1 auto' } }, group.name),
@@ -2431,7 +3163,7 @@ window.__ModuleLoader__.load({
                   h(TriState, {
                     value: value,
                     allowInherit: !isDefault,
-                    onChange: (next) => run([{ op: 'packGroup', packId: pack.id, groupId: group.id, value: next }]),
+                    onChange: (next) => queue([{ op: 'packGroup', packId: pack.id, groupId: group.id, value: next }]),
                   }),
                 )
               }),
@@ -2443,6 +3175,7 @@ window.__ModuleLoader__.load({
               placeholder: '搜索 server 名、描述或分组名',
               value: query,
               onChange: (event) => setQuery(event.target.value),
+              onKeyDown: stopEscape,
             }),
             h('span', { style: S.hint }, items.length + ' 行'),
           ),
@@ -2455,7 +3188,8 @@ window.__ModuleLoader__.load({
                   pack: pack,
                   groups: groups,
                   isDefault: isDefault,
-                  run: run,
+                  queue: queue,
+                  pending: pending,
                 }),
               ),
         ),
@@ -2463,20 +3197,23 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * 「工作区」页：会话 cwd 去重 + 手动添加的路径，每行一个 pack 下拉。
+     * 「工作区」页：只把「目录 → pack」这一层暴露出去。
      *
-     * 顺序是「说明 → 手动添加 → 列表」：手动添加是入口，放到列表底下等于没有。
-     * 绑定只影响该目录下**新开**的会话：策略在会话创建时求值，已经开着的会话不会
-     * 因为这里改了绑定就换一套 pack。
+     * 目录从哪来不归本插件管：会话里出现过的目录由宿主提供，手动添加/移除整套已砍掉。
+     * 那一层原本多出一条独立数据通路（`extra`），路径形态与去重规则都跟会话来的不一致
+     * （一条是 `D:\...`，一条是原样输入的 `d:/...`）——为一个本可以由宿主负责的动作
+     * 引入两套规则不值得。
+     *
+     * 绑定保存时就会对所有 live 会话重新求值，不是只影响新会话：每个 Agent 按自己的
+     * cwd 重新读绑定，改动落在下一个回合边界。
      */
     function WorkspacePage(props) {
-      const packs = props.packs
-      const bindings = props.bindings
-      const run = props.run
+      const data = props.data
+      const queue = props.queue
+      const pending = props.pending || { count: 0, keys: new Set() }
       const host = props.host
       const [cwds, setCwds] = useState([])
       const [settled, setSettled] = useState(false)
-      const [manual, setManual] = useState('')
 
       useEffect(() => {
         let alive = true
@@ -2498,22 +3235,18 @@ window.__ModuleLoader__.load({
         }
       }, [host])
 
-      const extras = Array.isArray(bindings.extra) ? bindings.extra : []
+      const packs = Array.isArray(data.packs) ? data.packs : []
+      const bindings = bindingsOf(data)
+      // 目录只来自宿主（开过会话的目录）。早期版本手动添加的路径不再出现：
+      // 那个能力整个移除了，旧数据在下次写盘时由服务端清掉。
       const paths = []
       const seen = {}
-      for (const cwd of [...cwds, ...extras]) {
+      for (const cwd of cwds) {
         if (typeof cwd !== 'string' || cwd === '') continue
         const key = normalizeCwd(cwd)
         if (key === null || seen[key] === true) continue
         seen[key] = true
         paths.push(cwd)
-      }
-
-      const addManual = () => {
-        const trimmed = manual.trim()
-        if (trimmed === '') return
-        run([{ op: 'addExtra', cwd: trimmed }])
-        setManual('')
       }
 
       return h(
@@ -2522,32 +3255,28 @@ window.__ModuleLoader__.load({
         h(
           'div',
           { style: { ...S.hint, marginBottom: '8px' } },
-          '绑定只影响该目录下新开的会话；已经开着的会话不换 pack。未绑定即默认。',
+          '保存后立即生效：该目录下已开着的会话也在下一个回合边界重新求值。未绑定即默认。',
         ),
         h(
           'div',
-          { style: { display: 'flex', gap: '8px', marginBottom: '8px', alignItems: 'center' } },
-          h('input', {
-            style: S.input,
-            placeholder: '手动添加路径，例如 D:/work/repo',
-            value: manual,
-            onChange: (event) => setManual(event.target.value),
-            onKeyDown: (event) => {
-              if (event.key === 'Enter') addManual()
-            },
-          }),
-          h('button', { type: 'button', style: S.action, onClick: addManual }, '添加'),
+          { style: S.hint },
+          '目录由宿主提供（开过会话的目录）。本页只决定它绑哪张 pack，不新增或移除目录。',
+        ),
+        h(
+          'div',
+          { style: S.hint },
+          '切换会话或重新启用插件后，输入框的 / 候选可能还是旧的：宿主按会话缓存 MCP 清单。刷新页面即可。',
         ),
         !settled
           ? h('div', { style: S.hint }, '读取会话列表…')
           : paths.length === 0
-            ? h('div', { style: S.empty }, '没有可绑定的工作区。用上面的输入框手动添加。')
+            ? h('div', { style: S.empty }, '还没有开过会话的目录。开一个会话后这里就会出现。')
             : paths.map((cwd) => {
-                const isExtra = extras.indexOf(cwd) >= 0
                 const bound = bindingOf(bindings, cwd)
                 // 内置 default 与「未绑定」等价（服务端把 bind default 当解绑），悬空引用也
                 // 走这里：两者都显示成「默认」，否则下拉里会出现两个同名的默认项。
                 const value = bound === null || bound === DEFAULT_PACK_ID || !hasPack(packs, bound) ? '' : bound
+                const changed = pending.keys.has('bind:' + normalizeCwd(cwd))
                 return h(
                   'div',
                   {
@@ -2558,13 +3287,13 @@ window.__ModuleLoader__.load({
                       gap: '10px',
                       padding: '6px 0',
                       borderTop: '1px solid ' + T.border,
+                      background: changed ? T.pendingBg : undefined,
                     },
                   },
                   h(
                     'div',
                     { style: { flex: '1 1 auto', minWidth: 0 } },
                     h('div', { style: S.path, title: cwd }, cwd),
-                    h('div', { style: S.rowDesc }, isExtra ? '手动添加' : '来自会话'),
                   ),
                   h(
                     'div',
@@ -2573,19 +3302,15 @@ window.__ModuleLoader__.load({
                       value: value,
                       options: [
                         { value: '', label: '默认' },
+                        // 内置 default 与「默认」等价（服务端把 bind default 当解绑），
+                        // 列出来只会让人以为有两个不同的选择。
                         ...packs
                           .filter((pack) => pack.id !== DEFAULT_PACK_ID)
                           .map((pack) => ({ value: pack.id, label: pack.name })),
                       ],
-                      onChange: (next) => run([{ op: 'bind', cwd: cwd, packId: next === '' ? null : next }]),
+                      onChange: (next) => queue([{ op: 'bind', cwd: cwd, packId: next === '' ? null : next }]),
                     }),
                   ),
-                  isExtra
-                    ? h(ConfirmButton, {
-                        title: '从手动清单移除（不影响已有绑定）',
-                        onConfirm: () => run([{ op: 'removeExtra', cwd: cwd }]),
-                      })
-                    : null,
                 )
               }),
       )
@@ -2593,7 +3318,12 @@ window.__ModuleLoader__.load({
 
     // ---------- 注册 ----------
 
-    /** chip 上的 pack 名：绑到哪个 pack 就显示哪个，未绑定显示「默认」/`Default`。 */
+    /**
+     * chip 上的 pack 名：绑到哪个 pack 就显示哪个，未绑定是 null（由 `CHIP_LABEL` 补字）。
+     *
+     * 判据用 `packId` 而不是 `binding`：`binding` 是原始记录，用户显式绑 `default`
+     * 时它是 `'default'` 而非 null，拿它判断会把「显式绑默认」误认成「绑了别的 pack」。
+     */
     function refreshChipName(sessionId) {
       if (typeof sessionId !== 'string' || sessionId === '') {
         chipName.set(null)
@@ -2603,7 +3333,7 @@ window.__ModuleLoader__.load({
       api.workspace(sessionId).then(
         (view) => {
           if (id !== requestSeq) return
-          chipName.set(view && view.binding !== null ? view.packName : null)
+          chipName.set(view && view.packId !== DEFAULT_PACK_ID ? view.packName : null)
         },
         () => {
           if (id !== requestSeq) return

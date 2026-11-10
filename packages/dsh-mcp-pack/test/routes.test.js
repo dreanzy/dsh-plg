@@ -58,8 +58,8 @@ function packsFile(packs, ui = {}) {
   return { version: 1, ui, packs }
 }
 
-function workspacesFile(bindings, extra = []) {
-  return { version: 1, bindings, extra }
+function workspacesFile(bindings) {
+  return { version: 1, bindings }
 }
 
 function makeSnapshot(entries) {
@@ -455,8 +455,6 @@ test('parseCommands 收下全部合法 op', () => {
     { op: 'renamePack', packId: 'p1', name: '二' },
     { op: 'deletePack', packId: 'p1' },
     { op: 'bind', cwd: 'D:/p', packId: null },
-    { op: 'addExtra', cwd: 'D:/q' },
-    { op: 'removeExtra', cwd: 'D:/q' },
     { op: 'assign', rowKey: 'global:a', groupId: 'g1' },
     { op: 'createGroup', name: '本地' },
     { op: 'renameGroup', groupId: 'g1', name: '远程' },
@@ -465,9 +463,15 @@ test('parseCommands 收下全部合法 op', () => {
     { op: 'defaultTab', value: 'workspace' },
   ])
   assert.equal(parsed.ok, true)
-  assert.equal(parsed.commands.length, 14)
+  assert.equal(parsed.commands.length, 12)
   assert.deepEqual(parsed.commands[0].patch, { enabled: false, mode: null })
   assert.equal(parsed.commands[5].packId, null)
+})
+
+test('手动添加目录的两条命令已被移除：parseCommands 不认 addExtra / removeExtra', () => {
+  // 能力整个删掉，命令模型里也没有这两条：发过来就当未知 op 拒绝，不再静默写盘。
+  assert.equal(parseCommands([{ op: 'addExtra', cwd: 'D:/q' }]).ok, false)
+  assert.equal(parseCommands([{ op: 'removeExtra', cwd: 'D:/q' }]).ok, false)
 })
 
 test('parseCommands 对坏条目拒绝整批', () => {
@@ -481,4 +485,54 @@ test('parseCommands 对坏条目拒绝整批', () => {
   assert.equal(parseCommands([{ op: 'bind', cwd: '', packId: null }]).ok, false)
   assert.equal(parseCommands([{ op: 'assign', rowKey: 'global:a', groupId: 3 }]).ok, false)
   assert.equal(parseCommands([{ op: 'packGroup', packId: 'default', groupId: 'g1', value: 'yes' }]).ok, false)
+})
+
+/**
+ * 试算路由：面板的待保存改动每一步都用它渲染「改了之后会是什么样」。
+ *
+ * 判据有三条：视图按试算后的策略算出来、磁盘字节不变、写入后的重算一次都不跑。
+ */
+test('apply 带 dryRun 时返回试算视图、不落盘、也不触发写入后的重算', async () => {
+  const home = await freshHome()
+  const entries = [mcpEntry('a')]
+  const d = deps(entries)
+  let afterWrite = 0
+  d.afterWrite = async () => {
+    afterWrite += 1
+  }
+
+  const result = await handleApply(
+    fakeCtx(entries),
+    { commands: [{ op: 'packRow', packId: 'default', rowKey: 'global:a', patch: { enabled: false } }], dryRun: true },
+    d,
+  )
+
+  assert.equal(result.ok, true)
+  // 试算视图里这一行已经关了——面板就是拿它渲染「改了之后」。
+  assert.equal(result.value.rows[0].open, false)
+  assert.deepEqual(result.value.packs[0].rows['global:a'], { enabled: false })
+  assert.equal(afterWrite, 0)
+  assert.equal(
+    await readFile(join(home, 'packs', 'mcp', 'packs.json'), 'utf8').then(
+      () => true,
+      () => false,
+    ),
+    false,
+  )
+})
+
+test('同一个 dryRun 请求连发两次结果一致：命令是绝对状态，试算可重放', async () => {
+  await freshHome()
+  const entries = [mcpEntry('a')]
+  const d = deps(entries)
+  const body = {
+    commands: [{ op: 'createPack', name: '工作' }],
+    dryRun: true,
+  }
+
+  const first = await handleApply(fakeCtx(entries), body, d)
+  const second = await handleApply(fakeCtx(entries), body, d)
+  assert.deepEqual(second.value.packs, first.value.packs)
+  assert.deepEqual(second.value.warnings, first.value.warnings)
+  assert.equal(first.value.packs.length, 2)
 })

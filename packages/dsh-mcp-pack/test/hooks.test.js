@@ -265,7 +265,7 @@ test('子 agent 销毁后，同 cwd 的父会话仍能解析 MCP 目标', async 
     packId: 'p2',
     pack: workPack,
     groups: { groups: [], assignments: {} },
-    bindings: { bindings: {}, extra: [] },
+    bindings: { bindings: {} },
     warnings: [],
   }
   const snapshot = createScopeSnapshot({

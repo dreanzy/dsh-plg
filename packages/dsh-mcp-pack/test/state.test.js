@@ -23,7 +23,7 @@ function policyOf({ pack = null, packId = 'default', defaultPack = emptyPack(), 
     packId: pack === null ? 'default' : packId,
     pack,
     groups: { groups: [], assignments },
-    bindings: { bindings: {}, extra: [] },
+    bindings: { bindings: {} },
     warnings: [],
   }
 }

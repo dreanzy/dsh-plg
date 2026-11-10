@@ -1,8 +1,9 @@
 import { scanRows } from './inventory.js'
+import { effective } from './effective.js'
 import { defaultPackOf, rowEntryOf } from './policy.js'
 import { parseServerDef, readOwned, removeServer, serversPath, updateOwned, upsertServer, type OwnedServers } from './servers.js'
 import { type ScopeSnapshot } from './snapshot.js'
-import { applyCommands, groupsPath, loadState, packsPath, workspacesPath } from './store.js'
+import { applyCommands, groupsPath, loadState, packsPath, previewCommands, workspacesPath, type PolicyState } from './store.js'
 import {
   DEFAULT_PACK_ID,
   DEFAULT_PACK_NAME,
@@ -183,27 +184,35 @@ function packViews(book: PackBook): PackView[] {
  *
  * 求值本身在 `effective.ts`，由 `snapshot.ts` 连同读盘与缓存一起持有：面板与
  * 闸门、名册读的是同一份结论。这里只把它摊平成面板要的形状，不重算任何一刀。
+ *
+ * `policy` 给出时按它渲染策略那几段（pack 名册、绑定、组、ui），行与 warnings
+ * 仍来自真实快照：试算只改策略，不改「这一刻发现了哪些 server」。
  */
 async function buildView(
   ctx: RouteContext,
   deps: RouteDeps,
   cwd: string | null,
   live: boolean,
+  /** 试算后的策略状态；给出时视图按它渲染，但行清单仍来自真实快照。 */
+  policy?: PolicyState,
 ): Promise<Envelope<RowsView>> {
   if (ctx.get('loader') === undefined) {
     return { ok: false, error: { code: 'internal', message: '宿主没有 loader 服务' } }
   }
   const view = await deps.snapshot.refresh(cwd)
-  const { policy } = view
-  const defaultPack: McpPack = defaultPackOf(policy.packs)
+  const state = policy ?? view.policy
+  const defaultPack: McpPack = defaultPackOf(state.packs)
+  // 试算视图必须重算一遍求值：面板要看到「改了之后每行会变成什么样」。行清单仍是
+  // 真实快照的那一份，只有策略换了；没给 policy 时直接用快照里那份，不重复算。
+  const evaluated = policy === undefined ? view.effective : effective({ policy: state, rows: view.rows })
   const rows: RowView[] = []
   for (const [index, row] of view.rows.entries()) {
-    const resolved = view.effective.rows[index]
+    const resolved = evaluated.rows[index]
     if (resolved === undefined) continue
     rows.push({
       ...row,
       ...resolved,
-      packEntry: rowEntryOf(policy.pack, row.rowKey),
+      packEntry: rowEntryOf(state.pack, row.rowKey),
       defaultEntry: rowEntryOf(defaultPack, row.rowKey),
     })
   }
@@ -215,13 +224,13 @@ async function buildView(
       warnings: view.warnings,
       cwd,
       live,
-      binding: policy.binding,
-      packId: policy.packId,
-      packName: policy.pack?.name ?? defaultPack.name,
-      packs: packViews(policy.packs),
-      ui: policy.ui,
-      groups: policy.groups,
-      bindings: policy.bindings,
+      binding: state.binding,
+      packId: state.packId,
+      packName: state.pack?.name ?? defaultPack.name,
+      packs: packViews(state.packs),
+      ui: state.ui,
+      groups: state.groups,
+      bindings: state.bindings,
       paths: {
         packs: packsPath(),
         groups: groupsPath(),
@@ -233,9 +242,14 @@ async function buildView(
 }
 
 /** 全局视图：只按 default 求值，不需要会话。 */
-export async function handleGlobal(ctx: RouteContext, deps: RouteDeps): Promise<Envelope<RowsView>> {
+export async function handleGlobal(
+  ctx: RouteContext,
+  deps: RouteDeps,
+  /** 试算后的策略状态；给出时视图按它渲染，但行清单仍来自真实快照。 */
+  policy?: PolicyState,
+): Promise<Envelope<RowsView>> {
   try {
-    return await buildView(ctx, deps, null, false)
+    return await buildView(ctx, deps, null, false, policy)
   } catch (error) {
     return { ok: false, error: { code: 'internal', message: `读取全局策略失败：${String(error)}` } }
   }
@@ -269,8 +283,6 @@ const OPS: ReadonlySet<string> = new Set([
   'renamePack',
   'deletePack',
   'bind',
-  'addExtra',
-  'removeExtra',
   'assign',
   'createGroup',
   'renameGroup',
@@ -411,15 +423,7 @@ export function parseCommands(
         commands.push({ op: 'bind', cwd, packId })
         break
       }
-      case 'addExtra':
-      case 'removeExtra': {
-        const cwd = readNonEmpty(record, 'cwd')
-        if (cwd === null || cwd.trim() === '') return bad(index, 'cwd 必须是非空字符串')
-        commands.push({ op, cwd })
-        break
-      }
-      case 'assign': {
-        const rowKey = readNonEmpty(record, 'rowKey')
+      case 'assign': {        const rowKey = readNonEmpty(record, 'rowKey')
         if (rowKey === null) return bad(index, 'rowKey 必须是非空字符串')
         const groupId = record['groupId']
         if (groupId !== null && (typeof groupId !== 'string' || groupId === '')) {
@@ -468,7 +472,12 @@ export interface ApplyHooks {
   readonly afterWrite?: () => Promise<void>
 }
 
-/** 应用命令并返回写入后的工作区视图。 */
+/**
+ * `POST api/mcp-pack/apply`：`{ sessionId?, commands, dryRun? }`。
+ *
+ * `dryRun: true` 只把命令应用在内存里并返回同样的视图，不写盘、不失效快照、也不
+ * 触发写入后的重算。面板的待保存改动每一步都用它渲染「改了之后会是什么样」。
+ */
 export async function handleApply(
   ctx: RouteContext,
   body: Record<string, unknown> | null,
@@ -476,7 +485,9 @@ export async function handleApply(
 ): Promise<Envelope<RowsView>> {
   const parsed = parseCommands(body?.['commands'])
   if (!parsed.ok) return { ok: false, error: { code: 'bad-request', message: parsed.message } }
-  lastApplied = parsed.commands
+  const dryRun = body?.['dryRun'] === true
+  // 自检里的「最近一次写入」只记真的写下去的命令：试算没有写盘，记进去会让诊断说谎。
+  if (!dryRun) lastApplied = parsed.commands
 
   // `bind` 自带 cwd，所以写入本身不依赖会话；sessionId 只决定回哪种视图。
   const sessionId = body === null ? null : readString(body, 'sessionId')
@@ -489,21 +500,32 @@ export async function handleApply(
   }
 
   // 写失败不在这里报错：applyCommands 把它写进 warnings，随视图一起回给面板。
-  const applied = await applyCommands(session?.cwd ?? null, parsed.commands)
-  // 写入后立刻失效：不依赖 mtime 精度（同毫秒的两次写在 Windows 上会撞车），
-  // 也不等任何 TTL。afterWrite 里的重算因此一定读到新值。
-  hooks.snapshot.invalidate()
-  if (hooks.afterWrite !== undefined) {
-    try {
-      await hooks.afterWrite()
-    } catch (error) {
-      ctx.logger.warn(`dsh-mcp-pack: 写入后刷新名册失败：${String(error)}`)
+  const applied = dryRun
+    ? await previewCommands(session?.cwd ?? null, parsed.commands)
+    : await applyCommands(session?.cwd ?? null, parsed.commands)
+  if (!dryRun) {
+    // 写入后立刻失效：不依赖 mtime 精度（同毫秒的两次写在 Windows 上会撞车），
+    // 也不等任何 TTL。afterWrite 里的重算因此一定读到新值。
+    hooks.snapshot.invalidate()
+    if (hooks.afterWrite !== undefined) {
+      try {
+        await hooks.afterWrite()
+      } catch (error) {
+        ctx.logger.warn(`dsh-mcp-pack: 写入后刷新名册失败：${String(error)}`)
+      }
     }
   }
   try {
-    const view = await buildView(ctx, { snapshot: hooks.snapshot }, session?.cwd ?? null, session?.live ?? false)
+    const view = await buildView(
+      ctx,
+      { snapshot: hooks.snapshot },
+      session?.cwd ?? null,
+      session?.live ?? false,
+      // 试算视图按试算后的策略渲染；真写时给 undefined，走快照里那份。
+      dryRun ? applied : undefined,
+    )
     if (!view.ok) return view
-    // 写入失败的说明排在读警告之前：它是用户刚才那一下的直接结果。
+    // 写入（或试算）失败的说明排在读警告之前：它是用户刚才那一下的直接结果。
     return { ok: true, value: { ...view.value, warnings: [...new Set([...applied.warnings, ...view.value.warnings])] } }
   } catch (error) {
     return { ok: false, error: { code: 'internal', message: `读取策略失败：${String(error)}` } }
