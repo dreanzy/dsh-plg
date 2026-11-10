@@ -11,7 +11,7 @@
  * 监听器抛错会让会话创建失败。
  */
 
-import { cwdFromAgent } from './cwd.js'
+import { cwdFromAgent } from '@dreanzy/dsh-pack-core'
 import { loadState, resolve, type ResolvedPack, type PackPathOptions } from './policy.js'
 import { selectionOf } from './pack.js'
 import { delegationSection, resolvePrompt, type PromptText } from './prompt.js'

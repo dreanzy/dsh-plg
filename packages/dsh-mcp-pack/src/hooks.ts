@@ -1,4 +1,4 @@
-import { cwdFromAgent } from './cwd.js'
+import { cwdFromAgent } from '@dreanzy/dsh-pack-core'
 import { INVENTORY_SECTION } from './inventory-section.js'
 import { denyNamesFor } from './shield.js'
 import type { Pool } from './pool.js'

@@ -1,5 +1,5 @@
 import { candidateTools, defaultCatalogFeed, type CatalogFeed } from './catalog.js'
-import { cwdFromAgent, cwdFromObserved } from './cwd.js'
+import { cwdFromAgent, cwdFromObserved } from '@dreanzy/dsh-pack-core'
 import { effective, type EffectiveRow } from './effective.js'
 import type { Support, ToolSchemaLike, ToolsFace } from './hooks.js'
 import { defaultPackOf } from './policy.js'

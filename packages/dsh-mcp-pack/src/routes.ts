@@ -1,4 +1,4 @@
-import { cwdFromAgent, cwdFromObserved } from './cwd.js'
+import { cwdFromAgent, cwdFromObserved } from '@dreanzy/dsh-pack-core'
 import { scanRows } from './inventory.js'
 import { effective } from './effective.js'
 import { defaultPackOf, rowEntryOf } from './policy.js'

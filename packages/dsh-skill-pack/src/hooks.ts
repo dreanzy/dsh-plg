@@ -3,6 +3,7 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { type Inventory, type SkillSummaryLike, type SkillsFace } from './inventory.js'
 import { createReconciler, type Dispose } from './reconcile.js'
+import { projectedCwd } from '@dreanzy/dsh-pack-core'
 import { createScopeSnapshot, fingerprintOf, type ScopeSnapshot } from './snapshot.js'
 import { loadState } from './store.js'
 
@@ -74,27 +75,8 @@ function asRecord(value: unknown): Record<string, unknown> | null {
     : null
 }
 
-/**
- * 读 `workingDirectory` 投影的**原始值**。
- *
- * 不走 `workingDirectory.get()`：那个方法在投影尚未写入时回落到进程的
- * `defaultDirectory`，会把「还没 cd 过的新会话」解析成宿主安装目录。宿主的
- * `skill-catalog` 用的正是「投影 → header.cwd → defaultDirectory」这个顺序。
- */
-export function projectedCwd(session: unknown): string | null {
-  const record = asRecord(session)
-  const projections = asRecord(record?.['projections'])
-  const faceOf = projections?.['faceOf']
-  if (typeof faceOf !== 'function') return null
-  try {
-    const face = asRecord((faceOf as (key: string) => unknown).call(projections, 'workingDirectory'))
-    const getSnapshot = face?.['getSnapshot']
-    const value = typeof getSnapshot === 'function' ? getSnapshot.call(face) : undefined
-    return typeof value === 'string' && value !== '' ? value : null
-  } catch {
-    return null
-  }
-}
+/** 投影的读取实现在 `@dreanzy/dsh-pack-core`：顺序与理由见那边的注释。 */
+export { projectedCwd }
 
 /**
  * 工作目录的权威值在投影里。

@@ -14,7 +14,7 @@
  * 宿主 `tools.register()` 只读 `name` / `output` / `parameters`，形状一致即可。
  */
 
-import { cwdFromAgent } from './cwd.js'
+import { cwdFromAgent } from '@dreanzy/dsh-pack-core'
 import { TIER_DEFAULT_NAMES, TIER_IDS, isTierId, selectionOf, type Route, type TierId } from './pack.js'
 import type { ResolvedPack } from './policy.js'
 
