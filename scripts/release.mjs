@@ -46,7 +46,7 @@ const assumeYes = args.includes('--yes')
 const only = args.filter((a) => !a.startsWith('-'))
 
 /** 仓库里所有可发布的包，按目录名。 */
-const ALL = ['dsh-plugin-pack', 'dsh-mcp-pack', 'dsh-skill-pack', 'dsh-model-pack']
+const ALL = ['dsh-pack-core', 'dsh-plugin-pack', 'dsh-mcp-pack', 'dsh-skill-pack', 'dsh-model-pack']
 
 /** 能否交互：非 TTY 或 --yes 时一律不询问。 */
 const interactive = process.stdin.isTTY === true && !assumeYes
