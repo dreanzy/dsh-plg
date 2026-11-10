@@ -70,9 +70,9 @@ _Avoid_: 条目、开关、节点
 每个插件包只贡献一条 entry，让分发、版本、启停三者对齐。
 _Avoid_: 多入口包、伞包
 
-**零共享**:
-插件包之间不共享代码；需要复用时才抽独立包并各自发版，不用 `workspace:` 协议。
-_Avoid_: 共享内核、公共库
+**共享核心（Shared core）**:
+插件包之间不互相依赖；共用的服务端骨架抽成 `@dreanzy/dsh-pack-core`，各包对它写真实 semver 依赖，仍然各自发版。不用 `workspace:` 协议。边界见 [ADR-0007](./docs/adr/0007-shared-core-package.md)。
+_Avoid_: 共享内核、公共库、工具包
 
 **源码安装**:
 用户以 `github:<owner>/<repo>#<sha>&path:/packages/<pkg>` 安装，触发该包的 `prepare` 构建。
