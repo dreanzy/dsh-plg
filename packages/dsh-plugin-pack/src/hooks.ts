@@ -1,7 +1,7 @@
 import { candidateTools, defaultCatalogFeed, type CatalogFeed } from './catalog.js'
 import { cwdFromAgent } from '@dreanzy/dsh-pack-core'
 import { effective, type Effective } from './effective.js'
-import { createReconciler } from './reconcile.js'
+import { createReconciler } from '@dreanzy/dsh-pack-core'
 import { loadState, type PolicyState } from './store.js'
 import { LOCKED_TOOLS, type Catalog } from './types.js'
 

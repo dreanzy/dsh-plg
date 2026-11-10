@@ -120,3 +120,17 @@ test('不同 key 各自记账：释放一个不动另一个', async () => {
   reconciler.release('b')
   assert.deepEqual(trace, ['a', 'b'])
 })
+
+test('落地期间被 release：这一份资源立刻释放，且不持有', async () => {
+  const disposed = []
+  const reconciler = createReconciler(() => undefined)
+  const ok = await reconciler.apply('a', () => {
+    // 主体在 build 中途被销毁（例如 dispose 事件插进来的那一轮）。
+    reconciler.release('a')
+    return () => disposed.push('late')
+  })
+  assert.equal(ok, false)
+  assert.deepEqual(disposed, ['late'], '落地期间被顶掉的资源必须立刻释放，不能留下')
+  reconciler.release('a')
+  assert.deepEqual(disposed, ['late'], '重复 release 不能重复释放')
+})
