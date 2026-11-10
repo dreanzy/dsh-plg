@@ -13,3 +13,5 @@ export { projectedCwd, cwdFromAgent, cwdFromObserved } from './cwd.js'
 export { createReconciler, type Dispose, type Reconciler } from './reconcile.js'
 
 export type { Envelope, ErrorCode } from './protocol.js'
+
+export { storePaths, readText, type StorePaths } from './store.js'

@@ -1,7 +1,7 @@
-import { mkdir, readFile } from 'node:fs/promises'
+import { readText, storePaths } from '@dreanzy/dsh-pack-core'
+import { mkdir } from 'node:fs/promises'
 import { dirname } from 'node:path'
 import { withFileLock, writeFileAtomic } from '@deepseek-ai/dsh-atomic-write'
-import { dshHomePath } from '@deepseek-ai/dsh-home-paths'
 import {
   normalizeCwd,
   parseBindings,
@@ -31,26 +31,20 @@ import {
  * 路径一律走 `dshHomePath`，不自己拼 `$DSH_HOME` 前缀：宿主允许用环境变量或
  * 显式配置改根目录，自己拼会绕开它。
  */
+const PATHS = storePaths('skill')
+
 export function packsPath(): string {
-  return dshHomePath('packs', 'skill', 'packs.json')
+  return PATHS.packs()
 }
 
 export function groupsPath(): string {
-  return dshHomePath('packs', 'skill', 'groups.json')
+  return PATHS.groups()
 }
 
 export function workspacesPath(): string {
-  return dshHomePath('packs', 'skill', 'workspaces.json')
+  return PATHS.workspaces()
 }
 
-async function readText(path: string): Promise<string | undefined> {
-  try {
-    return await readFile(path, 'utf8')
-  } catch (error) {
-    if ((error as { code?: string }).code === 'ENOENT') return undefined
-    throw error
-  }
-}
 
 /** 同一批命令可能读写同一份文件两次（bind 要先读 pack 名册），失败说明只留一条。 */
 function note(warnings: string[], message: string): void {

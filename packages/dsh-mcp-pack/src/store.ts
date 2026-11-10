@@ -1,7 +1,7 @@
-import { mkdir, readFile } from 'node:fs/promises'
+import { readText, storePaths } from '@dreanzy/dsh-pack-core'
+import { mkdir } from 'node:fs/promises'
 import { dirname } from 'node:path'
 import { withFileLock, writeFileAtomic } from '@deepseek-ai/dsh-atomic-write'
-import { dshHomePath } from '@deepseek-ai/dsh-home-paths'
 import {
   normalizeCwd,
   parseBindings,
@@ -31,31 +31,25 @@ import {
  * 路径一律走 `dshHomePath`，不自己拼 `$DSH_HOME` 前缀：宿主允许用环境变量或
  * 显式配置改根目录，自己拼会绕开它。
  */
+const PATHS = storePaths('mcp')
+
 export function packsPath(): string {
-  return dshHomePath('packs', 'mcp', 'packs.json')
+  return PATHS.packs()
 }
 
 export function groupsPath(): string {
-  return dshHomePath('packs', 'mcp', 'groups.json')
+  return PATHS.groups()
 }
 
 export function workspacesPath(): string {
-  return dshHomePath('packs', 'mcp', 'workspaces.json')
+  return PATHS.workspaces()
 }
 
 /** 运行期自检快照。不是策略，只是排查用的证据。 */
 export function diagPath(): string {
-  return dshHomePath('packs', 'mcp', 'diag.json')
+  return PATHS.file('diag.json')
 }
 
-async function readText(path: string): Promise<string | undefined> {
-  try {
-    return await readFile(path, 'utf8')
-  } catch (error) {
-    if ((error as { code?: string }).code === 'ENOENT') return undefined
-    throw error
-  }
-}
 
 /** 读失败的说明要带文件名：它最终进 warnings，用户只看得见这一串字。 */
 function readFailure(label: string, error: unknown): Error {
