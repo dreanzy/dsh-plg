@@ -38,6 +38,7 @@ ADR-0002 记的是"重复的基础设施约 150 行，对三包 13672 行约 1%"
 - **`inventory` / `policy` 的条目 schema**：被管理对象不同（skill、插件贡献、MCP 行、模型路由）。
 - **mcp 的 `carrier` / `pool` / `gate`**：只有 mcp 需要。
 - **`tools`**：mcp 与 model 各一套，语义无关。
+- **`transact`（写事务）**：三份签名与错误传播约定不同——plugin 吞掉错误、写进 warnings、返回 boolean；mcp 与 skill 抛异常由 `applyCommands` 记。统一会改掉两个包的语义，只共享它读的那一步（`readText`）。
 
 边界（客户端）：四份 `client.js` 是手写单文件，宿主不打包它，只能 `require('react')`。共享的只有队列、冻结排序、面板通用件与 i18n 表，**在构建期拼进各包的 `client.js`**，不做运行时跨包 `require`。
 
