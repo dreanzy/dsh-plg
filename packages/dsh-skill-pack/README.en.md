@@ -36,16 +36,22 @@ Restart the Host and refresh the page. Two entry points: the chip at the right o
 
 ## Editing and saving
 
-The pack and workspace pages write immediately; there is no draft. Creating, renaming, and deleting groups, and moving a skill between groups, also write immediately.
+Edits queue up in the panel; nothing is written until you press Save ([ADR 0006](../../docs/adr/0006-pending-changes-before-commit.md)):
 
-> Earlier builds had a "保存 / 撤销" draft inside the sidebar panel. It was removed together with the sidebar entry. See [docs/adr/0005-draft-and-save.md](docs/adr/0005-draft-and-save.md) (no longer applicable).
+- Flipping a switch, changing a binding, renaming, creating — all of it only enqueues. The panel immediately renders what the change would look like, using a host-side **dry run**.
+- A bar pinned to the bottom of the panel shows the count and offers Undo (drops the last change), Discard all, and Save.
+- While changes are pending the list order is frozen; it re-sorts only after saving. Pending rows carry a vertical rule on the left.
+- Closing the panel discards pending changes. That is deliberate: by the time you come back you usually no longer remember what you clicked.
+
+Deleting is the exception: it takes effect immediately and cannot be undone, so the button turns into a red-outlined "确认" and needs a second click.
+Pending changes that reference the deleted object are dropped with it, and the panel says how many.
 
 ## Interface
 
 - Settings → Skill Pack has three pages: `分组` / `分包` / `工作区`.
 - Groups fold by group; expand one to reassign members inline. Search matches both skill names and group names.
 - Packs edits the pack list and the switches inside a pack. On `default` there are only on and off — it is the end of the chain, with no layer above.
-- Workspaces lists directories that have sessions plus manually added paths, one pack dropdown per row.
+- Workspaces lists directories that have sessions, one pack dropdown per row. Directories come from the host; this page only decides bindings, it never adds or removes them.
 
 ## Files
 
