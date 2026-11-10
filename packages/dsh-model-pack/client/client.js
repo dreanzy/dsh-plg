@@ -2418,6 +2418,14 @@ window.__ModuleLoader__.load({
      */
     function PackRoster(props) {
       const packs = props.packs
+      /*
+       * 磁盘上真实存在的 pack id。
+       *
+       * 刚新建、还没保存的 pack 只在试算视图里，磁盘上没有实体：给它删除按钮只会得到
+       * 一条「不存在，已忽略」的告警，而那条「新建」命令还留在队列里。这类行改成
+       * 禁用删除并说明「用撤销撤回新建」。
+       */
+      const realIds = props.realIds || new Set()
       const bindings = props.bindings
       const expanded = props.expanded
       const isPending = props.isPending
@@ -2548,15 +2556,17 @@ window.__ModuleLoader__.load({
                   ),
               entry.isDefault
                 ? null
-                : h(ConfirmButton, {
-                    confirmLabel: '确认',
-                    disabled: false,
-                    title:
-                      boundCwds(entry.id).length === 0
-                        ? '删除 pack（当场写盘，不可撤销）'
-                        : '删除 pack（还被 ' + String(boundCwds(entry.id).length) + ' 个工作区绑定，删除后它们回落到默认）',
-                    onConfirm: () => onDelete(entry.id, entry.name),
-                  }),
+                : realIds.has(entry.id)
+                  ? h(ConfirmButton, {
+                      confirmLabel: '确认',
+                      disabled: false,
+                      title:
+                        boundCwds(entry.id).length === 0
+                          ? '删除 pack（当场写盘，不可撤销）'
+                          : '删除 pack（还被 ' + String(boundCwds(entry.id).length) + ' 个工作区绑定，删除后它们回落到默认）',
+                      onConfirm: () => onDelete(entry.id, entry.name),
+                    })
+                  : h(Button, { disabled: true, title: '这张 pack 还没保存，用「撤销」撤回新建' }, '删除'),
             ),
             open
               ? h(
@@ -2898,6 +2908,8 @@ window.__ModuleLoader__.load({
         current === 'packs'
           ? h(PackRoster, {
               packs: packs,
+              // 只把磁盘上真实存在的 id 传下去：新建还没保存的那些不给删除按钮。
+              realIds: new Set(base !== null ? Object.keys(packsOf(base)) : []),
               bindings: bindings.bindings,
               expanded: expanded,
               isPending: packPending,

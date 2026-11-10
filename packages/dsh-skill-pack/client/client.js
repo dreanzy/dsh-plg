@@ -1684,6 +1684,14 @@ window.__ModuleLoader__.load({
        * 删除是当场写盘的：队列里引用被删对象的命令先剔掉，再写。
        * 丢掉条数要说出来——无声丢改动比丢改动本身更糟。
        */
+      /**
+       * 删除：当场写盘，并把队列里引用它的命令剔掉。
+       *
+       * 只对**磁盘上真实存在**的对象调用——刚新建还没保存的那些，行上不给删除按钮：
+       * 它们在磁盘上没有实体，删掉没有意义，真发一条 delete 过去服务端只会回
+       * 「不存在，已忽略」，一条用户看不懂的告警，而那条「新建」命令还留在队列里，
+       * 对象过一会儿又冒出来。想反悔，用「撤销」。
+       */
       const deleteWith = (what, predicate, commands) => {
         const removed = pending.drop(predicate)
         run(commands)
@@ -1865,6 +1873,14 @@ window.__ModuleLoader__.load({
 
       const groups = data.groups.groups
       const needle = query.trim().toLowerCase()
+      /*
+       * 磁盘上真实存在的分组 id。
+       *
+       * 刚新建、还没保存的分组只在试算视图里，磁盘上没有实体：给它删除按钮只会得到
+       * 一条「不存在，已忽略」的告警，而那条「新建」命令还留在队列里。这类行改成
+       * 禁用删除并说明「用撤销撤回新建」。
+       */
+      const realGroupIds = new Set((base.groups ? base.groups.groups : []).map((group) => group.id))
 
       const buckets = useMemo(() => {
         const matchRow = (row) =>
@@ -2075,10 +2091,12 @@ window.__ModuleLoader__.load({
                   )
                 : null,
               bucket.id !== null
-                ? h(ConfirmButton, {
-                    title: '删除分组（成员回到未分组，不可撤销）',
-                    onConfirm: () => props.onDeleteGroup(bucket.id, bucket.name),
-                  })
+                ? realGroupIds.has(bucket.id)
+                  ? h(ConfirmButton, {
+                      title: '删除分组（成员回到未分组，不可撤销）',
+                      onConfirm: () => props.onDeleteGroup(bucket.id, bucket.name),
+                    })
+                  : h(Button, { disabled: true, title: '这张分组还没保存，用「撤销」撤回新建' }, '删除')
                 : null,
             ),
             isCollapsed
@@ -2129,6 +2147,8 @@ window.__ModuleLoader__.load({
       const pending = props.pending || { count: 0, keys: new Set() }
       const frozen = pending.count > 0
       const packs = data.packs
+      /** 磁盘上真实存在的 pack id；刚新建还没保存的那些不在里面。 */
+      const realPackIds = new Set((base.packs || []).map((entry) => entry.id))
       const defaultPack = defaultPackOf(packs)
       const [selected, setSelected] = useState(DEFAULT_PACK_ID)
       const [query, setQuery] = useState('')
@@ -2154,8 +2174,7 @@ window.__ModuleLoader__.load({
         for (const group of base.groups ? base.groups.groups : []) map.set(group.id, group.name)
         return map
       }, [base])
-      /** 这张 pack 有没有未保存的改动：改名、项级或组级开关任一命中即算。 */
-      const dirtyOf = (packId) => {
+      /** 这张 pack 有没有未保存的改动：改名、项级或组级开关任一命中即算。 */      const dirtyOf = (packId) => {
         const itemPrefix = 'packItem:' + packId + ':'
         const groupPrefix = 'packGroup:' + packId + ':'
         for (const key of pending.keys) {
@@ -2323,13 +2342,15 @@ window.__ModuleLoader__.load({
                   ),
               entry.builtin
                 ? null
-                : h(ConfirmButton, {
-                    title: '删除 pack（指向它的绑定会变成悬空引用，按默认求值；不可撤销）',
-                    onConfirm: () => {
-                      props.onDeletePack(entry.id, entry.name)
-                      if (entry.id === selected) setSelected(DEFAULT_PACK_ID)
-                    },
-                  }),
+                : realPackIds.has(entry.id)
+                  ? h(ConfirmButton, {
+                      title: '删除 pack（指向它的绑定会变成悬空引用，按默认求值；不可撤销）',
+                      onConfirm: () => {
+                        props.onDeletePack(entry.id, entry.name)
+                        if (entry.id === selected) setSelected(DEFAULT_PACK_ID)
+                      },
+                    })
+                  : h(Button, { disabled: true, title: '这张 pack 还没保存，用「撤销」撤回新建' }, '删除'),
             ),
           ),
           h(

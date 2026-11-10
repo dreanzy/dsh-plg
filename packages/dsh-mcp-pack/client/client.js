@@ -2226,6 +2226,14 @@ window.__ModuleLoader__.load({
       const groups = groupsOf(data)
       const registry = groups.groups
       const needle = query.trim().toLowerCase()
+      /*
+       * 磁盘上真实存在的分组 id。
+       *
+       * 刚新建、还没保存的分组只在试算视图里，磁盘上没有实体：给它删除按钮只会得到
+       * 一条「不存在，已忽略」的告警，而那条「新建」命令还留在队列里。这类行改成
+       * 禁用删除并说明「用撤销撤回新建」。
+       */
+      const realGroupIds = new Set((base.groups ? base.groups.groups : []).map((group) => group.id))
 
       const buckets = useMemo(() => {
         const matchRow = (row) =>
@@ -2435,10 +2443,12 @@ window.__ModuleLoader__.load({
                   )
                 : null,
               bucket.id !== null
-                ? h(ConfirmButton, {
-                    title: '删除分组（成员回到未分组，不可撤销）',
-                    onConfirm: () => props.onDeleteGroup(bucket.id, bucket.name),
-                  })
+                ? realGroupIds.has(bucket.id)
+                  ? h(ConfirmButton, {
+                      title: '删除分组（成员回到未分组，不可撤销）',
+                      onConfirm: () => props.onDeleteGroup(bucket.id, bucket.name),
+                    })
+                  : h(Button, { disabled: true, title: '这张分组还没保存，用「撤销」撤回新建' }, '删除')
                 : null,
             ),
             isCollapsed
@@ -2926,6 +2936,8 @@ window.__ModuleLoader__.load({
       const pending = props.pending || { count: 0, keys: new Set() }
       const frozen = pending.count > 0
       const packs = Array.isArray(data.packs) ? data.packs : []
+      /** 磁盘上真实存在的 pack id；刚新建还没保存的那些不在里面。 */
+      const realPackIds = new Set((base.packs || []).map((entry) => entry.id))
       const groups = groupsOf(data)
       const rows = rowsOf(data)
       const defaultPack = defaultPackOf(packs)
@@ -3127,13 +3139,15 @@ window.__ModuleLoader__.load({
                   ),
               entry.builtin
                 ? null
-                : h(ConfirmButton, {
-                    title: '删除 pack（指向它的绑定会变成悬空引用，按默认 求值；不可撤销）',
-                    onConfirm: () => {
-                      props.onDeletePack(entry.id, entry.name)
-                      if (entry.id === selected) setSelected(DEFAULT_PACK_ID)
-                    },
-                  }),
+                : realPackIds.has(entry.id)
+                  ? h(ConfirmButton, {
+                      title: '删除 pack（指向它的绑定会变成悬空引用，按默认 求值；不可撤销）',
+                      onConfirm: () => {
+                        props.onDeletePack(entry.id, entry.name)
+                        if (entry.id === selected) setSelected(DEFAULT_PACK_ID)
+                      },
+                    })
+                  : h(Button, { disabled: true, title: '这张 pack 还没保存，用「撤销」撤回新建' }, '删除'),
             ),
           ),
           h(
