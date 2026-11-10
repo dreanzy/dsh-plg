@@ -1,6 +1,6 @@
 {
   "name": "@dreanzy/dsh-plugin-pack",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "按工作区停用 DSH 插件：把插件的工具与提示词段从模型可见范围里摘掉，按 pack 分组管理。",
   "keywords": [
     "dsh",

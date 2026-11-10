@@ -1,6 +1,6 @@
 {
   "name": "@dreanzy/dsh-skill-pack",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "按工作区控制 DSH skill 的可用性：工作区绑定一个 pack，pack 是具名的开关表。",
   "keywords": [
     "dsh",
