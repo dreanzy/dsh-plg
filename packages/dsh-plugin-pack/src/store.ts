@@ -317,6 +317,9 @@ function applyToGroups(current: string | undefined, commands: readonly Command[]
     if (command.op === 'createGroup') {
       const name = command.name.trim()
       if (name === '') throw new Error('分组名不能为空')
+      // 重名必须在写入前拦住：同一批命令里的前一条已经进 `groups`，所以这条检查
+      // 对批量新建同样成立。放过去就会在名册里留下两张同名分组，界面上无法区分。
+      if (groups.some((group) => group.name === name)) throw new Error(`分组名已存在：${name}`)
       // id 稳定且与名字脱钩：改名不需要扫任何工程文件。
       const id = nextGroupId(groups)
       groups = [...groups, { id, name }]
@@ -326,6 +329,9 @@ function applyToGroups(current: string | undefined, commands: readonly Command[]
       const name = command.name.trim()
       if (name === '') throw new Error('分组名不能为空')
       if (!known().has(command.groupId)) throw new Error(`未知分组：${command.groupId}`)
+      if (groups.some((group) => group.id !== command.groupId && group.name === name)) {
+        throw new Error(`分组名已存在：${name}`)
+      }
       groups = groups.map((group) =>
         group.id === command.groupId ? { id: group.id, name } : group,
       )

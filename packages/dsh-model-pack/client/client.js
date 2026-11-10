@@ -1669,6 +1669,16 @@ window.__ModuleLoader__.load({
       const discard = useCallback(() => setEntries([]), [])
 
       /**
+       * 强制让那份试算重算一次。
+       *
+       * 删除走另一条写盘路径：队列里的命令原封不动时 `entries` 不变、effect 不会重跑，
+       * 被删掉的 pack 就会一直留在按试算视图渲染的面板上。删除后必须踢一脚。
+       */
+      const refresh = useCallback(() => {
+        setEntries((prev) => prev.slice())
+      }, [])
+
+      /**
        * 丢掉命中 predicate 的命令，返回丢掉了几条。
        *
        * 删除是当场写盘的，队列里引用被删对象的命令（改它的名、给它设开关、
@@ -1713,6 +1723,7 @@ window.__ModuleLoader__.load({
         undo: undo,
         discard: discard,
         drop: drop,
+        refresh: refresh,
         commit: commit,
         count: entries.length,
       }
@@ -2521,11 +2532,23 @@ window.__ModuleLoader__.load({
                   ),
               h('span', { style: S.badge }, String(configured(entry)) + ' 处配置'),
               dirty ? h(Tag, { title: '这张 pack 有未保存的改动' }, '待保存') : null,
+              // 双击也能改名，但按钮要留着：不给入口，用户不知道这张能改名。
+              entry.isDefault
+                ? null
+                : h(
+                    Button,
+                    {
+                      title: '重命名 pack',
+                      onClick: (event) => {
+                        event.stopPropagation()
+                        setRenaming(entry.id)
+                      },
+                    },
+                    '编辑',
+                  ),
               entry.isDefault
                 ? null
                 : h(ConfirmButton, {
-                    // 行内动作统一用图标：这一行本来就窄，文字按钮会把 pack 名挤掉。
-                    label: '✕',
                     confirmLabel: '确认',
                     disabled: false,
                     title:
@@ -2683,7 +2706,9 @@ window.__ModuleLoader__.load({
       const data = pending.preview.data !== null ? pending.preview.data : base
       const frozen = pending.count > 0
       const frozenOrder = useMemo(
-        () => (frozen && base !== null ? Object.keys(packsOf(base)) : null),
+        // 排序键取「改动前那份视图正常显示时的 id 序」，不是 `Object.keys(packs)` 的
+        // 数组位置：正常显示是按 id 排序的，用原始位置会在一进入待保存状态时重排一次。
+        () => (frozen && base !== null ? packListOf(base).map((entry) => entry.id) : null),
         [frozen, base],
       )
       const packs = useMemo(() => packListOf(data, frozenOrder), [data, frozenOrder])
@@ -2813,6 +2838,9 @@ window.__ModuleLoader__.load({
         if (expanded === packId) setExpanded(null)
         setNotice(removed > 0 ? '已删除「' + name + '」，并丢弃对它的 ' + removed + ' 项未保存改动' : null)
         void run([{ op: 'deletePack', packId: packId }])
+        // 队列可能一条都没被删掉，`entries` 引用不变、试算不会重跑；踢一脚让这张 pack
+        // 立刻从名册上消失。
+        pending.refresh()
       }
 
       const commit = () => {

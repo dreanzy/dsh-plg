@@ -335,3 +335,31 @@ test('previewCommands 混入一次真写后视图不变：试算不碰盘', asyn
   const state = await loadState(null)
   assert.deepEqual(Object.keys(state.packs.packs), ['default', 'p1'])
 })
+
+/**
+ * 分组重名守卫：两张同名分组在名册里区分不开，写入前拦住比重名落盘后再找便宜。
+ * 整份文件本次不应用，与其它非法命令同一口径。
+ */
+test('同名分组不会被重复创建：整份 groups.json 这次不应用', async () => {
+  await freshHome()
+  await applyCommands(null, [{ op: 'createGroup', name: '前端' }])
+  const before = await readFile(groupsPath(), 'utf8')
+
+  const state = await applyCommands(null, [{ op: 'createGroup', name: '前端' }])
+  assert.equal(state.warnings.length, 1)
+  assert.match(state.warnings[0], /分组名已存在/)
+  assert.equal(await readFile(groupsPath(), 'utf8'), before)
+})
+
+test('renameGroup 撞上已有名字同样被拒', async () => {
+  await freshHome()
+  await applyCommands(null, [
+    { op: 'createGroup', name: 'A' },
+    { op: 'createGroup', name: 'B' },
+  ])
+  const groups = JSON.parse(await readFile(groupsPath(), 'utf8')).groups
+  const b = groups.find((group) => group.name === 'B')
+
+  const state = await applyCommands(null, [{ op: 'renameGroup', groupId: b.id, name: 'A' }])
+  assert.match(state.warnings.join('\n'), /分组名已存在/)
+})

@@ -92,9 +92,9 @@ window.__ModuleLoader__.load({
      * `.rowActions .secondaryButton`）：高 28px、左右 10px、12px 字、`--dsw-radius-sm`。
      * 颜色一律留在类里：内联写 `background` / `color` 会压掉 `:hover`（ui-baseline 红线 7）。
      *
-     * 删除确认态抄官方的危险按钮：红字 + 红描边，hover 用
+     * 删除确认态抄官方的危险按钮：浅红底 + 红字，hover 用
      * `--dsw-alias-interactive-bg-hover-danger`。官方二次确认是弹窗，这里压成行内两段，
-     * 所以描边比官方常态更明显——它是「已经进入危险态」的唯一提示。
+     * 所以只换底色与字重、不加描边；加重靠底色，靠描边会像被框住的一块错误。
      */
     const PANEL_CSS =
       '.dsh-mcp-pack-btn { transition: background 120ms ease, border-color 120ms ease, color 120ms ease }' +
@@ -596,14 +596,14 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * 删除的二次确认：第一次点变成「确认」（红字 + 红描边），再点一次才执行。
+     * 删除的二次确认：第一次点变成「确认」（浅红底 + 红字），再点一次才执行。
      *
      * 不用弹窗：这类删除都发生在列表行里，弹窗要额外一次「关闭」动作；
      * 行内二次确认把成本压到一次点击，误点的代价只是多看一眼。
      * 进入确认态后 4 秒自动撤销，点别处也撤销，避免一直停在危险状态。
      *
      * 删除是唯一「点了就没了」的动作（不进待保存队列），
-     * 所以确认态必须比常态明显：文案换成「确认」、红字、加红描边。
+     * 所以确认态必须比常态明显：文案换成「确认」、红字、浅红底。
      */
     function ConfirmButton(props) {
       const [armed, setArmed] = useState(false)
@@ -738,24 +738,40 @@ window.__ModuleLoader__.load({
       const undo = useCallback(() => setEntries((prev) => prev.slice(0, -1)), [])
       const discard = useCallback(() => setEntries([]), [])
 
+      /*
+       * 队列的实时快照。
+       *
+       * `commit` / `drop` 若读闭包里的 `entries`，拿到的可能是上一次渲染的那一份：
+       * 「改完文字直接点保存」时失焦与点击挤在同一次交互里，最后一条命令就会掉。
+       */
+      const entriesRef = useRef(entries)
+      entriesRef.current = entries
+
+      /**
+       * 强制让那份试算重算一次。
+       *
+       * 删除走另一条写盘路径：队列里的命令原封不动时 `entries` 不变、effect 不会重跑，
+       * 被删掉的对象就会一直留在按试算视图渲染的面板上。删除后必须踢一脚。
+       */
+      const refresh = useCallback(() => {
+        setEntries((prev) => prev.slice())
+      }, [])
+
       /**
        * 丢掉命中 predicate 的命令，返回丢掉了几条。
        *
        * 删除是当场写盘的，队列里引用被删对象的命令（改它的名、给它设开关、
        * 绑到它）在删除之后都落不了地，留着只会在保存时报错。
        */
-      const drop = useCallback(
-        (predicate) => {
-          const victims = entries.filter((entry) => predicate(entry.command))
-          if (victims.length === 0) return 0
-          setEntries((prev) => prev.filter((entry) => !predicate(entry.command)))
-          return victims.length
-        },
-        [entries],
-      )
+      const drop = useCallback((predicate) => {
+        const victims = entriesRef.current.filter((entry) => predicate(entry.command))
+        if (victims.length === 0) return 0
+        setEntries((prev) => prev.filter((entry) => !predicate(entry.command)))
+        return victims.length
+      }, [])
 
       const commit = useCallback(async () => {
-        const commands = entries.map((entry) => entry.command)
+        const commands = entriesRef.current.map((entry) => entry.command)
         if (commands.length === 0) return true
         try {
           const data = await latest.current.apply(commands)
@@ -766,7 +782,7 @@ window.__ModuleLoader__.load({
           setPreview((prev) => ({ ...prev, error: String(error.message || error) }))
           return false
         }
-      }, [entries])
+      }, [])
 
       /** 被改动命中的键，供行渲染标出「这一行还没保存」。 */
       const keys = useMemo(() => {
@@ -783,6 +799,7 @@ window.__ModuleLoader__.load({
         undo: undo,
         discard: discard,
         drop: drop,
+        refresh: refresh,
         commit: commit,
         count: entries.length,
       }
@@ -1185,7 +1202,7 @@ window.__ModuleLoader__.load({
      * 服务是否在 `ctx` 上由 `inject` 决定：声明了才可能有值。但 `ctx.get` 对取不到
      * 的已声明服务是**抛错**而不是返回 undefined，所以探测必须包 try/catch——
      * 这一行漏了会让整个 client 模块加载失败，桌面端直接起不来。
-     * 取不到就退化成 `remote: null`，工作区清单只剩 extra 里的路径，其它功能照常。
+     * 取不到就退化成 `remote: null`，工作区页会空着，其它功能照常。
      */
     function createHost(ctx) {
       let remote = null
@@ -1433,7 +1450,7 @@ window.__ModuleLoader__.load({
     /**
      * 已知工作区：从会话列表里取 cwd，排除子代理会话，按最近更新倒序去重，
      * 当前会话所在目录置顶。取不到会话时返回空列表——面板仍能编辑 pack，
-     * 只是工作区页里只剩手动添加的路径。
+     * 只是工作区页会空着。
      */
     async function listWorkspaceCwds(host, sessionId) {
       const session = host && host.remote ? host.remote.session : null
@@ -1989,6 +2006,9 @@ window.__ModuleLoader__.load({
       const deleteWith = (what, predicate, commands) => {
         const removed = pending.drop(predicate)
         run(commands)
+        // 队列可能一条都没被删掉，`entries` 引用不变、试算不会重跑；踢一脚让被删的对象
+        // 立刻从面板上消失，而不是等到下一次改动。
+        pending.refresh()
         setNotice(removed > 0 ? '已删除「' + what + '」，并丢弃对它的 ' + removed + ' 项未保存改动' : null)
       }
 
@@ -2545,6 +2565,9 @@ window.__ModuleLoader__.load({
         if (!isOwned(row)) return
         // 定义没了，队列里对这一行的开关与归属都落不了地：先剔掉，并把丢了几项说出来。
         const removed = props.pending && props.rowDeps ? props.pending.drop(props.rowDeps(rowKey)) : 0
+        // 定义的增删走独立路由，队列里的命令可能原封不动：试算得重新跑一次，
+        // 否则被删的行还挂在面板上。
+        if (props.pending) props.pending.refresh()
         if (removed > 0 && props.notify) props.notify('已删除「' + rowNameOf(row) + '」，并丢弃对它的 ' + removed + ' 项未保存改动')
         api.servers({ op: 'remove', name: rowNameOf(row) }).then(
           () => {
@@ -3346,7 +3369,7 @@ window.__ModuleLoader__.load({
     return {
       // `remote` 与 `remote.session` 都是独立服务名：只声明 `remote` 拿不到 session。
       // 声明是「服务在不在 ctx 上」的唯一开关；取用仍要 try/catch（ctx.get 对取不到的
-      // 已声明服务会抛错）。缺了这两个，工作区清单只剩手动添加的路径。
+      // 已声明服务会抛错）。缺了这两个，工作区页会空着。
       // `locale` 只用来判断 chip 的缺省文案该写「默认」还是 Default。
       inject: ['slots', 'remote', 'remote.session'],
       apply(ctx) {

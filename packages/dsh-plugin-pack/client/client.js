@@ -75,9 +75,9 @@ window.__ModuleLoader__.load({
      * `.rowActions .secondaryButton`）：高 28px、左右 10px、12px 字、`--dsw-radius-sm`。
      * 颜色一律留在类里：内联写 `background` / `color` 会压掉 `:hover`（ui-baseline 红线 7）。
      *
-     * 删除确认态抄官方的危险按钮：红字 + 红描边，hover 用
+     * 删除确认态抄官方的危险按钮：浅红底 + 红字，hover 用
      * `--dsw-alias-interactive-bg-hover-danger`。官方二次确认是弹窗，这里压成行内两段，
-     * 所以描边比官方常态更明显——它是「已经进入危险态」的唯一提示。
+     * 所以只换底色与字重、不加描边；加重靠底色，靠描边会像被框住的一块错误。
      */
     const PANEL_CSS =
       '.dsh-plugin-pack-btn { transition: background 120ms ease, border-color 120ms ease, color 120ms ease }' +
@@ -894,24 +894,40 @@ window.__ModuleLoader__.load({
       const undo = useCallback(() => setEntries((prev) => prev.slice(0, -1)), [])
       const discard = useCallback(() => setEntries([]), [])
 
+      /*
+       * 队列的实时快照。
+       *
+       * `commit` / `drop` 若读闭包里的 `entries`，拿到的可能是上一次渲染的那一份：
+       * 「改完文字直接点保存」时失焦与点击挤在同一次交互里，最后一条命令就会掉。
+       */
+      const entriesRef = useRef(entries)
+      entriesRef.current = entries
+
+      /**
+       * 强制让那份试算重算一次。
+       *
+       * 删除走另一条写盘路径：队列里的命令原封不动时 `entries` 不变、effect 不会重跑，
+       * 被删掉的对象就会一直留在按试算视图渲染的面板上。删除后必须踢一脚。
+       */
+      const refresh = useCallback(() => {
+        setEntries((prev) => prev.slice())
+      }, [])
+
       /**
        * 丢掉命中 predicate 的命令，返回丢掉了几条。
        *
        * 删除是当场写盘的，队列里引用被删对象的命令（改它的名、给它设开关、
        * 绑到它、把它归到被删的组）在删除之后都落不了地，留着只会在保存时报错。
        */
-      const drop = useCallback(
-        (predicate) => {
-          const victims = entries.filter((entry) => predicate(entry.command))
-          if (victims.length === 0) return 0
-          setEntries((prev) => prev.filter((entry) => !predicate(entry.command)))
-          return victims.length
-        },
-        [entries],
-      )
+      const drop = useCallback((predicate) => {
+        const victims = entriesRef.current.filter((entry) => predicate(entry.command))
+        if (victims.length === 0) return 0
+        setEntries((prev) => prev.filter((entry) => !predicate(entry.command)))
+        return victims.length
+      }, [])
 
       const commit = useCallback(async () => {
-        const commands = entries.map((entry) => entry.command)
+        const commands = entriesRef.current.map((entry) => entry.command)
         if (commands.length === 0) return true
         try {
           const data = await latest.current.apply(commands)
@@ -922,7 +938,7 @@ window.__ModuleLoader__.load({
           setPreview((prev) => ({ ...prev, error: String(error.message || error) }))
           return false
         }
-      }, [entries])
+      }, [])
 
       /** 被改动命中的键，供行渲染标出「这一行还没保存」。 */
       const keys = useMemo(() => {
@@ -939,6 +955,7 @@ window.__ModuleLoader__.load({
         undo: undo,
         discard: discard,
         drop: drop,
+        refresh: refresh,
         commit: commit,
         count: entries.length,
       }
@@ -1958,6 +1975,9 @@ window.__ModuleLoader__.load({
       const deleteWith = (what, predicate, commands) => {
         const removed = pending.drop(predicate)
         run(commands)
+        // 队列可能一条都没被删掉，`entries` 引用不变、试算不会重跑；踢一脚让被删的对象
+        // 立刻从面板上消失，而不是等到下一次改动。
+        pending.refresh()
         setNotice(removed > 0 ? '已删除「' + what + '」，并丢弃对它的 ' + removed + ' 项未保存改动' : null)
       }
 
@@ -2209,6 +2229,23 @@ window.__ModuleLoader__.load({
       const matched = buckets.reduce((list, bucket) => list.concat(bucket.rows), [])
       const assignTo = (row, groupId) =>
         queue([{ op: 'assign', name: itemKey(row), groupId: groupId === '' ? null : groupId }])
+
+      /**
+       * 改分组名：撞上已有名字时当场说一句，不入队。
+       *
+       * 交给服务端拒也行，但那一步会让整份 groups.json 这次不应用——保存后队列清空、
+       * 名字悄悄没改，用户只会觉得「点了没反应」。
+       */
+      const renameGroupOf = (groupId, current, next) => {
+        const trimmed = String(next || '').trim()
+        if (trimmed === '' || trimmed === current) return
+        const clash = registry.some((group) => group.id !== groupId && group.name === trimmed)
+        if (clash) {
+          if (props.notify) props.notify('已存在同名分组：' + trimmed)
+          return
+        }
+        queue([{ op: 'renameGroup', groupId: groupId, name: trimmed }])
+      }
       // 一批 assign 走同一次入队：逐个发在几十项时会被乱序返回的响应来回覆盖。
       // 每条 assign 命中各自的 `assign:<包名>`，所以计数就是 N，「撤销」一次只退一条。
       const assignAll = () => {
@@ -2306,10 +2343,8 @@ window.__ModuleLoader__.load({
                     style: S.groupInput,
                     onClick: (event) => event.stopPropagation(),
                     onBlur: (event) => {
-                      const trimmed = String(event.target.value || '').trim()
                       setEditing(null)
-                      if (trimmed === '' || trimmed === bucket.name) return
-                      queue([{ op: 'renameGroup', groupId: bucket.id, name: trimmed }])
+                      renameGroupOf(bucket.id, bucket.name, event.target.value)
                     },
                     onKeyDown: (event) => {
                       if (event.key === 'Enter') event.target.blur()
@@ -2548,6 +2583,17 @@ window.__ModuleLoader__.load({
 
       if (pack === null) return h('div', { style: S.hint }, '没有可用的 pack')
 
+      /** 改 pack 名：与新建同样先在本地查重，别让服务端拒掉整份 packs.json。 */
+      const renamePackOf = (packId, current, next) => {
+        const trimmed = String(next || '').trim()
+        if (trimmed === '' || trimmed === current) return
+        if (packs.some((entry) => entry.id !== packId && entry.name === trimmed)) {
+          if (props.notify) props.notify('已存在同名 pack：' + trimmed)
+          return
+        }
+        queue([{ op: 'renamePack', packId: packId, name: trimmed }])
+      }
+
       const createPack = () => {
         const trimmed = newName.trim()
         if (trimmed === '') return
@@ -2613,10 +2659,8 @@ window.__ModuleLoader__.load({
                     style: S.groupInput,
                     onClick: (event) => event.stopPropagation(),
                     onBlur: (event) => {
-                      const trimmed = String(event.target.value || '').trim()
                       setEditing(null)
-                      if (trimmed === '' || trimmed === entry.name) return
-                      queue([{ op: 'renamePack', packId: entry.id, name: trimmed }])
+                      renamePackOf(entry.id, entry.name, event.target.value)
                     },
                     onKeyDown: (event) => {
                       if (event.key === 'Enter') event.target.blur()

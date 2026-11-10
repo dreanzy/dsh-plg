@@ -74,7 +74,7 @@ export function promptsPath(options: PackPathOptions = {}): string {
   return homeJoin(options.home, 'packs', 'model', 'prompts.json')
 }
 
-/** `$DSH_HOME/packs/model/workspaces.json`：工作区 → pack 的绑定表与手动添加的路径。 */
+/** `$DSH_HOME/packs/model/workspaces.json`：工作区 → pack 的绑定表。 */
 export function workspacesPath(options: PackPathOptions = {}): string {
   return homeJoin(options.home, 'packs', 'model', 'workspaces.json')
 }

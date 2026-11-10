@@ -423,7 +423,8 @@ export function parseCommands(
         commands.push({ op: 'bind', cwd, packId })
         break
       }
-      case 'assign': {        const rowKey = readNonEmpty(record, 'rowKey')
+      case 'assign': {
+        const rowKey = readNonEmpty(record, 'rowKey')
         if (rowKey === null) return bad(index, 'rowKey 必须是非空字符串')
         const groupId = record['groupId']
         if (groupId !== null && (typeof groupId !== 'string' || groupId === '')) {

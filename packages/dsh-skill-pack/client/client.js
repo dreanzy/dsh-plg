@@ -45,9 +45,9 @@ window.__ModuleLoader__.load({
      * `.rowActions .secondaryButton`）：高 28px、左右 10px、12px 字、`--dsw-radius-sm`。
      * 颜色一律留在类里：内联写 `background` / `color` 会压掉 `:hover`（ui-baseline 红线 7）。
      *
-     * 删除确认态抄官方的危险按钮：红字 + 红描边，hover 用
+     * 删除确认态抄官方的危险按钮：浅红底 + 红字，hover 用
      * `--dsw-alias-interactive-bg-hover-danger`。官方二次确认是弹窗，这里压成行内两段，
-     * 所以描边比官方常态更明显——它是「已经进入危险态」的唯一提示。
+     * 所以只换底色与字重、不加描边；加重靠底色，靠描边会像被框住的一块错误。
      */
     /**
      * 待保存行的底色。
@@ -686,14 +686,14 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * 删除的二次确认：第一次点变成「确认」（红字 + 红描边），再点一次才执行。
+     * 删除的二次确认：第一次点变成「确认」（浅红底 + 红字），再点一次才执行。
      *
      * 不用弹窗：这类删除都发生在列表行里，弹窗要额外一次「关闭」动作；
      * 行内二次确认把成本压到一次点击，误点的代价只是多看一眼。
      * 进入确认态后 4 秒自动撤销，点别处也撤销，避免一直停在危险状态。
      *
      * 删除是唯一「点了就没了」的动作（不进待保存队列，见 ADR 0006），
-     * 所以确认态必须比常态明显：文案换成「确认」、红字、加红描边。
+     * 所以确认态必须比常态明显：文案换成「确认」、红字、浅红底。
      */
     function ConfirmButton(props) {
       const [armed, setArmed] = useState(false)
@@ -829,24 +829,40 @@ window.__ModuleLoader__.load({
       const undo = useCallback(() => setEntries((prev) => prev.slice(0, -1)), [])
       const discard = useCallback(() => setEntries([]), [])
 
+      /*
+       * 队列的实时快照。
+       *
+       * `commit` / `drop` 若读闭包里的 `entries`，拿到的可能是上一次渲染的那一份：
+       * 「改完文字直接点保存」时失焦与点击挤在同一次交互里，最后一条命令就会掉。
+       */
+      const entriesRef = useRef(entries)
+      entriesRef.current = entries
+
+      /**
+       * 强制让那份试算重算一次。
+       *
+       * 删除是写盘走另一条路的：队列里的命令原封不动时 `entries` 不变，effect 不会重跑，
+       * 被删掉的对象就会一直留在按试算视图渲染的面板上。删除后必须踢一脚。
+       */
+      const refresh = useCallback(() => {
+        setEntries((prev) => prev.slice())
+      }, [])
+
       /**
        * 丢掉命中 predicate 的命令，返回丢掉了几条。
        *
        * 删除是当场写盘的，队列里引用被删对象的命令（改它的名、给它设开关、
        * 绑到它）在删除之后都落不了地，留着只会在保存时报错。
        */
-      const drop = useCallback(
-        (predicate) => {
-          const victims = entries.filter((entry) => predicate(entry.command))
-          if (victims.length === 0) return 0
-          setEntries((prev) => prev.filter((entry) => !predicate(entry.command)))
-          return victims.length
-        },
-        [entries],
-      )
+      const drop = useCallback((predicate) => {
+        const victims = entriesRef.current.filter((entry) => predicate(entry.command))
+        if (victims.length === 0) return 0
+        setEntries((prev) => prev.filter((entry) => !predicate(entry.command)))
+        return victims.length
+      }, [])
 
       const commit = useCallback(async () => {
-        const commands = entries.map((entry) => entry.command)
+        const commands = entriesRef.current.map((entry) => entry.command)
         if (commands.length === 0) return true
         try {
           const data = await latest.current.apply(commands)
@@ -857,7 +873,7 @@ window.__ModuleLoader__.load({
           setPreview((prev) => ({ ...prev, error: String(error.message || error) }))
           return false
         }
-      }, [entries])
+      }, [])
 
       /** 被改动命中的键，供行渲染标出「这一行还没保存」。 */
       const keys = useMemo(() => {
@@ -874,6 +890,7 @@ window.__ModuleLoader__.load({
         undo: undo,
         discard: discard,
         drop: drop,
+        refresh: refresh,
         commit: commit,
         count: entries.length,
       }
@@ -1191,7 +1208,7 @@ window.__ModuleLoader__.load({
     /**
      * 已知工作区：从会话列表里取 cwd，排除子代理会话，按最近更新倒序去重，
      * 当前会话所在目录置顶。取不到会话时返回空列表——面板仍能编辑 pack，
-     * 只是绑定块里只剩手动添加的路径。
+     * 只是工作区清单读不到，其它页照常。
      */
     async function listWorkspaceCwds(host, sessionId) {
       const session = host && host.remote ? host.remote.session : null
@@ -1670,6 +1687,9 @@ window.__ModuleLoader__.load({
       const deleteWith = (what, predicate, commands) => {
         const removed = pending.drop(predicate)
         run(commands)
+        // 队列可能一条都没被删掉，`entries` 引用不变、试算不会重跑；踢一脚让被删的对象
+        // 立刻从面板上消失，而不是等到下一次改动。
+        pending.refresh()
         setNotice(removed > 0 ? '已删除「' + what + '」，并丢弃对它的 ' + removed + ' 项未保存改动' : null)
       }
 
@@ -1899,6 +1919,22 @@ window.__ModuleLoader__.load({
       const matched = buckets.reduce((list, bucket) => list.concat(bucket.rows), [])
       const assignTo = (row, groupId) =>
         queue([{ op: 'assign', name: row.name, groupId: groupId === '' ? null : groupId }])
+
+      /**
+       * 改名：撞上已有名字时当场说一句，不入队。
+       *
+       * 交给服务端拒也行，但那一步会让整份 groups.json 这次不应用——保存后队列清空、
+       * 名字悄悄没改，用户只会觉得「点了没反应」。
+       */
+      const renameGroup = (groupId, current, next) => {
+        const trimmed = String(next || '').trim()
+        if (trimmed === '' || trimmed === current) return
+        if (groups.some((group) => group.id !== groupId && group.name === trimmed)) {
+          if (props.notify) props.notify('已存在同名分组：' + trimmed)
+          return
+        }
+        queue([{ op: 'renameGroup', groupId: groupId, name: trimmed }])
+      }
       // 一批 assign 走同一次请求：逐个发在几十项时会被乱序返回的响应来回覆盖。
       const assignAll = () => {
         if (matched.length === 0) return
@@ -1995,10 +2031,8 @@ window.__ModuleLoader__.load({
                     style: S.groupInput,
                     onClick: (event) => event.stopPropagation(),
                     onBlur: (event) => {
-                      const trimmed = String(event.target.value || '').trim()
                       setEditing(null)
-                      if (trimmed === '' || trimmed === bucket.name) return
-                      queue([{ op: 'renameGroup', groupId: bucket.id, name: trimmed }])
+                      renameGroup(bucket.id, bucket.name, event.target.value)
                     },
                     onKeyDown: (event) => {
                       if (event.key === 'Enter') event.target.blur()
@@ -2190,6 +2224,17 @@ window.__ModuleLoader__.load({
 
       if (pack === null) return h('div', { style: S.hint }, '没有可用的 pack')
 
+      /** 改名：与新建同样先在本地查重，别让服务端拒掉整份 packs.json。 */
+      const renamePack = (packId, current, next) => {
+        const trimmed = String(next || '').trim()
+        if (trimmed === '' || trimmed === current) return
+        if (packs.some((entry) => entry.id !== packId && entry.name === trimmed)) {
+          if (props.notify) props.notify('已存在同名 pack：' + trimmed)
+          return
+        }
+        queue([{ op: 'renamePack', packId: packId, name: trimmed }])
+      }
+
       const createPack = () => {
         const trimmed = newName.trim()
         if (trimmed === '') return
@@ -2233,10 +2278,8 @@ window.__ModuleLoader__.load({
                     style: S.groupInput,
                     onClick: (event) => event.stopPropagation(),
                     onBlur: (event) => {
-                      const trimmed = String(event.target.value || '').trim()
                       setEditing(null)
-                      if (trimmed === '' || trimmed === entry.name) return
-                      queue([{ op: 'renamePack', packId: entry.id, name: trimmed }])
+                      renamePack(entry.id, entry.name, event.target.value)
                     },
                     onKeyDown: (event) => {
                       if (event.key === 'Enter') event.target.blur()
@@ -2422,19 +2465,15 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * 「工作区」页：会话 cwd 去重 + 手动添加的路径，每行一个 pack 下拉。
-     *
-     * 顺序是「说明 → 手动添加 → 列表」：手动添加是入口，放到列表底下等于没有。
-     * 绑定保存时就会对所有 live 会话重新求值（`reapply`），不是只影响新会话：
-     * 每个 Agent 按自己的 cwd 重新读绑定，改动落在下一个回合边界。
-     */
-    /**
      * 「工作区」页：只把「目录 → pack」这一层暴露出去。
      *
      * 目录从哪来不归本插件管：会话里出现过的目录由宿主提供，手动添加/移除整套已砍掉。
      * 那一层原本多出一条独立数据通路（`extra`），路径形态与去重规则都跟会话来的不一致
      * （一条是 `D:\...`，一条是原样输入的 `d:/...`）——为一个本可以由宿主负责的动作
      * 引入两套规则不值得。
+     *
+     * 绑定保存时会对所有 live 会话重新求值（`reapply`），不是只影响新会话：
+     * 每个 Agent 按自己的 cwd 重新读绑定，改动落在下一个回合边界。
      */
     function WorkspacePage(props) {
       const data = props.data
@@ -2569,7 +2608,7 @@ window.__ModuleLoader__.load({
     return {
       // `remote` 与 `remote.session` 都是独立服务名：只声明 `remote` 拿不到 session。
       // 声明是「服务在不在 ctx 上」的唯一开关；取用仍要 try/catch（ctx.get 对取不到的
-      // 已声明服务会抛错）。缺了这两个，工作区清单只剩手动添加的路径。
+      // 已声明服务会抛错）。缺了这两个，工作区页会空着。
       inject: ['slots', 'remote', 'remote.session'],
       apply(ctx) {
         // 兜底：client 模块的 apply 抛错会把 web boot 判成 entry failed，桌面端整个起不来。
