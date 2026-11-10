@@ -1,4 +1,5 @@
 import { candidateTools, defaultCatalogFeed, type CatalogFeed } from './catalog.js'
+import { cwdFromAgent } from './cwd.js'
 import { effective, type Effective } from './effective.js'
 import { createReconciler } from './reconcile.js'
 import { loadState, type PolicyState } from './store.js'
@@ -98,8 +99,7 @@ function asAgentLike(value: unknown): AgentLike | null {
 }
 
 function cwdOf(agent: AgentLike): string | null {
-  const cwd = agent.session.header?.cwd
-  return typeof cwd === 'string' && cwd !== '' ? cwd : null
+  return cwdFromAgent(agent.raw)
 }
 
 /**

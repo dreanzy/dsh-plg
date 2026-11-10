@@ -11,6 +11,7 @@
  * 监听器抛错会让会话创建失败。
  */
 
+import { cwdFromAgent } from './cwd.js'
 import { loadState, resolve, type ResolvedPack, type PackPathOptions } from './policy.js'
 import { selectionOf } from './pack.js'
 import { delegationSection, resolvePrompt, type PromptText } from './prompt.js'
@@ -118,8 +119,7 @@ function asAgentLike(value: unknown): AgentLike | null {
 
 /** 会话的创建目录。空串按缺失处理：没有目录就没有工作区层。 */
 function cwdOf(agent: AgentLike): string | null {
-  const cwd = agent.session.header?.cwd
-  return typeof cwd === 'string' && cwd.trim() !== '' ? cwd : null
+  return cwdFromAgent(agent)
 }
 
 

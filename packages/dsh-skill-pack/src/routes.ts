@@ -303,8 +303,9 @@ async function readAnyView(ctx: RouteContext, deps: RouteDeps, sessionId?: strin
     const agentsService = ctx.get('agents') as { list?: () => unknown } | undefined
     const list = typeof agentsService?.list === 'function' ? (agentsService.list.call(agentsService) as unknown[]) : []
     const agent = Array.isArray(list) ? list[0] : undefined
-    const session = (agent as { session?: { header?: { cwd?: unknown } } } | undefined)?.session
-    const cwd = session?.header?.cwd
+    const session = (agent as { session?: unknown } | undefined)?.session
+    // 投影优先：这条回退路径以前直接读会话头，切目录后会按旧目录刷新。
+    const cwd = projectedCwd(session) ?? readString(asRecord(asRecord(session)?.['header']), 'cwd')
     if (agent !== undefined && typeof cwd === 'string' && cwd !== '') {
       return await deps.snapshot.refresh(cwd, agent)
     }

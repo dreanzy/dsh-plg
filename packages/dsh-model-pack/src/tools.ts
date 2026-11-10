@@ -14,6 +14,7 @@
  * 宿主 `tools.register()` 只读 `name` / `output` / `parameters`，形状一致即可。
  */
 
+import { cwdFromAgent } from './cwd.js'
 import { TIER_DEFAULT_NAMES, TIER_IDS, isTierId, selectionOf, type Route, type TierId } from './pack.js'
 import type { ResolvedPack } from './policy.js'
 
@@ -233,6 +234,9 @@ function readCwd(value: unknown): string | typeof EMPTY | undefined {
  */
 function callerCwd(agent: unknown): string | null {
   try {
+    // 投影优先：`cd` 与切换工作区只改投影，`header.cwd` 是创建时的快照。
+    const projected = cwdFromAgent(agent)
+    if (projected !== null) return projected
     const direct = readCwd(agent)
     if (typeof direct === 'string') return direct
     const session = (agent as { session?: unknown } | null | undefined)?.session

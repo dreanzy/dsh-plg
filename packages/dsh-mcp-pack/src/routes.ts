@@ -1,3 +1,4 @@
+import { cwdFromAgent, cwdFromObserved } from './cwd.js'
 import { scanRows } from './inventory.js'
 import { effective } from './effective.js'
 import { defaultPackOf, rowEntryOf } from './policy.js'
@@ -121,8 +122,7 @@ export async function resolveSession(
   if (typeof get === 'function') {
     try {
       const agent = (get as (id: string) => unknown).call(agents, sessionId)
-      const record = asRecord(agent)
-      const cwd = readString(asRecord(asRecord(record?.['session'])?.['header']), 'cwd')
+      const cwd = cwdFromAgent(agent)
       if (cwd !== null) return { cwd, live: true, agent }
     } catch {
       // Agent 侧失败不致命，继续问 sessionQuery。
@@ -134,12 +134,9 @@ export async function resolveSession(
   if (typeof observe === 'function') {
     let observation: unknown
     try {
-      observation = await (observe as (id: string, options: { projectionMode: 'none' }) => Promise<unknown>).call(
-        query,
-        sessionId,
-        { projectionMode: 'none' },
-      )
-      const cwd = readString(asRecord(asRecord(observation)?.['header']), 'cwd')
+      // 不带 `projectionMode: 'none'`：历史会话的当前目录同样只在投影里。
+      observation = await (observe as (id: string) => Promise<unknown>).call(query, sessionId)
+      const cwd = cwdFromObserved(observation)
       if (cwd !== null) return { cwd, live: false, agent: undefined }
     } catch {
       // 未知会话在这里 reject；交给调用方报错。

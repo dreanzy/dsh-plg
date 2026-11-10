@@ -1,3 +1,4 @@
+import { cwdFromAgent } from './cwd.js'
 import { INVENTORY_SECTION } from './inventory-section.js'
 import { denyNamesFor } from './shield.js'
 import type { Pool } from './pool.js'
@@ -37,8 +38,7 @@ function agentOf(payload: unknown): AgentLike | null {
 }
 
 function cwdOf(agent: AgentLike): string | null {
-  const cwd = agent.session?.header?.cwd
-  return typeof cwd === 'string' && cwd !== '' ? cwd : null
+  return cwdFromAgent(agent)
 }
 
 /** 该 agent 作用域里的 tools 服务。必须用 `agent.ctx` 取，否则 `restrict` 会落到全局层并抛错。 */
