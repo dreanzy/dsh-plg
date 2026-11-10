@@ -47,20 +47,57 @@ const RULES = {
     mustNot: ['sidebar.panellist', 'showSidebarEntry'],
   },
   'dsh-plugin-pack': {
-    must: { 'TABS': 1, 'GroupsPage': 1, 'PackSettings': 1, 'WorkspacePage': 1, 'CHIP_CSS': 1, 'pack.id !== DEFAULT_PACK_ID': 2 },
+    // 绑定下拉不能再列出内置 default（否则「默认」出现两次）。chip 弹层改成平铺列表后
+    // 不再有第二处下拉，所以这里只要 1 处；后三条是待保存机制必须一直在。
+    must: {
+      'TABS': 1,
+      'GroupsPage': 1,
+      'PackSettings': 1,
+      'WorkspacePage': 1,
+      'CHIP_CSS': 1,
+      'pack.id !== DEFAULT_PACK_ID': 1,
+      'usePending': 1,
+      'PendingBar': 1,
+      'dryRun': 1,
+    },
     // 侧栏入口与工作区层已废弃：这两个字符串一旦回潮，就是又有人把面板挂回侧栏。
     mustNot: ['sidebar.panellist', 'showSidebarEntry'],
   },
   'dsh-mcp-pack': {
-    must: { 'TABS': 1, 'GroupsPage': 1, 'PackSettings': 1, 'WorkspacePage': 1, 'CHIP_CSS': 1, 'diagText': 2, 'pack.id !== DEFAULT_PACK_ID': 2 },
+    // 同 dsh-plugin-pack：chip 平铺后只剩工作区页一处默认项过滤。
+    must: {
+      'TABS': 1,
+      'GroupsPage': 1,
+      'PackSettings': 1,
+      'WorkspacePage': 1,
+      'CHIP_CSS': 1,
+      'diagText': 2,
+      'pack.id !== DEFAULT_PACK_ID': 1,
+      'usePending': 1,
+      'PendingBar': 1,
+      'dryRun': 1,
+    },
     // 侧栏入口已废弃、diag 的渲染表达式不再就地序列化：这两组字符串一旦回潮，
     // 就是又有人把面板挂回侧栏，或把预计算改回每次渲染重做。
     mustNot: ['sidebar.panellist', 'showSidebarEntry', '}, JSON.stringify(diag'],
   },
   'dsh-model-pack': {
-    // 三页（分包 | 工作区 | 提示词）、分包页两块（名册 / 内容）、chip 摘要与容器查询、
+    // 三页（分包 | 工作区 | 提示词）、名册、工作区面板、chip 摘要与容器查询、
     // 以及模型位的 pack 名标签：少了任何一个，都是这套结构被拆掉了一半。
-    must: { 'TABS': 2, 'PackRoster': 2, 'WorkspaceBoard': 2, 'ChipModal': 2, 'CHIP_CSS': 2, 'labelView': 2, '!pack.isDefault': 2 },
+    // `!pack.isDefault` 从 2 降到 1：chip 弹层改成平铺全部 pack 后，只剩工作区页
+    // 那一处需要把内置 default 过滤掉。后三条是待保存机制必须一直在。
+    must: {
+      'TABS': 2,
+      'PackRoster': 2,
+      'WorkspaceBoard': 2,
+      'ChipModal': 2,
+      'CHIP_CSS': 2,
+      'labelView': 2,
+      '!pack.isDefault': 1,
+      'usePending': 1,
+      'PendingBar': 1,
+      'dryRun': 1,
+    },
     // 侧栏入口与单机侧栏开关已废弃：这两个字符串一旦回潮，就是又有人把面板挂回侧栏。
     // 后三条是旧命令契约（服务端只认 putPack / packSession / packTier / bind / …）：
     // 它们一旦回潮，所有保存都会拿到 bad-request。localStorage 同理——默认页与
