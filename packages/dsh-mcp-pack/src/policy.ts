@@ -1,3 +1,5 @@
+export { normalizeCwd }
+import { normalizeCwd } from '@dreanzy/dsh-pack-core'
 import {
   DEFAULT_MODE,
   DEFAULT_PACK_ID,
@@ -88,27 +90,6 @@ function readJson(text: string | undefined, warnings: string[]): Record<string, 
 }
 
 /**
- * 工作区键归一：同一目录的不同写法必须落到同一个键。
- *
- * 反斜杠转正斜杠、剥除尾部斜杠、Windows 下转小写；盘符根目录保留尾斜杠。
- * 这份实现是**唯一一份**：绑定表的键、旧工作区层的读取、快照的缓存键以及任何
- * 按 cwd 找绑定的调用点都调它。复制一份必然分叉，表现是「绑定了却不生效」。
- * 三个 pack 包（skill / plugin / mcp）必须逐字节一致。
- */
-export function normalizeCwd(cwd: string | null): string | null {
-  if (cwd === null) return null
-  const trimmed = cwd.trim()
-  if (trimmed === '') return null
-  let unified = trimmed.replace(/\\/gu, '/')
-  if (process.platform === 'win32') unified = unified.toLowerCase()
-  if (unified.length > 1) {
-    const stripped = unified.replace(/\/+$/u, '')
-    if (stripped === '') return '/'
-    // `C:/` 去掉尾斜杠会变成 `C:`，那不是一个目录。
-    return /^[a-z]:$/iu.test(stripped) ? stripped + '/' : stripped
-  }
-  return unified
-}
 
 /**
  * 解析一条行策略。
