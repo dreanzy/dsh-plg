@@ -3525,6 +3525,8 @@ window.__ModuleLoader__.load({
     // ---------- 注册 ----------
 
     return {
+      // 测试出口：只供 test/ 断言结构与纯逻辑用，运行期不要读它。
+      __internals: { pendingKey, usePending, TABS, PackRoster, WorkspaceBoard, ChipModal, CHIP_CSS },
       // 依赖声明照抄官方 settings-subagent：remote.session 是独立服务名，
       // 只声明 remote 拿不到它（ctx.remote.session 会是空的，模型目录读不到）。
       // 声明里少一个 → 插件停在 pending → 整个设置分区连入口都不出现。

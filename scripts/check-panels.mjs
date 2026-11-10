@@ -1,13 +1,13 @@
-#!/usr/bin/env node
 /**
  * 面板的结构护栏。
  *
- * 这里不测渲染（仓库没有 DOM 测试环境），测两件更便宜、也更容易退化的东西：
- * 1. 三个 client 能被宿主的模块加载器解析，工厂返回带 `apply` 的对象；
- * 2. 上一轮为性能做的派生改造没有被改回去。
+ * 这里不测渲染（仓库没有 DOM 测试环境），只留两件跨包、且用字符串最便宜的事：
+ * 1. 每个 client 能被宿主的模块加载器解析，工厂返回带 `apply` 的对象；
+ * 2. 已废弃的结构与旧命令契约没有回潮（mustNot）。
  *
- * 判据是「必须出现 / 必须不出现」的字符串，故意写得具体：改结构时会刻意改这里的
- * 断言，而不是在一次无关重构里悄悄丢掉预计算。
+ * 能符号化的结构断言与行为用例已搬到各包的 test/client.test.js：它们通过 factory 的
+ * `__internals` 出口断言，改名或删结构会让用例直接失败，不必等这里数不到字符串。
+ * `apply` 抛错的红线冒烟也在那里——四包各跑一次，而不是只跑一个。
  */
 import { readFileSync } from 'node:fs'
 import { readdir } from 'node:fs/promises'
@@ -29,87 +29,33 @@ const fakeReact = {
 }
 
 /** 每个面板的断言。count 表示出现次数，未写表示「至少一次」。 */
+/**
+ * 每个面板的结构断言。
+ *
+ * 只留无法用符号表达的那几条：它们是渲染表达式里的判据，字符串计数是验证它们仍在的
+ * 最低成本方式。可符号化的结构（TABS、各页面组件、待保存队列）已搬进各包的
+ * test/client.test.js，由 factory 的 __internals 出口断言——改名或删结构会让用例
+ * 直接失败，而不是等这里数不到字符串。
+ */
 const RULES = {
   'dsh-skill-pack': {
-    // 绑定下拉必须把内置 default 过滤掉，否则「默认」会出现两次。chip 弹层改成平铺
-    // 列表后不再有第二处下拉，但两个新结构必须一直在：待保存队列与它的确认条。
-    must: {
-      'TABS': 1,
-      'GroupsPage': 1,
-      'PackSettings': 1,
-      'WorkspacePage': 1,
-      'pack.id !== DEFAULT_PACK_ID': 1,
-      'usePending': 1,
-      'PendingBar': 1,
-      'dryRun': 1,
-    },
-    // 侧栏入口与单机开关已废弃：这两个字符串一旦回潮，就是又有人把面板挂回侧栏。
+    must: { 'pack.id !== DEFAULT_PACK_ID': 1, 'dryRun': 1 },
+    // 侧栏入口与单机开关已废弃：一旦回潮，就是又有人把面板挂回侧栏。
     mustNot: ['sidebar.panellist', 'showSidebarEntry'],
   },
   'dsh-plugin-pack': {
-    // 绑定下拉不能再列出内置 default（否则「默认」出现两次）。chip 弹层改成平铺列表后
-    // 不再有第二处下拉，所以这里只要 1 处；后三条是待保存机制必须一直在。
-    must: {
-      'TABS': 1,
-      'GroupsPage': 1,
-      'PackSettings': 1,
-      'WorkspacePage': 1,
-      'CHIP_CSS': 1,
-      'pack.id !== DEFAULT_PACK_ID': 1,
-      'usePending': 1,
-      'PendingBar': 1,
-      'dryRun': 1,
-    },
-    // 侧栏入口与工作区层已废弃：这两个字符串一旦回潮，就是又有人把面板挂回侧栏。
+    must: { 'pack.id !== DEFAULT_PACK_ID': 1, 'dryRun': 1 },
     mustNot: ['sidebar.panellist', 'showSidebarEntry'],
   },
   'dsh-mcp-pack': {
-    // 同 dsh-plugin-pack：chip 平铺后只剩工作区页一处默认项过滤。
-    must: {
-      'TABS': 1,
-      'GroupsPage': 1,
-      'PackSettings': 1,
-      'WorkspacePage': 1,
-      'CHIP_CSS': 1,
-      'diagText': 2,
-      'pack.id !== DEFAULT_PACK_ID': 1,
-      'usePending': 1,
-      'PendingBar': 1,
-      'dryRun': 1,
-    },
-    // 侧栏入口已废弃、diag 的渲染表达式不再就地序列化：这两组字符串一旦回潮，
-    // 就是又有人把面板挂回侧栏，或把预计算改回每次渲染重做。
+    must: { 'diagText': 2, 'pack.id !== DEFAULT_PACK_ID': 1, 'dryRun': 1 },
+    // diag 的渲染表达式不再就地序列化：回潮就是把预计算改回每次渲染重做。
     mustNot: ['sidebar.panellist', 'showSidebarEntry', '}, JSON.stringify(diag'],
   },
   'dsh-model-pack': {
-    // 三页（分包 | 工作区 | 提示词）、名册、工作区面板、chip 摘要与容器查询、
-    // 以及模型位的 pack 名标签：少了任何一个，都是这套结构被拆掉了一半。
-    // `!pack.isDefault` 从 2 降到 1：chip 弹层改成平铺全部 pack 后，只剩工作区页
-    // 那一处需要把内置 default 过滤掉。后三条是待保存机制必须一直在。
-    must: {
-      'TABS': 2,
-      'PackRoster': 2,
-      'WorkspaceBoard': 2,
-      'ChipModal': 2,
-      'CHIP_CSS': 2,
-      'labelView': 2,
-      '!pack.isDefault': 1,
-      'usePending': 1,
-      'PendingBar': 1,
-      'dryRun': 1,
-    },
-    // 侧栏入口与单机侧栏开关已废弃：这两个字符串一旦回潮，就是又有人把面板挂回侧栏。
-    // 后三条是旧命令契约（服务端只认 putPack / packSession / packTier / bind / …）：
-    // 它们一旦回潮，所有保存都会拿到 bad-request。localStorage 同理——默认页与
-    // 手动添加的路径已经搬到服务端，浏览器不该再存配置。
-    mustNot: [
-      'sidebar.panellist',
-      'showSidebarEntry',
-      'putScheme',
-      'deleteScheme',
-      'bindWorkspace',
-      'localStorage',
-    ],
+    must: { '!pack.isDefault': 1, 'labelView': 2, 'dryRun': 1 },
+    // 后三条是旧命令契约；localStorage 同理——配置已经搬到服务端。
+    mustNot: ['sidebar.panellist', 'showSidebarEntry', 'putScheme', 'deleteScheme', 'bindWorkspace', 'localStorage'],
   },
 }
 
@@ -133,36 +79,6 @@ function loadFactory(path) {
   if (typeof mod !== 'object' || mod === null) throw new Error('factory 没有返回对象')
   if (typeof mod.apply !== 'function') throw new Error('factory 的返回值缺少 apply')
   return { entry, mod }
-}
-
-/**
- * 客户端红线的冒烟：`apply` 抛错会让整个桌面端起不来，所以必须真的调一次。
- *
- * 假 ctx 的 `get` 一调就抛——宿主对取不到的已声明服务就是抛错，返回 undefined
- * 的假 ctx 会掩盖降级路径（AGENTS.md 客户端红线 3）。
- */
-function smokeApply(mod) {
-  const ctx = {
-    get() {
-      throw new Error('service unavailable')
-    },
-    slots: {
-      inject(_name, callback) {
-        callback()
-        return () => undefined
-      },
-      register() {
-        return () => undefined
-      },
-    },
-  }
-  try {
-    mod.apply(ctx)
-  } catch (error) {
-    throw new Error(
-      'apply 在服务缺失时抛错（桌面端会起不来）：' + String(error && error.message ? error.message : error),
-    )
-  }
 }
 
 let failures = 0
@@ -197,15 +113,6 @@ for (const dir of dirs) {
       failures += 1
       console.error(label + ': 无法作为宿主模块加载 —— ' + String(error && error.message ? error.message : error))
       continue
-    }
-    if (dir.name === 'dsh-plugin-pack') {
-      try {
-        smokeApply(loaded.mod)
-      } catch (error) {
-        failures += 1
-        console.error(label + ': ' + String(error && error.message ? error.message : error))
-        continue
-      }
     }
     const source = readFileSync(path, 'utf8')
     const rules = RULES[dir.name]
