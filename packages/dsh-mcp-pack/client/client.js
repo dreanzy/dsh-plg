@@ -658,6 +658,25 @@ window.__ModuleLoader__.load({
     }
 
     /** 每条命令命中哪一格状态。同键后写覆盖，队列里永远只有最后一次取值。 */
+    /**
+     * 待保存期间的组名回溯表：组 id → 改动前的名字。
+     *
+     * 冻结的是「排序键」，不是视图。组 id 与行键都不变，只有分组名要回溯——否则改完名
+     * 的那一组会立刻跳到新位置，下一次点击就落在别的组上。也不能用 `base` 的数组位置
+     * 当序：列表平时按名字排，两者顺序本来就不同，那样一进待保存状态反而会重排一次。
+     *
+     * `frozen` 为 false 时返回空表，调用方按当前名字排即可。
+     */
+    function frozenGroupNames(base, frozen) {
+      const map = new Map()
+      if (!frozen) return map
+      const groups = base && base.groups && Array.isArray(base.groups.groups) ? base.groups.groups : []
+      for (const group of groups) {
+        if (group && typeof group.id === 'string') map.set(group.id, group.name)
+      }
+      return map
+    }
+
     function pendingKey(command) {
       switch (command.op) {
         case 'packRow':
@@ -2314,8 +2333,7 @@ window.__ModuleLoader__.load({
          * 那样一进入待保存状态反而会重排一次（第一版就是这么错的）。
          * 正确的冻结是「沿用改动前的排序键」：组 id 与行键都不变，只有分组名要回溯。
          */
-        const baseGroupName = new Map()
-        for (const group of base.groups ? base.groups.groups : []) baseGroupName.set(group.id, group.name)
+        const baseGroupName = frozenGroupNames(base, frozen)
         const sortGroups = (list) =>
           list.slice().sort((a, b) => {
             const left = frozen && baseGroupName.has(a.id) ? baseGroupName.get(a.id) : a.name
@@ -3451,7 +3469,7 @@ window.__ModuleLoader__.load({
 
     return {
       // 测试出口：只供 test/ 断言结构与纯逻辑用，运行期不要读它。
-      __internals: { pendingKey, createQueue, usePending, TABS, GroupsPage, PackSettings, WorkspacePage, PendingBar, CHIP_CSS },
+      __internals: { pendingKey, createQueue, frozenGroupNames, usePending, TABS, GroupsPage, PackSettings, WorkspacePage, PendingBar, CHIP_CSS },
       // `remote` 与 `remote.session` 都是独立服务名：只声明 `remote` 拿不到 session。
       // 声明是「服务在不在 ctx 上」的唯一开关；取用仍要 try/catch（ctx.get 对取不到的
       // 已声明服务会抛错）。缺了这两个，工作区页会空着。

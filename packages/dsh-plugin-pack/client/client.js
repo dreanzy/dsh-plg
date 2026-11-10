@@ -814,6 +814,25 @@ window.__ModuleLoader__.load({
     }
 
     /** 每条命令命中哪一格状态。同键后写覆盖，队列里永远只有最后一次取值。 */
+    /**
+     * 待保存期间的组名回溯表：组 id → 改动前的名字。
+     *
+     * 冻结的是「排序键」，不是视图。组 id 与行键都不变，只有分组名要回溯——否则改完名
+     * 的那一组会立刻跳到新位置，下一次点击就落在别的组上。也不能用 `base` 的数组位置
+     * 当序：列表平时按名字排，两者顺序本来就不同，那样一进待保存状态反而会重排一次。
+     *
+     * `frozen` 为 false 时返回空表，调用方按当前名字排即可。
+     */
+    function frozenGroupNames(base, frozen) {
+      const map = new Map()
+      if (!frozen) return map
+      const groups = base && base.groups && Array.isArray(base.groups.groups) ? base.groups.groups : []
+      for (const group of groups) {
+        if (group && typeof group.id === 'string') map.set(group.id, group.name)
+      }
+      return map
+    }
+
     function pendingKey(command) {
       switch (command.op) {
         case 'packItem':
@@ -2533,11 +2552,7 @@ window.__ModuleLoader__.load({
       const sortDefault = frozen ? defaultPackOf(base.packs) : defaultPack
 
       /** 分组在改动前的名字：冻结排序时用它当键，否则改名的组会立刻跳位。 */
-      const baseGroupName = useMemo(() => {
-        const map = new Map()
-        for (const group of base.groups ? base.groups.groups : []) map.set(group.id, group.name)
-        return map
-      }, [base])
+      const baseGroupName = useMemo(() => frozenGroupNames(base, frozen), [base, frozen])
       /** 这张 pack 有没有未保存的改动：改名、项级或组级开关任一命中即算。 */
       const dirtyOf = (packId) => {
         const itemPrefix = 'packItem:' + packId + ':'
@@ -3088,7 +3103,7 @@ window.__ModuleLoader__.load({
 
     return {
       // 测试出口：只供 test/ 断言结构与纯逻辑用，运行期不要读它。
-      __internals: { pendingKey, createQueue, usePending, TABS, GroupsPage, PackSettings, WorkspacePage, PendingBar, CHIP_CSS },
+      __internals: { pendingKey, createQueue, frozenGroupNames, usePending, TABS, GroupsPage, PackSettings, WorkspacePage, PendingBar, CHIP_CSS },
       // `remote` 与 `remote.session` 都是独立服务名：只声明 `remote` 拿不到 session。
       // 声明是「服务在不在 ctx 上」的唯一开关；取用仍要 try/catch（ctx.get 对取不到的
       // 已声明服务会抛错）。缺了这两个，工作区页读不到任何目录。

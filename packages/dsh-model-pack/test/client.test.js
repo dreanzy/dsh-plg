@@ -131,3 +131,13 @@ test('待保存队列：touch 换引用但不改内容，试算才会重跑', ()
   assert.notEqual(after, before, '引用必须换，否则 effect 不会重跑')
   assert.equal(queue.count, 1)
 })
+
+test('冻结排序：改动前的 id 序变成 rank 表，未冻结时为空', () => {
+  const { frozenRank } = loadClient().__internals
+  const rank = frozenRank(['b', 'a'])
+  assert.equal(rank.get('b'), 0)
+  assert.equal(rank.get('a'), 1)
+  assert.equal(rank.size, 2)
+  assert.equal(frozenRank(undefined).size, 0, '没有冻结序时不产生 rank')
+  assert.equal(frozenRank([]).size, 0)
+})

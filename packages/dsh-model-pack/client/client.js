@@ -634,19 +634,30 @@ window.__ModuleLoader__.load({
      * 服务端保证 `default` 一定存在（`parsePacks` 会补），这里不做兜底造行：
      * 真缺了就该显示成缺了，而不是画一个磁盘上不存在的 pack。
      */
+    /**
+     * 冻结排序：改动前那份视图的 id 序 → rank 表。
+     *
+     * 用 id 而不是数组下标：新建的 pack 会插进数组，下标一挪就重排。表里没有的（新建）
+     * 落到 rank.size，同档按 id 比。空表表示「不冻结」，调用方按自己的缺省序排。
+     */
+    function frozenRank(ids) {
+      const rank = new Map()
+      if (!Array.isArray(ids)) return rank
+      ids.forEach((id, index) => rank.set(id, index))
+      return rank
+    }
     function packListOf(data, frozenOrder) {
       const packs = packsOf(data)
       const ids = Object.keys(packs)
-      if (Array.isArray(frozenOrder) && frozenOrder.length > 0) {
-        const rank = new Map()
-        frozenOrder.forEach((id, index) => rank.set(id, index))
+      const rank = frozenRank(frozenOrder)
+      if (rank.size === 0) {
+        ids.sort()
+      } else {
         ids.sort((a, b) => {
-          const left = rank.has(a) ? rank.get(a) : frozenOrder.length
-          const right = rank.has(b) ? rank.get(b) : frozenOrder.length
+          const left = rank.has(a) ? rank.get(a) : rank.size
+          const right = rank.has(b) ? rank.get(b) : rank.size
           return left === right ? String(a).localeCompare(String(b)) : left - right
         })
-      } else {
-        ids.sort()
       }
       const at = ids.indexOf(DEFAULT_PACK_ID)
       if (at > 0) {
@@ -3549,7 +3560,7 @@ window.__ModuleLoader__.load({
 
     return {
       // 测试出口：只供 test/ 断言结构与纯逻辑用，运行期不要读它。
-      __internals: { pendingKey, createQueue, usePending, TABS, PackRoster, WorkspaceBoard, ChipModal, CHIP_CSS },
+      __internals: { pendingKey, createQueue, frozenRank, usePending, TABS, PackRoster, WorkspaceBoard, ChipModal, CHIP_CSS },
       // 依赖声明照抄官方 settings-subagent：remote.session 是独立服务名，
       // 只声明 remote 拿不到它（ctx.remote.session 会是空的，模型目录读不到）。
       // 声明里少一个 → 插件停在 pending → 整个设置分区连入口都不出现。

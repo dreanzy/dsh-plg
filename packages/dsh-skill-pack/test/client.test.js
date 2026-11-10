@@ -130,3 +130,14 @@ test('待保存队列：touch 换引用但不改内容，试算才会重跑', ()
   assert.notEqual(after, before, '引用必须换，否则 effect 不会重跑')
   assert.equal(queue.count, 1)
 })
+
+test('冻结排序：待保存期间沿用改动前的组名，未冻结时返回空表', () => {
+  const { frozenGroupNames } = loadClient().__internals
+  const base = { groups: { groups: [{ id: 'g1', name: 'alpha' }, { id: 'g2', name: 'beta' }] } }
+  assert.equal(frozenGroupNames(base, false).size, 0, '未冻结时不提供回溯表')
+  const map = frozenGroupNames(base, true)
+  assert.equal(map.get('g1'), 'alpha')
+  assert.equal(map.get('g2'), 'beta')
+  assert.equal(frozenGroupNames(null, true).size, 0, '没有 base 也不能抛')
+  assert.equal(frozenGroupNames({}, true).size, 0)
+})
