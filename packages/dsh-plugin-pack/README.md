@@ -49,6 +49,9 @@ dsh plugin --profile <profile> add @dreanzy/dsh-plugin-pack
 dsh plugin --profile <profile> add "github:dreanzy/dsh-plg#<sha>&path:/packages/dsh-plugin-pack"
 ```
 
+> 依赖从 0.2.1 起改成 pnpm 的 `workspace:^`，那是仓库内部的写法，从 git 子目录装会解析不到。
+> 需要源码安装时把 `<sha>` 换成 `ae55214` 或更早的提交；更新的版本请走上面的 npm 安装。
+
 ## 文件
 
 | 路径 | 内容 |
