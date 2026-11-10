@@ -11,3 +11,5 @@ export const CORE_VERSION = '0.1.0'
 export { projectedCwd, cwdFromAgent, cwdFromObserved } from './cwd.js'
 
 export { createReconciler, type Dispose, type Reconciler } from './reconcile.js'
+
+export type { Envelope, ErrorCode } from './protocol.js'

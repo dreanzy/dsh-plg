@@ -11,13 +11,9 @@
 
 import type { PackCommand, PromptTierPatch } from './policy.js'
 
-/** 错误码。都短、都稳定，前端按它分支，不解析 message。 */
-export type ErrorCode = 'bad-request' | 'internal'
-
-/** 统一信封：成功带 `data`，失败带 `error: { code, message }`。 */
-export type Envelope<T = unknown> =
-  | { readonly ok: true; readonly data: T }
-  | { readonly ok: false; readonly error: { readonly code: ErrorCode; readonly message: string } }
+/** 错误码与信封同其余三个包，定义在 `@dreanzy/dsh-pack-core`（见 ADR-0007）。 */
+export type { Envelope, ErrorCode }
+import type { Envelope, ErrorCode } from '@dreanzy/dsh-pack-core'
 
 /**
  * 能力探测结果（spec §6.4）。
@@ -378,7 +374,7 @@ function buildData(deps: RouteDeps, cwd: string | null, state: unknown): PanelDa
  */
 async function buildView(deps: RouteDeps, cwd: string | null, policy?: unknown): Promise<Envelope> {
   const state = policy === undefined ? await deps.loadState(cwd) : policy
-  return { ok: true, data: buildData(deps, cwd, state) }
+  return { ok: true, value: buildData(deps, cwd, state) }
 }
 
 /** POST /api/model-pack/read：{ cwd? } → 状态 + 求值结果 + 探测 + 上一次失败原因。 */

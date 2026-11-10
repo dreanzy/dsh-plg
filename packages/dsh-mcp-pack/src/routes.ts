@@ -1,3 +1,4 @@
+import type { Envelope, ErrorCode } from '@dreanzy/dsh-pack-core'
 import { cwdFromAgent, cwdFromObserved } from '@dreanzy/dsh-pack-core'
 import { scanRows } from './inventory.js'
 import { effective } from './effective.js'
@@ -27,7 +28,7 @@ export interface RouteContext {
   logger: { warn(message: string): void }
 }
 
-export type ErrorCode = 'bad-request' | 'unknown-session' | 'internal'
+export type { Envelope, ErrorCode }
 
 /**
  * 路由层依赖。
@@ -39,9 +40,6 @@ export interface RouteDeps {
   readonly snapshot: ScopeSnapshot
 }
 
-export type Envelope<T> =
-  | { readonly ok: true; readonly value: T }
-  | { readonly ok: false; readonly error: { readonly code: ErrorCode; readonly message: string } }
 
 /** 一个 pack 的面板投影。 */
 export interface PackView {

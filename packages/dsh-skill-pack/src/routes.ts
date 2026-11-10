@@ -1,3 +1,4 @@
+import type { Envelope, ErrorCode } from '@dreanzy/dsh-pack-core'
 import { defaultPackOf } from './policy.js'
 import { effective } from './effective.js'
 import { projectedCwd } from './hooks.js'
@@ -20,7 +21,7 @@ export interface RouteContext {
   logger: { warn(message: string): void }
 }
 
-export type ErrorCode = 'bad-request' | 'unknown-session' | 'internal'
+export type { Envelope, ErrorCode }
 
 /**
  * 路由层依赖。
@@ -34,9 +35,6 @@ export interface RouteDeps {
   readonly stuck: () => readonly string[]
 }
 
-export type Envelope<T> =
-  | { readonly ok: true; readonly value: T }
-  | { readonly ok: false; readonly error: { readonly code: ErrorCode; readonly message: string } }
 
 /** 面板用的一行 skill。求值结果由服务端算好，前端只负责渲染。 */
 export interface SkillRow {

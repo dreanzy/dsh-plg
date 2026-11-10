@@ -84,13 +84,13 @@ test('路径：两条路由都在 /api/model-pack/ 前缀下', () => {
   })
 })
 
-test('信封：成功带 data，失败带 error.code 与 message', async () => {
+test('信封：成功带 value，失败带 error.code 与 message', async () => {
   const home = await tempRoot()
   const { deps } = depsFor(home)
 
   const ok = await handleRead(deps, null)
   assert.equal(ok.ok, true)
-  assert.equal(typeof ok.data, 'object')
+  assert.equal(typeof ok.value, 'object')
 
   const bad = await handleApply(deps, { commands: [{ op: 'nope' }] })
   assert.equal(bad.ok, false)
@@ -108,17 +108,17 @@ test('read：无文件时返回出厂内置，空 body 合法', async () => {
 
   const result = await handleRead(deps, null)
   assert.equal(result.ok, true)
-  assert.equal(result.data.resolved.id, DEFAULT_PACK_ID)
-  assert.equal(result.data.resolved.source, 'builtin')
-  assert.deepEqual(Object.keys(result.data.state.packs.packs), [DEFAULT_PACK_ID])
-  assert.deepEqual(result.data.state.bindings, { bindings: {} })
-  assert.deepEqual(result.data.support, { subagents: true, restrict: true })
-  assert.equal(result.data.lastError, null)
+  assert.equal(result.value.resolved.id, DEFAULT_PACK_ID)
+  assert.equal(result.value.resolved.source, 'builtin')
+  assert.deepEqual(Object.keys(result.value.state.packs.packs), [DEFAULT_PACK_ID])
+  assert.deepEqual(result.value.state.bindings, { bindings: {} })
+  assert.deepEqual(result.value.support, { subagents: true, restrict: true })
+  assert.equal(result.value.lastError, null)
 
   // 空对象 body 与 null 等价（都不回读任何工作区绑定）。
   const emptyBody = await handleRead(deps, {})
   assert.equal(emptyBody.ok, true)
-  assert.equal(emptyBody.data.state.binding, null)
+  assert.equal(emptyBody.value.state.binding, null)
 })
 
 test('read：cwd 缺省与空白串都不回读绑定', async () => {
@@ -127,7 +127,7 @@ test('read：cwd 缺省与空白串都不回读绑定', async () => {
 
   const blank = await handleRead(deps, { cwd: '   ' })
   assert.equal(blank.ok, true)
-  assert.equal(blank.data.state.binding, null)
+  assert.equal(blank.value.state.binding, null)
 })
 
 test('read：cwd 不是字符串返回 bad-request', async () => {
@@ -157,17 +157,17 @@ test('apply：写入 pack 并绑定后 read 能读回', async () => {
     ],
   })
   assert.equal(written.ok, true)
-  assert.equal(written.data.resolved.id, 'standard')
-  assert.equal(written.data.resolved.source, 'workspace')
-  assert.deepEqual(written.data.state.packs.packs.standard, STANDARD)
+  assert.equal(written.value.resolved.id, 'standard')
+  assert.equal(written.value.resolved.source, 'workspace')
+  assert.deepEqual(written.value.state.packs.packs.standard, STANDARD)
 
   // 落盘了才算数：read 重新读文件。
   const read = await handleRead(deps, { cwd })
   assert.equal(read.ok, true)
-  assert.equal(read.data.resolved.id, 'standard')
-  assert.equal(read.data.resolved.source, 'workspace')
-  assert.equal(read.data.resolved.brokenBinding, false)
-  assert.deepEqual(read.data.state.bindings.bindings, { [normalizeCwd(cwd)]: 'standard' })
+  assert.equal(read.value.resolved.id, 'standard')
+  assert.equal(read.value.resolved.source, 'workspace')
+  assert.equal(read.value.resolved.brokenBinding, false)
+  assert.deepEqual(read.value.state.bindings.bindings, { [normalizeCwd(cwd)]: 'standard' })
 })
 
 test('apply：bind 自带 cwd，body 不带 cwd 也能写入', async () => {
@@ -183,11 +183,11 @@ test('apply：bind 自带 cwd，body 不带 cwd 也能写入', async () => {
   })
   assert.equal(written.ok, true)
   // 回读上下文是全局视图，但绑定确实落盘了。
-  assert.equal(written.data.state.binding, null)
-  assert.deepEqual(written.data.state.bindings.bindings, { [normalizeCwd(cwd)]: 'standard' })
+  assert.equal(written.value.state.binding, null)
+  assert.deepEqual(written.value.state.bindings.bindings, { [normalizeCwd(cwd)]: 'standard' })
 
   const read = await handleRead(deps, { cwd })
-  assert.equal(read.data.resolved.id, 'standard')
+  assert.equal(read.value.resolved.id, 'standard')
 })
 
 test('apply：bind 传 null 解除绑定，回落到 default', async () => {
@@ -205,8 +205,8 @@ test('apply：bind 传 null 解除绑定，回落到 default', async () => {
   const unbound = await handleApply(deps, { cwd, commands: [{ op: 'bind', cwd, packId: null }] })
   assert.equal(unbound.ok, true)
   // packs.json 里已经写了 default，所以来源是 default 而不是内置。
-  assert.equal(unbound.data.resolved.source, 'default')
-  assert.deepEqual(unbound.data.state.bindings.bindings, {})
+  assert.equal(unbound.value.resolved.source, 'default')
+  assert.deepEqual(unbound.value.state.bindings.bindings, {})
 })
 
 test('apply：悬空绑定降级到 default 并留 warning', async () => {
@@ -224,8 +224,8 @@ test('apply：悬空绑定降级到 default 并留 warning', async () => {
   })
   const read = await handleRead(deps, { cwd })
   assert.equal(read.ok, true)
-  assert.equal(read.data.resolved.id, DEFAULT_PACK_ID)
-  assert.equal(read.data.resolved.brokenBinding, false, '删除时顺手清了绑定，不该再报悬空')
+  assert.equal(read.value.resolved.id, DEFAULT_PACK_ID)
+  assert.equal(read.value.resolved.brokenBinding, false, '删除时顺手清了绑定，不该再报悬空')
 })
 
 test('apply：createPack / renamePack / deletePack 走通', async () => {
@@ -234,13 +234,13 @@ test('apply：createPack / renamePack / deletePack 走通', async () => {
 
   const created = await handleApply(deps, { commands: [{ op: 'createPack', name: '前端' }] })
   assert.equal(created.ok, true)
-  assert.equal(created.data.state.packs.packs.p1.name, '前端')
+  assert.equal(created.value.state.packs.packs.p1.name, '前端')
 
   const renamed = await handleApply(deps, { commands: [{ op: 'renamePack', packId: 'p1', name: '前端组' }] })
-  assert.equal(renamed.data.state.packs.packs.p1.name, '前端组')
+  assert.equal(renamed.value.state.packs.packs.p1.name, '前端组')
 
   const deleted = await handleApply(deps, { commands: [{ op: 'deletePack', packId: 'p1' }] })
-  assert.equal(deleted.data.state.packs.packs.p1, undefined)
+  assert.equal(deleted.value.state.packs.packs.p1, undefined)
 })
 
 test('apply：default 不可删除、不可改名，走 warning 而不是错误信封', async () => {
@@ -255,9 +255,9 @@ test('apply：default 不可删除、不可改名，走 warning 而不是错误�
   })
   // 形状合法、语义被 policy 拒绝：路由不把它当错误，面板靠 warnings 显示。
   assert.equal(result.ok, true)
-  assert.ok(result.data.state.warnings.some((warning) => warning.includes('不可删除')))
-  assert.ok(result.data.state.warnings.some((warning) => warning.includes('不可改名')))
-  assert.equal(result.data.state.packs.packs.default.name, '默认')
+  assert.ok(result.value.state.warnings.some((warning) => warning.includes('不可删除')))
+  assert.ok(result.value.state.warnings.some((warning) => warning.includes('不可改名')))
+  assert.equal(result.value.state.packs.packs.default.name, '默认')
 })
 
 test('apply：packSession 与 packTier 编辑 pack 内容', async () => {
@@ -272,8 +272,8 @@ test('apply：packSession 与 packTier 编辑 pack 内容', async () => {
     ],
   })
   assert.equal(written.ok, true)
-  assert.deepEqual(written.data.state.packs.packs.p1.session, ROUTE)
-  assert.deepEqual(written.data.state.packs.packs.p1.tiers.tier2, {
+  assert.deepEqual(written.value.state.packs.packs.p1.session, ROUTE)
+  assert.deepEqual(written.value.state.packs.packs.p1.tiers.tier2, {
     name: '速办',
     primary: ROUTE,
     fallbacks: [],
@@ -285,8 +285,8 @@ test('apply：packSession 与 packTier 编辑 pack 内容', async () => {
       { op: 'packTier', packId: 'p1', tierId: 'tier2', tier: null },
     ],
   })
-  assert.equal(cleared.data.state.packs.packs.p1.session, undefined)
-  assert.deepEqual(cleared.data.state.packs.packs.p1.tiers, {})
+  assert.equal(cleared.value.state.packs.packs.p1.session, undefined)
+  assert.deepEqual(cleared.value.state.packs.packs.p1.tiers, {})
 })
 
 test('apply：addExtra 与 removeExtra 已删除，按未知命令拒整批', async () => {
@@ -320,7 +320,7 @@ test('apply：showChip 与 defaultTab 落在 ui 段', async () => {
       { op: 'defaultTab', value: 'packs' },
     ],
   })
-  assert.deepEqual(written.data.state.ui, { showChip: false, defaultTab: 'packs' })
+  assert.deepEqual(written.value.state.ui, { showChip: false, defaultTab: 'packs' })
 })
 
 /* ------------------------------------------------------------------ *
@@ -357,7 +357,7 @@ test('apply：拦截整批时连合法项也没生效', async () => {
   })
   const read = await handleRead(deps, null)
   assert.equal(read.ok, true)
-  assert.equal(read.data.state.ui.showChip, true)
+  assert.equal(read.value.state.ui.showChip, true)
 })
 
 test('apply：坏形状逐条指出下标', async () => {
@@ -400,17 +400,17 @@ test('read：prompts 给出生效值、内置值与覆盖原样', async () => {
 
   const result = await handleRead(deps, null)
   assert.equal(result.ok, true)
-  assert.deepEqual(result.data.prompts.effective, {
+  assert.deepEqual(result.value.prompts.effective, {
     delegation: BUILTIN_PROMPT.delegation,
     tiers: BUILTIN_PROMPT.tiers,
   })
-  assert.deepEqual(result.data.prompts.builtin, {
+  assert.deepEqual(result.value.prompts.builtin, {
     delegation: BUILTIN_PROMPT.delegation,
     tiers: BUILTIN_PROMPT.tiers,
   })
   // 没有覆盖文件时覆盖是空的：UI 据此显示「跟随内置」。
-  assert.equal(result.data.prompts.overrides.delegation, undefined)
-  assert.deepEqual(result.data.prompts.overrides.tiers, {})
+  assert.equal(result.value.prompts.overrides.delegation, undefined)
+  assert.deepEqual(result.value.prompts.overrides.tiers, {})
 })
 
 test('apply：putPrompts 写入后 read 的生效值变化，内置值不动', async () => {
@@ -421,14 +421,14 @@ test('apply：putPrompts 写入后 read 的生效值变化，内置值不动', a
     commands: [{ op: 'putPrompts', delegation: '自定义编排段' }],
   })
   assert.equal(written.ok, true)
-  assert.equal(written.data.prompts.effective.delegation, '自定义编排段')
-  assert.equal(written.data.prompts.builtin.delegation, BUILTIN_PROMPT.delegation)
-  assert.equal(written.data.prompts.overrides.delegation, '自定义编排段')
+  assert.equal(written.value.prompts.effective.delegation, '自定义编排段')
+  assert.equal(written.value.prompts.builtin.delegation, BUILTIN_PROMPT.delegation)
+  assert.equal(written.value.prompts.overrides.delegation, '自定义编排段')
 
   const read = await handleRead(deps, null)
   assert.equal(read.ok, true)
-  assert.equal(read.data.prompts.effective.delegation, '自定义编排段')
-  assert.equal(read.data.prompts.effective.tiers.tier1.label, BUILTIN_PROMPT.tiers.tier1.label)
+  assert.equal(read.value.prompts.effective.delegation, '自定义编排段')
+  assert.equal(read.value.prompts.effective.tiers.tier1.label, BUILTIN_PROMPT.tiers.tier1.label)
 
   // 落盘在提示词文件，不是 pack 文件。
   assert.equal(existsSync(promptsPath({ home })), true)
@@ -444,11 +444,11 @@ test('apply：putPrompts 只改一档，其余走内置', async () => {
   })
   const read = await handleRead(deps, null)
   assert.equal(read.ok, true)
-  assert.equal(read.data.prompts.effective.tiers.tier2.label, '快办')
-  assert.equal(read.data.prompts.effective.tiers.tier2.text, BUILTIN_PROMPT.tiers.tier2.text)
-  assert.equal(read.data.prompts.effective.tiers.tier1.label, BUILTIN_PROMPT.tiers.tier1.label)
-  assert.equal(read.data.prompts.effective.delegation, BUILTIN_PROMPT.delegation)
-  assert.deepEqual(read.data.prompts.overrides.tiers, { tier2: { label: '快办' } })
+  assert.equal(read.value.prompts.effective.tiers.tier2.label, '快办')
+  assert.equal(read.value.prompts.effective.tiers.tier2.text, BUILTIN_PROMPT.tiers.tier2.text)
+  assert.equal(read.value.prompts.effective.tiers.tier1.label, BUILTIN_PROMPT.tiers.tier1.label)
+  assert.equal(read.value.prompts.effective.delegation, BUILTIN_PROMPT.delegation)
+  assert.deepEqual(read.value.prompts.overrides.tiers, { tier2: { label: '快办' } })
 })
 
 test('apply：resetPrompts 单键恢复内置，其余覆盖保留', async () => {
@@ -466,8 +466,8 @@ test('apply：resetPrompts 单键恢复内置，其余覆盖保留', async () =>
   })
   const reset = await handleApply(deps, { commands: [{ op: 'resetPrompts', keys: ['delegation'] }] })
   assert.equal(reset.ok, true)
-  assert.equal(reset.data.prompts.effective.delegation, BUILTIN_PROMPT.delegation)
-  assert.equal(reset.data.prompts.effective.tiers.tier1.label, '探路')
+  assert.equal(reset.value.prompts.effective.delegation, BUILTIN_PROMPT.delegation)
+  assert.equal(reset.value.prompts.effective.tiers.tier1.label, '探路')
 })
 
 test('apply：resetPrompts 不传 keys 时全部恢复内置', async () => {
@@ -485,11 +485,11 @@ test('apply：resetPrompts 不传 keys 时全部恢复内置', async () => {
   })
   const reset = await handleApply(deps, { commands: [{ op: 'resetPrompts' }] })
   assert.equal(reset.ok, true)
-  assert.deepEqual(reset.data.prompts.effective, {
+  assert.deepEqual(reset.value.prompts.effective, {
     delegation: BUILTIN_PROMPT.delegation,
     tiers: BUILTIN_PROMPT.tiers,
   })
-  assert.deepEqual(reset.data.prompts.overrides.tiers, {})
+  assert.deepEqual(reset.value.prompts.overrides.tiers, {})
 })
 
 test('apply：提示词空串被拒，返回 bad-request 且不写文件', async () => {
@@ -548,9 +548,9 @@ test('apply：putPrompts 传 null 等于删键，恢复内置', async () => {
     commands: [{ op: 'putPrompts', delegation: null, tiers: { tier3: null } }],
   })
   assert.equal(cleared.ok, true)
-  assert.equal(cleared.data.prompts.effective.delegation, BUILTIN_PROMPT.delegation)
-  assert.equal(cleared.data.prompts.effective.tiers.tier3.label, BUILTIN_PROMPT.tiers.tier3.label)
-  assert.deepEqual(cleared.data.prompts.overrides.tiers, {})
+  assert.equal(cleared.value.prompts.effective.delegation, BUILTIN_PROMPT.delegation)
+  assert.equal(cleared.value.prompts.effective.tiers.tier3.label, BUILTIN_PROMPT.tiers.tier3.label)
+  assert.deepEqual(cleared.value.prompts.overrides.tiers, {})
 })
 
 /* ------------------------------------------------------------------ *
@@ -580,14 +580,14 @@ test('apply：dryRun 返回试算视图，不落盘、不调用 applyCommands', 
   assert.equal(dry.ok, true)
   assert.equal(applied, 0)
   // 视图同形：面板可以拿它直接渲染。
-  assert.equal(dry.data.resolved.id, 'standard')
-  assert.equal(dry.data.resolved.source, 'workspace')
-  assert.deepEqual(dry.data.state.packs.packs.standard, STANDARD)
-  assert.equal(typeof dry.data.support, 'object')
+  assert.equal(dry.value.resolved.id, 'standard')
+  assert.equal(dry.value.resolved.source, 'workspace')
+  assert.deepEqual(dry.value.state.packs.packs.standard, STANDARD)
+  assert.equal(typeof dry.value.support, 'object')
 
   // 磁盘什么都没变：read 仍是出厂内置。
   const read = await handleRead(deps, { cwd })
-  assert.equal(read.data.resolved.id, DEFAULT_PACK_ID)
+  assert.equal(read.value.resolved.id, DEFAULT_PACK_ID)
   assert.equal(existsSync(packsPath({ home })), false)
   assert.equal(existsSync(workspacesPath({ home })), false)
 })
@@ -606,11 +606,11 @@ test('apply：dryRun 的视图与真写后重读一致', async () => {
   const dry = await handleApply(deps, { cwd, dryRun: true, commands })
   const wet = await handleApply(deps, { cwd, commands })
 
-  assert.deepEqual(dry.data.state.packs, wet.data.state.packs)
-  assert.deepEqual(dry.data.state.bindings, wet.data.state.bindings)
-  assert.deepEqual(dry.data.state.prompts, wet.data.state.prompts)
-  assert.deepEqual(dry.data.resolved, wet.data.resolved)
-  assert.deepEqual(dry.data.prompts, wet.data.prompts)
+  assert.deepEqual(dry.value.state.packs, wet.value.state.packs)
+  assert.deepEqual(dry.value.state.bindings, wet.value.state.bindings)
+  assert.deepEqual(dry.value.state.prompts, wet.value.state.prompts)
+  assert.deepEqual(dry.value.resolved, wet.value.resolved)
+  assert.deepEqual(dry.value.prompts, wet.value.prompts)
 })
 
 test('apply：dryRun 非 true 的取值一律当真写', async () => {
@@ -620,10 +620,10 @@ test('apply：dryRun 非 true 的取值一律当真写', async () => {
   for (const dryRun of [false, 'true', 1, null]) {
     const result = await handleApply(deps, { dryRun, commands: [{ op: 'showChip', value: false }] })
     assert.equal(result.ok, true)
-    assert.equal(result.data.state.ui.showChip, false)
+    assert.equal(result.value.state.ui.showChip, false)
     // 写盘了才算数：read 能读回。
     const read = await handleRead(deps, null)
-    assert.equal(read.data.state.ui.showChip, false)
+    assert.equal(read.value.state.ui.showChip, false)
   }
 })
 
@@ -687,7 +687,7 @@ test('wrapHandler：空体按 null 处理，状态码 200', async () => {
   assert.equal(response.headers.get('cache-control'), 'no-store')
   const body = await response.json()
   assert.equal(body.ok, true)
-  assert.equal(body.data.resolved.id, DEFAULT_PACK_ID)
+  assert.equal(body.value.resolved.id, DEFAULT_PACK_ID)
 })
 
 test('wrapHandler：非 JSON body 与处理器异常都返回 200 + 信封', async () => {

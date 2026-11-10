@@ -34,7 +34,7 @@ async function bootClient() {
   globalThis.fetch = async (path, init) => {
     const body = JSON.parse((init && init.body) || '{}')
     reads.push(body.cwd)
-    return { status: 200, json: async () => ({ ok: true, data: server.data }) }
+    return { status: 200, json: async () => ({ ok: true, value: server.data }) }
   }
 
   /** 渲染次数：每次订阅被通知就 +1，用来断言「变了才重渲染」。 */

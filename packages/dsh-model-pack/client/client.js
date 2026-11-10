@@ -153,7 +153,7 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * 两条路由共用一套信封：{ ok: true, data } 或 { ok: false, error }。
+     * 两条路由共用一套信封：{ ok: true, value } 或 { ok: false, error }。
      * HTTP 恒 200（见 src/routes.ts），所以判定只能看 ok 字段，不能看 response.ok。
      */
     async function post(path, body) {
@@ -174,7 +174,7 @@ window.__ModuleLoader__.load({
       } catch {
         throw new Error('响应不是合法 JSON（HTTP ' + response.status + '）')
       }
-      if (payload && payload.ok === true) return payload.data
+      if (payload && payload.ok === true) return payload.value
       const message = payload && payload.error && payload.error.message ? payload.error.message : '请求失败'
       throw new Error(message)
     }

@@ -1,3 +1,4 @@
+import type { Envelope, ErrorCode } from '@dreanzy/dsh-pack-core'
 import { candidateTools, defaultCatalogFeed, type CatalogFeed } from './catalog.js'
 import { cwdFromAgent, cwdFromObserved } from '@dreanzy/dsh-pack-core'
 import { effective, type EffectiveRow } from './effective.js'
@@ -31,11 +32,8 @@ export interface RouteContext {
   logger: { warn(message: string): void }
 }
 
-export type ErrorCode = 'bad-request' | 'unknown-session' | 'internal'
+export type { Envelope, ErrorCode }
 
-export type Envelope<T> =
-  | { readonly ok: true; readonly value: T }
-  | { readonly ok: false; readonly error: { readonly code: ErrorCode; readonly message: string } }
 
 /**
  * 面板用的一行插件。求值结果由服务端算好，前端只负责渲染。
