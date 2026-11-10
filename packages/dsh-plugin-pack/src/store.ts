@@ -132,17 +132,6 @@ async function transact(
   return written
 }
 
-function setKey(
-  map: Readonly<Record<string, boolean>>,
-  key: string,
-  value: boolean | null,
-): Record<string, boolean> {
-  const next = { ...map }
-  if (value === null) delete next[key]
-  else next[key] = value
-  return next
-}
-
 /**
  * 当前完整状态，读侧不加锁（原子 rename 保证读到的是完整版本）。
  *
