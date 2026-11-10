@@ -14,6 +14,8 @@
  *   node scripts/release.mjs dsh-plugin-pack 只发一个
  *   node scripts/release.mjs --dry-run       只打印将要做什么
  *   node scripts/release.mjs --yes           失败时不询问，直接退出
+ *
+ * 发布前会先用 whoami 确认登录：没登录就把 `npm login` 拉起来，登录不成功一个包都不发。
  */
 import { spawnSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
@@ -93,6 +95,10 @@ function failureHint(stderr) {
   const text = stderr ?? ''
   if (text.includes('EOTP')) return '需要一次性密码：先在浏览器完成认证，或运行 npm login'
   if (text.includes('E401')) return '未登录或 token 过期：运行 npm login'
+  if (text.includes('E404')) {
+    // npm 对「凭据失效」的写操作回 404 而不是 401，看起来像包不存在，极易误判成权限问题。
+    return '写操作 404 多半是 token 失效或账号不是该 scope 的 owner：先 npm login，再用 npm view <包名> maintainers 对一下'
+  }
   if (text.includes('E403')) return '没有发布权限：确认作用域与账号匹配'
   if (text.includes('EPUBLISHCONFLICT')) return '该版本已存在：先改版本号'
   if (text.includes('cannot publish over the previously published versions')) {
@@ -115,6 +121,59 @@ async function askRetry(label) {
   } finally {
     rl.close()
   }
+}
+
+/** 当前登录的 npm 账号；未登录、token 失效或调不起 npm 时都返回 `null`。 */
+function currentUser() {
+  let result
+  try {
+    result = npm(['whoami'], { capture: true })
+  } catch {
+    // 调不起 npm（权限、沙箱、PATH）时不要抛：调用方只关心"能不能发"。
+    return null
+  }
+  if (result.status !== 0) return null
+  const name = String(result.stdout ?? '').trim()
+  return name === '' ? null : name
+}
+
+/**
+ * 发布前确认登录。
+ *
+ * 凭据失效时 `npm publish` 报的是 **E404**——npm 对无效凭据的写操作回 404 而不是 401，
+ * 看起来像"包不存在"，很容易被误判成作用域或权限问题，白查半天。所以先探一次 whoami：
+ * 没登录就地把 `npm login` 拉起来（交互模式下由 npm 接管终端完成浏览器认证），
+ * 登录不成就停在这里，一个包都不发。
+ */
+async function ensureLogin() {
+  const user = currentUser()
+  if (user !== null) {
+    console.log(`npm 已登录：${user}`)
+    return true
+  }
+
+  if (!interactive) {
+    console.error('npm 未登录，或 token 已失效。')
+    console.error('先运行 npm login，再重跑这个脚本；非交互环境不会自动拉起登录。')
+    return false
+  }
+
+  console.log('npm 未登录，或 token 已失效。现在启动 npm login……')
+  console.log('（会在浏览器完成认证；完成后自动继续，不会重复发布任何包）\n')
+  const login = npm(['login'])
+  if (login.status !== 0) {
+    console.error('\nnpm login 没有完成，已停止，未发布任何包。')
+    return false
+  }
+
+  const after = currentUser()
+  if (after === null) {
+    console.error('登录后 whoami 仍然失败：token 可能没写入，或该账号没有这个 scope 的发布权限。')
+    console.error('可运行 npm view <包名> maintainers 对照账号。')
+    return false
+  }
+  console.log(`npm 已登录：${after}`)
+  return true
 }
 
 /** 发布一个包，失败或超时时询问是否重试。 */
@@ -224,6 +283,12 @@ if (unknown.length > 0) {
 }
 
 const results = []
+if (dryRun) {
+  const user = currentUser()
+  console.log(`[dry-run] npm 登录状态：${user === null ? '未登录（真实发布会先引导 npm login）' : user}`)
+} else if (!(await ensureLogin())) {
+  process.exit(1)
+}
 for (const dir of targets) results.push(await publishOne(dir))
 
 const failed = results.filter((result) => !result.ok)
