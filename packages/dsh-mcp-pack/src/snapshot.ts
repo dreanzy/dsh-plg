@@ -264,7 +264,7 @@ export function createScopeSnapshot(deps: SnapshotDeps): ScopeSnapshot {
       ...loaded.warnings,
       ...scan.warnings,
     ])
-    const evaluated = effective({ policy: loaded.policy, rows: merged.rows })
+    const evaluated = effective({ policy: loaded.policy, rows: merged.rows, complete: scan.complete })
 
     const targets = new Map<string, ToolTarget>()
     const policies = new Map<string, { enabled: boolean; mode: Mode }>()

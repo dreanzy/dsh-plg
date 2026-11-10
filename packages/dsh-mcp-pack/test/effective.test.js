@@ -90,3 +90,19 @@ test('组级决定归属做出决定的 pack，并标成 group', () => {
   // 只按 default 求值时组级没有记录，落到内置缺省。
   assert.equal(result.rows[0].openGlobal, true)
 })
+
+test('可信度跟着结论一起走：行发现不完整时同样标注', () => {
+  const base = () =>
+    effective({
+      policy: policyOf({ defaultPack: { name: '默认', groups: {}, rows: {} } }),
+      rows: [row('global:a', 'a')],
+      complete: true,
+    })
+  assert.equal(base().complete, true)
+  const partial = effective({
+    policy: policyOf({ defaultPack: { name: '默认', groups: {}, rows: {} } }),
+    rows: [row('global:a', 'a')],
+    complete: false,
+  })
+  assert.equal(partial.complete, false, '行发现不完整时这份答案不能拿去落地')
+})

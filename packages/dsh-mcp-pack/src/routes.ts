@@ -201,7 +201,8 @@ async function buildView(
   const defaultPack: McpPack = defaultPackOf(state.packs)
   // 试算视图必须重算一遍求值：面板要看到「改了之后每行会变成什么样」。行清单仍是
   // 真实快照的那一份，只有策略换了；没给 policy 时直接用快照里那份，不重复算。
-  const evaluated = policy === undefined ? view.effective : effective({ policy: state, rows: view.rows })
+  const evaluated =
+    policy === undefined ? view.effective : effective({ policy: state, rows: view.rows, complete: view.complete })
   const rows: RowView[] = []
   for (const [index, row] of view.rows.entries()) {
     const resolved = evaluated.rows[index]
