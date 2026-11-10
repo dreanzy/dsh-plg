@@ -18,7 +18,7 @@ ADR-0002 记的是"重复的基础设施约 150 行，对三包 13672 行约 1%"
 
 ### 决定
 
-抽出 `@dreanzy/dsh-pack-core`，**服务端半边共用**，**客户端半边走构建期生成**。四包继续各自发版、各自安装。
+抽出 `@dreanzy/dsh-pack-core`，**服务端半边共用**；**客户端半边只共享规则，由测试锁死**。四包继续各自发版、各自安装。
 
 边界（服务端）：
 
@@ -40,7 +40,7 @@ ADR-0002 记的是"重复的基础设施约 150 行，对三包 13672 行约 1%"
 - **`tools`**：mcp 与 model 各一套，语义无关。
 - **`transact`（写事务）**：三份签名与错误传播约定不同——plugin 吞掉错误、写进 warnings、返回 boolean；mcp 与 skill 抛异常由 `applyCommands` 记。统一会改掉两个包的语义，只共享它读的那一步（`readText`）。
 
-边界（客户端）：四份 `client.js` 是手写单文件，宿主不打包它，只能 `require('react')`。共享的只有队列、冻结排序、面板通用件与 i18n 表，**在构建期拼进各包的 `client.js`**，不做运行时跨包 `require`。
+边界（客户端）：四份 `client.js` 是手写单文件，宿主不打包它，只能 `require('react')`。队列键这类**规则**放进 core（`PENDING_KEY_RULES`），客户端的实现仍是复制品，但四个包的 `test/client.test.js` 逐 op 比对两边结果，漂移会让用例直接失败。面板组件要不要共享，等真的改四遍、且出过一次不一致再谈构建期拼接——不提前引入第二套构建链。
 
 ## 考虑过的替代方案
 
@@ -67,8 +67,8 @@ ADR-0002 已否掉一次，理由不变：只想管 skill 的人不该被迫跟 
 - **发布不能留 `workspace:` 协议**：`scripts/release.mjs` 走 `npm publish`，npm 不认这个协议；ADR-0001 记的死因（用户从 git 子目录安装时 `ERR_PNPM_WORKSPACE_PKG_NOT_FOUND`）也是同一个根因。依赖一律写真实 semver，本地靠 pnpm 的 workspace 链接行为。
 - **源码安装仍然要求 core 先发版**：`github:<owner>/<repo>#<sha>&path:/packages/<pkg>` 会解析包的 `dependencies`，core 没发布就装不上。这是抽包的真实代价，不是可以绕过的细节。
 - **entry id 与包名都不能撞**：同 id 的 Loader 条目会被静默复用覆盖（`store[id] ??=`），两个 active 来源解析到同一包名会让客户端组合失败。
-- **客户端构建多一步**：生成式拼接必须挂在发布前，否则 `client.js` 缺一段。仓库原本的"避免第二套构建链"因此让步，但换取的是单文件形态不变、宿主机制不变。
-- 五个 manager 的 `ops` 表（D5）的形态随之确定：服务端的 union / OPS / 校验器 / apply 分派进 core，客户端的 `pendingKey` 由同一张表在构建期生成，不再手写第四份。
+- **客户端仍是复制品**：规则只有一份（core 的表），实现有四份。守护靠测试而不是生成：改 core 会让四包用例变红，改客户端那份同样。代价是每加一个 op 要动一次客户端；收益是不给手写单文件加构建链。
+- 五个 manager 的 `ops` 表（D5）：服务端的 union 与表已落地；客户端的 `pendingKey` 以 core 的 `PENDING_KEY_RULES` 为单一真源，由测试守护，不再各自演化。
 - **重新审视的条件**：若 core 的接口开始因为四包需求被迫长出开关参数（而不是收窄），说明边界切错了，应退回按包拆分。
 
 ## 参考
