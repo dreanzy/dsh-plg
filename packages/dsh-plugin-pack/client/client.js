@@ -873,10 +873,26 @@ window.__ModuleLoader__.load({
         )
       }, [entries])
 
-      const push = useCallback((commands) => {
-        const list = Array.isArray(commands) ? commands : [commands]
-        setEntries((prev) => {
-          const next = prev.slice()
+      /*
+       * 队列的实时快照，**由每个变更函数同步维护**。
+       *
+       * 不能只在渲染期赋值：`commit` / `drop` 是在事件回调里同步调用的，那时还没重渲染，
+       * 读到的是上一次渲染的队列。「改完文字直接点保存」正是这种情况——失焦刚把最后一条
+       * 命令塞进队列，紧接着的点击就要读它，而 `setEntries` 还没生效，改动就丢了。
+       */
+      const entriesRef = useRef(entries)
+
+      /** 同步写入快照并交给 React：两处永远是同一份。 */
+      const apply = useCallback((next) => {
+        entriesRef.current = next
+        setEntries(next)
+        return next
+      }, [])
+
+      const push = useCallback(
+        (commands) => {
+          const list = Array.isArray(commands) ? commands : [commands]
+          const next = entriesRef.current.slice()
           for (const command of list) {
             const key = pendingKey(command)
             if (key !== null) {
@@ -887,21 +903,18 @@ window.__ModuleLoader__.load({
             uid.current += 1
             next.push({ id: uid.current, key: key, command: command })
           }
-          return next
-        })
-      }, [])
+          apply(next)
+        },
+        [apply],
+      )
 
-      const undo = useCallback(() => setEntries((prev) => prev.slice(0, -1)), [])
-      const discard = useCallback(() => setEntries([]), [])
+      const undo = useCallback(() => {
+        apply(entriesRef.current.slice(0, -1))
+      }, [apply])
 
-      /*
-       * 队列的实时快照。
-       *
-       * `commit` / `drop` 若读闭包里的 `entries`，拿到的可能是上一次渲染的那一份：
-       * 「改完文字直接点保存」时失焦与点击挤在同一次交互里，最后一条命令就会掉。
-       */
-      const entriesRef = useRef(entries)
-      entriesRef.current = entries
+      const discard = useCallback(() => {
+        apply([])
+      }, [apply])
 
       /**
        * 强制让那份试算重算一次。
@@ -910,7 +923,18 @@ window.__ModuleLoader__.load({
        * 被删掉的对象就会一直留在按试算视图渲染的面板上。删除后必须踢一脚。
        */
       const refresh = useCallback(() => {
-        setEntries((prev) => prev.slice())
+        apply(entriesRef.current.slice())
+      }, [apply])
+      /**
+       * 丢弃过时的试算结果。
+       *
+       * 写盘会换掉 base，而手里的试算视图是基于**旧** base 算的：被删掉的对象会
+       * 多留在屏幕上一次往返的时间，看起来就是「删了没反应，过一会儿才消失」。
+       * 写盘之后先丢掉它，面板立刻回落到新的真实视图，紧接着再按新 base 重算。
+       */
+      const resetPreview = useCallback(() => {
+        seq.current += 1
+        setPreview({ data: null, loading: false, error: null })
       }, [])
 
       /**
@@ -919,26 +943,29 @@ window.__ModuleLoader__.load({
        * 删除是当场写盘的，队列里引用被删对象的命令（改它的名、给它设开关、
        * 绑到它、把它归到被删的组）在删除之后都落不了地，留着只会在保存时报错。
        */
-      const drop = useCallback((predicate) => {
-        const victims = entriesRef.current.filter((entry) => predicate(entry.command))
-        if (victims.length === 0) return 0
-        setEntries((prev) => prev.filter((entry) => !predicate(entry.command)))
-        return victims.length
-      }, [])
+      const drop = useCallback(
+        (predicate) => {
+          const victims = entriesRef.current.filter((entry) => predicate(entry.command))
+          if (victims.length === 0) return 0
+          apply(entriesRef.current.filter((entry) => !predicate(entry.command)))
+          return victims.length
+        },
+        [apply],
+      )
 
       const commit = useCallback(async () => {
         const commands = entriesRef.current.map((entry) => entry.command)
         if (commands.length === 0) return true
         try {
           const data = await latest.current.apply(commands)
-          setEntries([])
+          apply([])
           latest.current.onApplied(data)
           return true
         } catch (error) {
           setPreview((prev) => ({ ...prev, error: String(error.message || error) }))
           return false
         }
-      }, [])
+      }, [apply])
 
       /** 被改动命中的键，供行渲染标出「这一行还没保存」。 */
       const keys = useMemo(() => {
@@ -956,6 +983,7 @@ window.__ModuleLoader__.load({
         discard: discard,
         drop: drop,
         refresh: refresh,
+      resetPreview: resetPreview,
         commit: commit,
         count: entries.length,
       }
@@ -1974,10 +2002,12 @@ window.__ModuleLoader__.load({
        */
       const deleteWith = (what, predicate, commands) => {
         const removed = pending.drop(predicate)
-        run(commands)
-        // 队列可能一条都没被删掉，`entries` 引用不变、试算不会重跑；踢一脚让被删的对象
-        // 立刻从面板上消失，而不是等到下一次改动。
-        pending.refresh()
+        run(commands).then(() => {
+          // 写盘换了 base，手里那份试算必然过时：先丢掉，面板立刻回落到新的真实视图，
+          // 再按新 base 重算。否则被删的对象会多留一次往返的时间，看起来就是「点了没反应」。
+          pending.resetPreview()
+          pending.refresh()
+        })
         setNotice(removed > 0 ? '已删除「' + what + '」，并丢弃对它的 ' + removed + ' 项未保存改动' : null)
       }
 

@@ -1618,13 +1618,13 @@ window.__ModuleLoader__.load({
       const latest = useRef(options)
       latest.current = options
       /*
-       * 队列的最新值也放一份在 ref 里。
+       * 队列的实时快照，**由每个变更函数同步维护**。
        *
-       * 输入框的失焦发生在点击之前：先 push 再点「保存」时，那个点击处理函数拿到的
-       * 还是上一次渲染的 `entries`，最后一段刚提交的文字就会掉。commit 读 ref 兜住。
+       * 不能只在渲染期赋值：`commit` / `drop` 是在事件回调里同步调用的，那时还没重渲染，
+       * 读到的是上一次渲染的队列。输入框的失焦发生在点击之前——先 push 再点「保存」时，
+       * 那个点击处理拿到的是旧队列，最后一段刚提交的文字就会掉。
        */
       const entriesRef = useRef(entries)
-      entriesRef.current = entries
 
       useEffect(() => {
         if (entries.length === 0) {
@@ -1647,10 +1647,17 @@ window.__ModuleLoader__.load({
         )
       }, [entries])
 
-      const push = useCallback((commands) => {
-        const list = Array.isArray(commands) ? commands : [commands]
-        setEntries((prev) => {
-          const next = prev.slice()
+      /** 同步写入快照并交给 React：两处永远是同一份。 */
+      const apply = useCallback((next) => {
+        entriesRef.current = next
+        setEntries(next)
+        return next
+      }, [])
+
+      const push = useCallback(
+        (commands) => {
+          const list = Array.isArray(commands) ? commands : [commands]
+          const next = entriesRef.current.slice()
           for (const command of list) {
             const key = pendingKey(command)
             if (key !== null) {
@@ -1661,12 +1668,18 @@ window.__ModuleLoader__.load({
             uid.current += 1
             next.push({ id: uid.current, key: key, command: command })
           }
-          return next
-        })
-      }, [])
+          apply(next)
+        },
+        [apply],
+      )
 
-      const undo = useCallback(() => setEntries((prev) => prev.slice(0, -1)), [])
-      const discard = useCallback(() => setEntries([]), [])
+      const undo = useCallback(() => {
+        apply(entriesRef.current.slice(0, -1))
+      }, [apply])
+
+      const discard = useCallback(() => {
+        apply([])
+      }, [apply])
 
       /**
        * 强制让那份试算重算一次。
@@ -1675,7 +1688,19 @@ window.__ModuleLoader__.load({
        * 被删掉的 pack 就会一直留在按试算视图渲染的面板上。删除后必须踢一脚。
        */
       const refresh = useCallback(() => {
-        setEntries((prev) => prev.slice())
+        apply(entriesRef.current.slice())
+      }, [apply])
+
+      /**
+       * 丢弃过时的试算结果。
+       *
+       * 写盘会换掉 base，而手里的试算视图是基于**旧** base 算的：被删掉的对象会
+       * 多留在屏幕上一次往返的时间，看起来就是「删了没反应，过一会儿才消失」。
+       * 写盘之后先丢掉它，面板立刻回落到新的真实视图，紧接着再按新 base 重算。
+       */
+      const resetPreview = useCallback(() => {
+        seq.current += 1
+        setPreview({ data: null, loading: false, error: null })
       }, [])
 
       /**
@@ -1688,10 +1713,10 @@ window.__ModuleLoader__.load({
         (predicate) => {
           const victims = entriesRef.current.filter((entry) => predicate(entry.command))
           if (victims.length === 0) return 0
-          setEntries((prev) => prev.filter((entry) => !predicate(entry.command)))
+          apply(entriesRef.current.filter((entry) => !predicate(entry.command)))
           return victims.length
         },
-        [],
+        [apply],
       )
 
       const commit = useCallback(async () => {
@@ -1699,14 +1724,14 @@ window.__ModuleLoader__.load({
         if (commands.length === 0) return true
         try {
           const data = await latest.current.apply(commands)
-          setEntries([])
+          apply([])
           latest.current.onApplied(data)
           return true
         } catch (error) {
           setPreview((prev) => ({ ...prev, error: String(error.message || error) }))
           return false
         }
-      }, [])
+      }, [apply])
 
       /** 被改动命中的键，供行渲染标出「这一行还没保存」。 */
       const keys = useMemo(() => {
@@ -1724,6 +1749,7 @@ window.__ModuleLoader__.load({
         discard: discard,
         drop: drop,
         refresh: refresh,
+      resetPreview: resetPreview,
         commit: commit,
         count: entries.length,
       }
@@ -2847,10 +2873,12 @@ window.__ModuleLoader__.load({
         const removed = pending.drop((command) => command.packId === packId)
         if (expanded === packId) setExpanded(null)
         setNotice(removed > 0 ? '已删除「' + name + '」，并丢弃对它的 ' + removed + ' 项未保存改动' : null)
-        void run([{ op: 'deletePack', packId: packId }])
-        // 队列可能一条都没被删掉，`entries` 引用不变、试算不会重跑；踢一脚让这张 pack
-        // 立刻从名册上消失。
-        pending.refresh()
+        void run([{ op: 'deletePack', packId: packId }]).then(() => {
+          // 写盘换了 base，手里那份试算必然过时：先丢掉，名册立刻回落到新的真实视图，
+          // 再按新 base 重算。否则这张 pack 会多留一次往返的时间。
+          pending.resetPreview()
+          pending.refresh()
+        })
       }
 
       const commit = () => {
