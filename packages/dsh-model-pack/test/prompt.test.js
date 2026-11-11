@@ -104,9 +104,12 @@ test('四档默认名是Scout / Quick / Deep / Heavy', () => {
   }
 })
 
-test('内置编排段含切轨道、并行与收尾验收三件事', () => {
+test('内置编排段含判据、切轨道、并行、检查点与收尾验收', () => {
+  assert.match(BUILTIN_PROMPT.delegation, /Delegate only when both hold/)
   assert.match(BUILTIN_PROMPT.delegation, /Plan before delegating/)
   assert.match(BUILTIN_PROMPT.delegation, /keep working while they run/)
+  assert.match(BUILTIN_PROMPT.delegation, /a checkpoint path/)
+  assert.match(BUILTIN_PROMPT.delegation, /must stand alone/)
   assert.match(BUILTIN_PROMPT.delegation, /a missed scope or an out-of-bounds change is a defect/)
 })
 

@@ -4,8 +4,12 @@
  * 段名固定 `model-pack.delegation`，只在 `subagent_tier` 注册成功后由编排层注入；
  * 注入条件与顺序见 spec §6.1（先注册成功，再 deny 官方工具，最后注入本段）。
  *
- * 这段的唯一职责是压过官方那段「Start independent delegations with subagent_fork」的
- * 残留推荐：独立任务一律走 `subagent_tier`，`subagent_fork` 只留给需要本对话上下文的任务。
+ * 这段做四件事：判断要不要派、按难度选档、要求检查点与自足交付、压过官方那段
+ * 「Start independent delegations with subagent_fork」的残留推荐——独立任务一律走
+ * `subagent_tier`，`subagent_fork` 只留给需要本对话上下文的任务。
+ *
+ * 判据、检查点、交付契约放在这里而不是用户 AGENTS.md：它们随工具是否存在而变化，
+ * 且只需父会话看到——子代理自己会读 AGENTS.md，读到「要不要继续嵌套委派」反而有害。
  *
  * 两条硬约束（spec §6.3.1）：
  * 1. 段内容只能来自配置与内置常量，**不拼 pack 名、模型名、cwd 这类随会话变化的值**——
@@ -21,8 +25,8 @@ import type { ResolvedPack } from './policy.js'
 /** 段名。编排层按这个名字写入系统提示词。 */
 export const DELEGATION_SECTION_NAME = 'model-pack.delegation'
 
-/** 段文本的 token 上限（spec §6.3：段 ≤350）。 */
-export const DELEGATION_MAX_TOKENS = 350
+/** 段文本的 token 上限（spec §6.3：段 ≤400，实测占用见 spec 预算表）。 */
+export const DELEGATION_MAX_TOKENS = 400
 
 /** 一段待注入的系统提示词。 */
 export interface DelegationSection {
@@ -45,24 +49,27 @@ export interface PromptText {
 /**
  * 编排段的插入点。
  *
- * 内置编排段由「前两行 + 空行 + 后四行」组成，档位表落在空行处；用户覆盖若也留了
+ * 内置编排段由「前三行 + 空行 + 后六行」组成，档位表落在空行处；用户覆盖若也留了
  * 空行就落在同一处，没留就接在末尾——这样覆盖整段不必知道占位符的存在。
  */
 const TIER_SLOT = '\n\n'
 
 /**
- * 内置编排段：切轨道 + 选档纪律 + 并行与收尾。
+ * 内置编排段：派不派 → 派给谁 → 怎么派 → 怎么收。
  *
  * 用英文，与宿主其余内置提示词一致：系统提示词是给模型读的，不随界面语言变。
  * 措辞可压缩，含义不可改；不含任何 provider / model 名（测试会断言）。
  */
 const DELEGATION = [
+  'Delegate only when both hold: the process produces material this conversation never needs, and the result compresses into one quotable paragraph.',
   'Plan before delegating: order by the dependency graph, scope by write ownership, and parallelize only what does not overlap.',
   'Always delegate through subagent_tier and pick the tier by task difficulty; never guess a model yourself:',
   '',
   'When unsure, take the higher tier; anything touching data migration, security boundaries, or concurrency goes straight to tier4.',
   'Use subagent_fork only when the task needs this conversation\'s context; independent tasks must not use it.',
   'Start independent delegations together in one message, keep working while they run, and list the dispatched tracks at the end.',
+  'Give every delegation a checkpoint path; the child appends confirmed facts with file:line, ruled-out hypotheses, and the current blocker every ~8 tool calls.',
+  'A returned result must stand alone: conclusion, evidence locations, what was not done, what is still uncertain.',
   'Before finishing, check every delegation package item by item; a missed scope or an out-of-bounds change is a defect.',
 ].join('\n')
 
