@@ -25,8 +25,8 @@ import type { ResolvedPack } from './policy.js'
 /** 段名。编排层按这个名字写入系统提示词。 */
 export const DELEGATION_SECTION_NAME = 'model-pack.delegation'
 
-/** 段文本的 token 上限（spec §6.3：段 ≤400，实测占用见 spec 预算表）。 */
-export const DELEGATION_MAX_TOKENS = 400
+/** 段文本的 token 上限（spec §6.3：段 ≤450，实测占用见 spec 预算表）。 */
+export const DELEGATION_MAX_TOKENS = 450
 
 /** 一段待注入的系统提示词。 */
 export interface DelegationSection {
@@ -68,7 +68,7 @@ const DELEGATION = [
   '',
   'When unsure, take the higher tier; security or data migration goes straight to tier4; a reading-only task with no synthesis stays tier1.',
   'Use subagent_fork only when the task needs this conversation\'s context; independent tasks must not use it.',
-  'Give every delegation a checkpoint path; the child appends confirmed facts with file:line, ruled-out hypotheses, and the current blocker every ~8 tool calls.',
+  'Give every delegation a checkpoint path; the child appends confirmed facts with file:line, ruled-out hypotheses, and the current blocker when a conclusion lands or past ~15 tool calls. Cap a single delegation at about 40 tool calls; past that, return what you have and let the parent decide whether to continue.',
   'A returned result must stand alone: conclusion, evidence locations, what was not done, what is still uncertain.',
   'Before finishing, check every delegation package item by item; a missed scope or an out-of-bounds change is a defect.',
 ].join('\n')
