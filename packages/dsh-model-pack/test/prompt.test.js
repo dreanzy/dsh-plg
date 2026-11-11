@@ -113,6 +113,23 @@ test('内置编排段含判据、切轨道、并行、检查点与收尾验收',
   assert.match(BUILTIN_PROMPT.delegation, /a missed scope or an out-of-bounds change is a defect/)
 })
 
+test('四档判据按判断力分级，不按文件数或阅读量', () => {
+  assert.match(BUILTIN_PROMPT.tiers.tier1.text, /never writes/)
+  assert.match(BUILTIN_PROMPT.tiers.tier2.text, /decides nothing/)
+  assert.match(BUILTIN_PROMPT.tiers.tier3.text, /needing a decision/)
+  assert.match(BUILTIN_PROMPT.tiers.tier4.text, /concurrency bugs/)
+  for (const tierId of TIER_IDS) {
+    assert.doesNotMatch(BUILTIN_PROMPT.tiers[tierId].text, /\d+\s*files?/i, tierId)
+  }
+})
+
+test('档位表前后各隔一行', () => {
+  const section = delegationSection(FULL)
+  assert.ok(section !== null)
+  assert.match(section.text, /never guess a model yourself:\n\ntier1 /)
+  assert.match(section.text, /\ntier4 [^\n]*\n\nWhen unsure/)
+})
+
 test('段文本同时指出 subagent_tier 与 subagent_fork', () => {
   const section = delegationSection(FULL)
   assert.ok(section !== null)
@@ -235,7 +252,7 @@ test('用户只覆盖一档时其余走内置', () => {
 
   const section = delegationSection(FULL, prompt)
   assert.ok(section !== null)
-  assert.match(section.text, /tier2 快办 — Well-defined change/)
+  assert.match(section.text, /tier2 快办 — Change whose shape/)
   assert.match(section.text, /tier1 Scout/)
   assert.match(section.text, /tier4 Heavy/)
 })

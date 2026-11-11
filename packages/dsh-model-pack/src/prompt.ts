@@ -49,8 +49,8 @@ export interface PromptText {
 /**
  * 编排段的插入点。
  *
- * 内置编排段由「前三行 + 空行 + 后六行」组成，档位表落在空行处；用户覆盖若也留了
- * 空行就落在同一处，没留就接在末尾——这样覆盖整段不必知道占位符的存在。
+ * 内置编排段由「前四行 + 空行 + 后五行」组成，档位表落在空行处，前后各隔一行。
+ * 用户覆盖若也留了空行就落在同一处，没留就接在末尾——这样覆盖整段不必知道占位符的存在。
  */
 const TIER_SLOT = '\n\n'
 
@@ -62,12 +62,12 @@ const TIER_SLOT = '\n\n'
  */
 const DELEGATION = [
   'Delegate only when both hold: the process produces material this conversation never needs, and the result compresses into one quotable paragraph.',
-  'Plan before delegating: order by the dependency graph, scope by write ownership, and parallelize only what does not overlap.',
+  'Plan before delegating: order by the dependency graph and scope by write ownership.',
+  'Start independent delegations together in one message, keep working while they run, and list the dispatched tracks at the end.',
   'Always delegate through subagent_tier and pick the tier by task difficulty; never guess a model yourself:',
   '',
-  'When unsure, take the higher tier; anything touching data migration, security boundaries, or concurrency goes straight to tier4.',
+  'When unsure, take the higher tier; security or data migration goes straight to tier4; a reading-only task with no synthesis stays tier1.',
   'Use subagent_fork only when the task needs this conversation\'s context; independent tasks must not use it.',
-  'Start independent delegations together in one message, keep working while they run, and list the dispatched tracks at the end.',
   'Give every delegation a checkpoint path; the child appends confirmed facts with file:line, ruled-out hypotheses, and the current blocker every ~8 tool calls.',
   'A returned result must stand alone: conclusion, evidence locations, what was not done, what is still uncertain.',
   'Before finishing, check every delegation package item by item; a missed scope or an out-of-bounds change is a defect.',
@@ -82,10 +82,10 @@ const DELEGATION = [
 export const BUILTIN_PROMPT: PromptText = {
   delegation: DELEGATION,
   tiers: {
-    tier1: { label: TIER_DEFAULT_NAMES.tier1, text: 'Read-only reconnaissance; the output is context with citations.' },
-    tier2: { label: TIER_DEFAULT_NAMES.tier2, text: 'Well-defined change across 1-3 files; acceptance fits in one sentence.' },
-    tier3: { label: TIER_DEFAULT_NAMES.tier3, text: 'Requires reading before deciding; 4+ files or cross-module consistency.' },
-    tier4: { label: TIER_DEFAULT_NAMES.tier4, text: 'Root cause unknown; involves architecture trade-offs, concurrency, security, or data migration.' },
+    tier1: { label: TIER_DEFAULT_NAMES.tier1, text: 'Reads and reports with citations; never writes. For answers that live in the files, not in your judgment.' },
+    tier2: { label: TIER_DEFAULT_NAMES.tier2, text: 'Change whose shape an existing pattern or the request already fixes; may read, decides nothing.' },
+    tier3: { label: TIER_DEFAULT_NAMES.tier3, text: 'Write work needing a decision: choose among approaches, or keep several modules consistent.' },
+    tier4: { label: TIER_DEFAULT_NAMES.tier4, text: 'Cause or target unknown: architecture, concurrency bugs, security, data migration.' },
   },
 }
 
@@ -160,7 +160,9 @@ function compose(delegation: string, rows: readonly string[]): string {
   const base = delegation.trim()
   const at = base.indexOf(TIER_SLOT)
   if (at < 0) return [base, ...rows].join('\n')
-  return `${base.slice(0, at)}\n${rows.join('\n')}${base.slice(at)}`
+  const head = base.slice(0, at)
+  const tail = base.slice(at + TIER_SLOT.length)
+  return `${head}${TIER_SLOT}${rows.join('\n')}${TIER_SLOT}${tail}`
 }
 
 /**
