@@ -6,6 +6,7 @@ import { homedir, tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import {
   DEFAULT_PACK_ID,
+  MAX_PACKS,
   normalizeCwd,
   parsePromptOverrides,
   parsePacks,
@@ -347,6 +348,104 @@ test('写入：createPack 重名与空名都被忽略', async () => {
   assert.equal(Object.keys(packs).length, 2)
   assert.ok(state.warnings.some((warning) => warning.includes('已存在')))
   assert.ok(state.warnings.some((warning) => warning.includes('不能为空')))
+})
+
+test('写入：duplicatePack 深拷贝内容，副本与原 pack 再无关联', async () => {
+  const home = await tempRoot()
+  await applyCommands(null, [{ op: 'putPack', packId: 'standard', pack: STANDARD }], { home })
+
+  const state = await applyCommands(null, [{ op: 'duplicatePack', packId: 'standard' }], { home })
+  const packs = (await readPacks(home)).packs
+  const copyId = Object.keys(packs).find((id) => id !== 'standard' && id !== DEFAULT_PACK_ID)
+  assert.ok(copyId !== undefined, '副本必须落盘')
+  assert.equal(packs[copyId].name, '标准 2', '缺省名是原名 + 空格 + 序号')
+  assert.deepEqual(packs[copyId].session, STANDARD.session)
+  assert.deepEqual(packs[copyId].tiers, STANDARD.tiers)
+
+  // 改副本不动原 pack，改原 pack 不动副本：这是「副本」与「跟随」的分界。
+  await applyCommands(null, [{ op: 'renamePack', packId: copyId, name: '副本改名' }], { home })
+  await applyCommands(null, [{ op: 'packTier', packId: copyId, tierId: 'tier1', tier: null }], { home })
+  const after = (await readPacks(home)).packs
+  assert.equal(after.standard.name, '标准')
+  assert.deepEqual(after.standard.tiers, STANDARD.tiers)
+  assert.equal(after[copyId].name, '副本改名')
+  assert.equal(after[copyId].tiers.tier1, undefined)
+  assert.equal(state.warnings.length, 0)
+})
+
+test('写入：duplicatePack 序号避让，不做尾部数字识别', async () => {
+  const home = await tempRoot()
+  await applyCommands(null, [{ op: 'createPack', name: '前端' }], { home })
+  await applyCommands(null, [{ op: 'duplicatePack', packId: 'p1' }], { home })
+  await applyCommands(null, [{ op: 'duplicatePack', packId: 'p1' }], { home })
+
+  const packs = (await readPacks(home)).packs
+  const names = Object.values(packs).map((pack) => pack.name).sort()
+  assert.deepEqual(names, ['前端', '前端 2', '前端 3', '默认'].sort())
+
+  // 「前端 2」的副本叫「前端 2 2」：规则只有一条，可预测。
+  await applyCommands(null, [{ op: 'duplicatePack', packId: 'p2' }], { home })
+  const after = (await readPacks(home)).packs
+  assert.ok(Object.values(after).some((pack) => pack.name === '前端 2 2'))
+})
+
+test('写入：duplicatePack 可从 default 复制，副本不带绑定', async () => {
+  const home = await tempRoot()
+  const cwd = await tempRoot()
+  await applyCommands(null, [{ op: 'createPack', name: '前端' }], { home })
+  await applyCommands(null, [{ op: 'bind', cwd, packId: 'p1' }], { home })
+
+  await applyCommands(null, [{ op: 'duplicatePack', packId: DEFAULT_PACK_ID }], { home })
+  const packs = (await readPacks(home)).packs
+  const copyId = Object.keys(packs).find((id) => id !== DEFAULT_PACK_ID && id !== 'p1')
+  assert.equal(packs[copyId].name, '默认 2')
+  // 绑定表原样：副本没有目录，复制不会把任何工作区切过去。
+  const state = await loadState(cwd, { home })
+  assert.equal(state.bindings.bindings[normalizeCwd(cwd)], 'p1')
+  assert.equal(Object.values(state.bindings.bindings).includes(copyId), false)
+})
+
+test('写入：duplicatePack 源不存在、显式重名都被忽略并留 warning', async () => {
+  const home = await tempRoot()
+  await applyCommands(null, [{ op: 'createPack', name: '前端' }], { home })
+  const before = await readFile(packsPath({ home }), 'utf8')
+
+  const state = await applyCommands(null, [
+    { op: 'duplicatePack', packId: 'ghost' },
+    { op: 'duplicatePack', packId: 'p1', name: '前端' },
+  ], { home })
+
+  assert.equal(await readFile(packsPath({ home }), 'utf8'), before)
+  assert.ok(state.warnings.some((warning) => warning.includes('不存在')))
+  assert.ok(state.warnings.some((warning) => warning.includes('已存在')))
+})
+
+test('写入：duplicatePack 显式名字照用，不追加序号', async () => {
+  const home = await tempRoot()
+  await applyCommands(null, [{ op: 'createPack', name: '前端' }], { home })
+  await applyCommands(null, [{ op: 'duplicatePack', packId: 'p1', name: '后端' }], { home })
+
+  const packs = (await readPacks(home)).packs
+  assert.ok(Object.values(packs).some((pack) => pack.name === '后端'))
+})
+
+test('写入：pack 数达上限时新建与复制都拒绝，不静默丢配置', async () => {
+  const home = await tempRoot()
+  const packs = {}
+  for (let index = 1; index < MAX_PACKS; index += 1) {
+    packs['p' + String(index)] = { name: 'pack' + String(index), tiers: {} }
+  }
+  packs[DEFAULT_PACK_ID] = { name: '默认', tiers: {} }
+  await mkdir(dirname(packsPath({ home })), { recursive: true })
+  await writeFile(packsPath({ home }), serializePacks({ packs }, { showChip: true, defaultTab: 'packs' }), 'utf8')
+
+  const state = await applyCommands(null, [
+    { op: 'createPack', name: '再来一个' },
+    { op: 'duplicatePack', packId: 'p1' },
+  ], { home })
+
+  assert.equal(Object.keys((await readPacks(home)).packs).length, MAX_PACKS)
+  assert.equal(state.warnings.filter((warning) => warning.includes('上限')).length, 2)
 })
 
 test('写入：renamePack 改显示名，id 不动', async () => {

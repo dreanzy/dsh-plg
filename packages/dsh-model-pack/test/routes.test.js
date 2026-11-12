@@ -243,6 +243,39 @@ test('apply：createPack / renamePack / deletePack 走通', async () => {
   assert.equal(deleted.value.state.packs.packs.p1, undefined)
 })
 
+test('apply：duplicatePack 走通，名字由服务端生成', async () => {
+  const home = await tempRoot()
+  const { deps } = depsFor(home)
+
+  await handleApply(deps, { commands: [{ op: 'createPack', name: '前端' }] })
+  const copied = await handleApply(deps, { commands: [{ op: 'duplicatePack', packId: 'p1' }] })
+  assert.equal(copied.ok, true)
+  const packs = copied.value.state.packs.packs
+  const copyId = Object.keys(packs).find((id) => id !== 'p1' && id !== DEFAULT_PACK_ID)
+  assert.equal(packs[copyId].name, '前端 2')
+
+  // 显式名字也接受。
+  const named = await handleApply(deps, { commands: [{ op: 'duplicatePack', packId: 'p1', name: '后端' }] })
+  assert.equal(named.ok, true)
+  assert.ok(Object.values(named.value.state.packs.packs).some((pack) => pack.name === '后端'))
+})
+
+test('apply：duplicatePack 的坏形状逐条拒绝', async () => {
+  const home = await tempRoot()
+  const { deps } = depsFor(home)
+
+  for (const [command, match] of [
+    [{ op: 'duplicatePack' }, /commands\[0\]\.packId/],
+    [{ op: 'duplicatePack', packId: '' }, /commands\[0\]\.packId/],
+    [{ op: 'duplicatePack', packId: 'p1', name: '  ' }, /commands\[0\]\.name/],
+    [{ op: 'duplicatePack', packId: 'p1', name: 7 }, /commands\[0\]\.name/],
+  ]) {
+    const result = await handleApply(deps, { commands: [command] })
+    assert.equal(result.ok, false, JSON.stringify(command))
+    assert.match(result.error.message, match)
+  }
+})
+
 test('apply：default 不可删除、不可改名，走 warning 而不是错误信封', async () => {
   const home = await tempRoot()
   const { deps } = depsFor(home)

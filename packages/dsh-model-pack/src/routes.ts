@@ -82,6 +82,7 @@ const OPS: ReadonlySet<string> = new Set([
   'packSession',
   'packTier',
   'createPack',
+  'duplicatePack',
   'renamePack',
   'deletePack',
   'bind',
@@ -190,6 +191,17 @@ function parseCommands(raw: unknown): { ok: true; commands: ValidCommand[] } | {
         const name = record['name']
         if (typeof name !== 'string' || name.trim() === '') return badField(index, 'name', '必须是非空字符串')
         commands.push({ op: 'createPack', name })
+        break
+      }
+      case 'duplicatePack': {
+        const packId = readId(record, 'packId')
+        if (packId === null) return badField(index, 'packId', '必须是非空字符串')
+        // name 可省：省了由服务端按「原名 + 序号」生成，面板走的就是这条路。
+        const name = record['name']
+        if (name !== undefined && (typeof name !== 'string' || name.trim() === '')) {
+          return badField(index, 'name', '必须是非空字符串')
+        }
+        commands.push(name === undefined ? { op: 'duplicatePack', packId } : { op: 'duplicatePack', packId, name })
         break
       }
       case 'renamePack': {

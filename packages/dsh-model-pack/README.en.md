@@ -58,15 +58,17 @@ Compatibility reads for the legacy paths (`$DSH_HOME/model-scheme/` and `<cwd>/.
 
 ## Panel and entry points
 
-Settings has three tabs: **packs | workspace | prompts**. `ui.defaultTab` only decides which tab opens first; switching tabs does not write it. The packs tab creates, renames and deletes packs and edits the selected pack's session route and tiers; `default` has no delete or rename entry. When `ui.showChip === false` the composer chip is not registered.
+Settings has three tabs: **packs | workspace | prompts**. `ui.defaultTab` only decides which tab opens first; switching tabs does not write it. The packs tab creates, duplicates, renames and deletes packs and edits the selected pack's session route and tiers; `default` has no delete or rename entry, but it can be duplicated. When `ui.showChip === false` the composer chip is not registered.
 
-Write commands on `api/model-pack/apply`: `createPack` / `renamePack` / `deletePack` / `bind` / `showChip` / `defaultTab`, plus this package's content commands `putPack` / `packSession` / `packTier`.
+Write commands on `api/model-pack/apply`: `createPack` / `duplicatePack` / `renamePack` / `deletePack` / `bind` / `showChip` / `defaultTab`, plus this package's content commands `putPack` / `packSession` / `packTier`.
+
+`duplicatePack` takes `{ packId, name? }`. Without `name` the server names the copy "original name + space + number" (`前端` → `前端 2` → `前端 3`, counting up past collisions, with no trailing-digit detection). The copy is a deep clone with no link back to the original and carries no workspace bindings. It has to be a single command rather than `createPack` followed by `putPack`: the new id is generated server-side, so the client cannot know what to put in `putPack.packId`.
 
 ## Editing and saving
 
 Edits queue up in the panel; nothing is written until you press Save (see the root [ADR 0006](../../docs/adr/0006-pending-changes-before-commit.md)). This package used to have a draft-and-save model of its own; the parts that wrote immediately (bindings, creating and deleting packs, the default page) now go through the same queue, so there is no second submit button.
 
-- Session route, the four tiers, tier names, prompts, bindings, creating and renaming all just enqueue. The panel immediately renders what the change would look like, using a host-side **dry run** (`apply` with `dryRun: true`).
+- Session route, the four tiers, tier names, prompts, bindings, creating, duplicating and renaming all just enqueue. The panel immediately renders what the change would look like, using a host-side **dry run** (`apply` with `dryRun: true`).
 - A bottom dock holds a notice line on top and the pending bar below it: Undo, Discard all, Save.
 - While changes are pending the list order is frozen; it re-sorts only after saving.
 - Closing the panel discards pending changes. Deleting a pack is the exception: it takes effect immediately and cannot be undone.

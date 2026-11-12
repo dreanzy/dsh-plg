@@ -89,6 +89,8 @@ test('待保存键覆盖每一类可覆盖命令', () => {
     [{ op: 'bind', cwd: 'C:/w' }, 'bind:C:/w'],
     // ADR-0006 记的差异：提示词补丁每条只带自己那几个键，按单键去重会丢键。
     [{ op: 'putPrompts' }, null],
+    // 复制与新建同类：每条都是独立一次决定，没有可覆盖的目标。
+    [{ op: 'duplicatePack', packId: 'p1' }, null],
   ]
   for (const [command, expected] of CASES) {
     assert.equal(pendingKey(command), expected)

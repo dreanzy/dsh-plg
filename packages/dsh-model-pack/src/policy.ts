@@ -22,6 +22,7 @@ import {
   EMPTY_PACKS,
   EMPTY_PROMPTS,
   EMPTY_UI,
+  MAX_PACKS,
   TIER_IDS,
   isTierId,
   normalizeCwd,
@@ -38,6 +39,7 @@ import {
   type Bindings,
   type Pack,
   type PackBook,
+  type TierConfig,
   type PromptOverrides,
   type PromptTierOverride,
   type TierId,
@@ -311,12 +313,17 @@ export function resolve(state: PackState, cwd?: string | null): ResolvedPack {
  * 与其余三个 pack 包同形的是前四条名册命令与 `bind`；
  * `putPack` / `packSession` / `packTier` 是本包特有的内容编辑命令
  * （pack 本身就是内容，没有 item/group 那种逐项开关）。
+ *
+ * `duplicatePack` 必须是一条命令而不是「客户端先 createPack 再 putPack」：新 id 由
+ * 服务端生成，客户端拼不出要写进 `putPack.packId` 的那个值。一条命令也保证副本
+ * 要么完整存在、要么完全不存在。
  */
 export type PackCommand =
   | { readonly op: 'putPack'; readonly packId: string; readonly pack: unknown }
   | { readonly op: 'packSession'; readonly packId: string; readonly session: unknown | null }
   | { readonly op: 'packTier'; readonly packId: string; readonly tierId: string; readonly tier: unknown | null }
   | { readonly op: 'createPack'; readonly name: string }
+  | { readonly op: 'duplicatePack'; readonly packId: string; readonly name?: string }
   | { readonly op: 'renamePack'; readonly packId: string; readonly name: string }
   | { readonly op: 'deletePack'; readonly packId: string }
   | { readonly op: 'bind'; readonly cwd: string; readonly packId: string | null }
@@ -348,6 +355,7 @@ const COMMAND_TARGET: Readonly<Record<PackCommand['op'], CommandTarget>> = {
   packSession: 'packs',
   packTier: 'packs',
   createPack: 'packs',
+  duplicatePack: 'packs',
   renamePack: 'packs',
   deletePack: 'packs',
   bind: 'bindings',
@@ -432,6 +440,36 @@ function nextPackId(packs: Readonly<Record<string, Pack>>): string {
 }
 
 /**
+ * 副本的显示名：原名 + 空格 + 序号，从 2 起，撞名就往后数。
+ *
+ * 不做尾部数字识别：「前端 2」的副本叫「前端 2 2」。规则只有一条，用户看一眼就能
+ * 预测下一个叫什么；识别尾部数字会让「前端 2 3」这类名字产生歧义。
+ */
+function copyName(packs: Readonly<Record<string, Pack>>, base: string): string {
+  for (let index = 2; ; index += 1) {
+    const candidate = `${base} ${String(index)}`
+    if (!nameTaken(packs, candidate)) return candidate
+  }
+}
+
+/** 深拷贝一张 pack：副本与原 pack 之后各改各的，共享任何一层对象都会串味。 */
+function clonePack(pack: Pack): Pack {
+  const tiers: Partial<Record<TierId, TierConfig>> = {}
+  for (const tierId of TIER_IDS) {
+    const tier = pack.tiers[tierId]
+    if (tier === undefined) continue
+    tiers[tierId] = {
+      name: tier.name,
+      primary: { ...tier.primary },
+      fallbacks: tier.fallbacks.map((route) => ({ ...route })),
+    }
+  }
+  return pack.session === undefined
+    ? { name: pack.name, tiers }
+    : { name: pack.name, session: { ...pack.session }, tiers }
+}
+
+/**
  * 写 packs.json。
  *
  * `seed` 是文件缺席时的初值：它来自兼容读的旧配置。没有这个 seed，
@@ -470,8 +508,32 @@ function applyToPacks(
           warnings.push(`pack 名已存在：${name}`)
           break
         }
+        if (Object.keys(packs).length >= MAX_PACKS) {
+          warnings.push(`pack 已达上限 ${String(MAX_PACKS)} 个，新建已忽略`)
+          break
+        }
         const id = nextPackId(packs)
         packs[id] = { name, tiers: {} }
+        break
+      }
+      case 'duplicatePack': {
+        const source = packs[command.packId]
+        if (source === undefined) {
+          warnings.push(`pack「${command.packId}」不存在，复制已忽略`)
+          break
+        }
+        if (Object.keys(packs).length >= MAX_PACKS) {
+          warnings.push(`pack 已达上限 ${String(MAX_PACKS)} 个，复制已忽略`)
+          break
+        }
+        const given = command.name === undefined ? '' : command.name.trim()
+        if (given !== '' && nameTaken(packs, given)) {
+          warnings.push(`pack 名已存在：${given}`)
+          break
+        }
+        const id = nextPackId(packs)
+        const copy = clonePack(source)
+        packs[id] = { ...copy, name: given === '' ? copyName(packs, source.name) : given }
         break
       }
       case 'renamePack': {

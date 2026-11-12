@@ -38,8 +38,8 @@ export const DEFAULT_PACK_ID = 'default'
  */
 export const DEFAULT_PACK: Pack = { name: '默认', tiers: {} }
 
-/** pack 条数上限，只为防止文件被写成无界清单。 */
-const MAX_PACKS = 200
+/** pack 条数上限，只为防止文件被写成无界清单。写侧也按它拒绝，见 policy.ts。 */
+export const MAX_PACKS = 200
 
 /** 单档备选条数上限，同上。 */
 const MAX_FALLBACKS = 16

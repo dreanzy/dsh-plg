@@ -1251,7 +1251,8 @@ window.__ModuleLoader__.load({
                   command.op === 'deletePack' ||
                   command.op === 'renamePack' ||
                   command.op === 'putPack' ||
-                  command.op === 'createPack',
+                  command.op === 'createPack' ||
+                  command.op === 'duplicatePack',
               )
             ) {
               refreshChipName(host, env.sessionId)
@@ -1605,7 +1606,7 @@ window.__ModuleLoader__.load({
         case 'bind':
           return 'bind:' + command.cwd
         default:
-          // 新建与提示词补丁没有可覆盖的目标：前者每条都是独立一次决定，
+          // 新建、复制与提示词补丁没有可覆盖的目标：前两者每条都是独立一次决定，
           // 后者的每条只带自己那几个键（按单键去重会丢掉别的键）。
           return null
       }
@@ -2491,6 +2492,7 @@ window.__ModuleLoader__.load({
       const isPending = props.isPending
       const onCreate = props.onCreate
       const onRename = props.onRename
+      const onDuplicate = props.onDuplicate
       const notify = props.notify
       const onToggle = props.onToggle
       const onChangePack = props.onChangePack
@@ -2600,6 +2602,21 @@ window.__ModuleLoader__.load({
                   ),
               h('span', { style: S.badge }, String(configured(entry)) + ' 处配置'),
               dirty ? h(Tag, { title: '这张 pack 有未保存的改动' }, '待保存') : null,
+              // 复制对 default 也开放：以默认为底改一套正是这个功能最典型的用法。
+              // 还没保存的 pack 不给入口——磁盘上没有实体，复制出来的是试算视图里的幻影。
+              realIds.has(entry.id)
+                ? h(
+                    Button,
+                    {
+                      title: '以这张 pack 为底复制一份（副本与原 pack 之后各改各的）',
+                      onClick: (event) => {
+                        event.stopPropagation()
+                        onDuplicate(entry.id)
+                      },
+                    },
+                    '复制',
+                  )
+                : null,
               // 双击也能改名，但按钮要留着：不给入口，用户不知道这张能改名。
               entry.isDefault
                 ? null
@@ -2764,7 +2781,13 @@ window.__ModuleLoader__.load({
       const [busy, setBusy] = useState(false)
       /** 展开编辑的是哪一张 pack。纯界面状态：内容本身在待保存队列里。 */
       const [expanded, setExpanded] = useState(null)
-      /** 刚新建、等着展开的那张 pack 的名字（id 由服务端生成，只能在试算视图里反查）。 */
+      /**
+       * 刚新建或刚复制、等着展开的那张 pack。
+       *
+       * 记的是「改动前那份视图的 id 集合」：试算视图里多出来的 id 就是它。按 id 差集
+       * 而不是按名字反查——名字由服务端生成（副本还要按序号避让），客户端算一遍必然
+       * 与服务端漂移，表现就是「复制了但没展开」。
+       */
       const wanted = useRef(null)
 
       const preview = useCallback((commands) => api.apply(state.currentCwd, commands, true), [state.currentCwd])
@@ -2805,17 +2828,15 @@ window.__ModuleLoader__.load({
       }, [state.cwds, bindings.bindings])
 
       /**
-       * 新建后展开新出现的那一张。
+       * 新建或复制后展开新出现的那一张。
        *
-       * `createPack` 只带名字，id 由服务端生成（`p1`、`p2`…）。试算视图里多出来的就是
-       * 它；拿不到就保持原样，不猜一个 id 出来。
+       * id 由服务端生成（`p1`、`p2`…），客户端拼不出来，所以按差集找：试算视图里有、
+       * 改动前那份视图里没有的 id 就是它。找不到就保持原样，不猜一个 id 出来。
        */
       useEffect(() => {
-        if (wanted.current === null) return
-        const found = Object.keys(packsOf(data)).find((id) => {
-          const pack = packsOf(data)[id]
-          return isRecord(pack) && pack.name === wanted.current && !isRecord(packsOf(base)[id])
-        })
+        const before = wanted.current
+        if (before === null) return
+        const found = Object.keys(packsOf(data)).find((id) => before.has(id) === false)
         if (found === undefined) return
         wanted.current = null
         setExpanded(found)
@@ -2893,8 +2914,19 @@ window.__ModuleLoader__.load({
       const createPack = (name) => {
         const trimmed = name.trim()
         if (trimmed === '') return
-        wanted.current = trimmed
+        wanted.current = new Set(Object.keys(packsOf(data)))
         enqueue([{ op: 'createPack', name: trimmed }])
+      }
+
+      /**
+       * 复制：进队列，与新建同类。
+       *
+       * 名字由服务端按「原名 + 序号」生成，客户端不传也不猜——命名规则只有一份。
+       * 副本不带任何工作区绑定：绑定是目录到 pack 的一对一映射，副本没有目录。
+       */
+      const duplicatePack = (packId) => {
+        wanted.current = new Set(Object.keys(packsOf(data)))
+        enqueue([{ op: 'duplicatePack', packId: packId }])
       }
 
       /**
@@ -2904,7 +2936,9 @@ window.__ModuleLoader__.load({
        * 丢掉几条要说出来——无声丢改动比丢改动本身更糟。
        */
       const deletePack = (packId, name) => {
-        const removed = pending.drop((command) => command.packId === packId)
+        // `duplicatePack` 的 packId 是**源**，不是目标：副本一旦生成就与原 pack 无关，
+        // 删掉源不该顺手取消「复制它」这条命令。
+        const removed = pending.drop((command) => command.op !== 'duplicatePack' && command.packId === packId)
         if (expanded === packId) setExpanded(null)
         setNotice(removed > 0 ? '已删除「' + name + '」，并丢弃对它的 ' + removed + ' 项未保存改动' : null)
         void run([{ op: 'deletePack', packId: packId }]).then(() => {
@@ -2976,6 +3010,7 @@ window.__ModuleLoader__.load({
               expanded: expanded,
               isPending: packPending,
               onCreate: createPack,
+              onDuplicate: duplicatePack,
               onRename: (packId, name) => enqueue([{ op: 'renamePack', packId: packId, name: name }]),
               notify: notify,
               onToggle: (packId) => setExpanded(expanded === packId ? null : packId),
