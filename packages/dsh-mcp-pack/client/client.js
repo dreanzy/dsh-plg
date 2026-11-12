@@ -692,7 +692,7 @@ window.__ModuleLoader__.load({
         case 'renameGroup':
           return 'renameGroup:' + command.groupId
         default:
-          // 新建与删除没有可覆盖的目标：每条都是独立一次决定。
+          // 新建、复制与删除没有可覆盖的目标：每条都是独立一次决定。
           return null
       }
     }
@@ -2091,8 +2091,13 @@ window.__ModuleLoader__.load({
         return false
       }
 
-      /** 引用某张 pack 的待保存命令：改名、行级/组级开关、绑定到它。 */
-      const packDeps = (packId) => (command) => command.packId === packId
+      /**
+       * 引用某张 pack 的待保存命令：改名、行级/组级开关、绑定到它。
+       *
+       * `duplicatePack` 的 packId 是**源**，不是目标：副本一旦生成就与原 pack 无关，
+       * 删掉源不该顺手取消「复制它」这条命令。
+       */
+      const packDeps = (packId) => (command) => command.op !== 'duplicatePack' && command.packId === packId
 
       /** 引用某一行的待保存命令：行级开关、归属。托管定义删掉后这些命令落不了地。 */
       const rowDeps = (rowKey) => (command) => {
@@ -3022,6 +3027,13 @@ window.__ModuleLoader__.load({
       const [query, setQuery] = useState('')
       const [newName, setNewName] = useState('')
       const [editing, setEditing] = useState(null)
+      /**
+       * 刚复制、等着选中的那张 pack。
+       *
+       * 记的是「复制前那份视图的 id 集合」：试算视图里多出来的 id 就是它。按 id 差集
+       * 而不是按名字反查——名字由服务端生成（还要按序号避让），客户端算一遍必然漂移。
+       */
+      const wanted = useRef(null)
       const pack = packById(packs, selected)
       /** 选中的 pack 已不在名册里：这时不能退回第一个包，否则开关会落到别的 pack 上。 */
       const packMissing = pack === null && packs.length > 0
@@ -3112,6 +3124,24 @@ window.__ModuleLoader__.load({
         return counts
       }, [rows])
 
+      /**
+       * 复制后选中新出现的那一张。
+       *
+       * 新建不选中（空 pack 没什么可看），复制要选中：副本有完整内容，用户复制它
+       * 就是为了改，不选中等于让用户多点一下。
+       *
+       * 必须放在下面那个 `pack === null` 的提前返回**之前**：hook 的调用顺序不能随
+       * 渲染分支变化，放在条件返回之后会让整个面板崩成空白。
+       */
+      useEffect(() => {
+        const before = wanted.current
+        if (before === null) return
+        const found = packs.find((entry) => before.has(entry.id) === false)
+        if (found === undefined) return
+        wanted.current = null
+        setSelected(found.id)
+      }, [packs])
+
       if (pack === null) {
         return h('div', { style: S.hint }, packMissing ? '该 pack 已不存在' : '没有可用的 pack')
       }
@@ -3127,6 +3157,18 @@ window.__ModuleLoader__.load({
         queue([{ op: 'createPack', name: trimmed }])
         setNewName('')
       }
+
+      /**
+       * 复制：进队列，与新建同类。
+       *
+       * 名字由服务端按「原名 + 序号」生成，客户端不传也不猜——命名规则只有一份。
+       * 副本不带任何工作区绑定：绑定是目录到 pack 的一对一映射，副本没有目录。
+       */
+      const duplicatePack = (packId) => {
+        wanted.current = new Set(packs.map((entry) => entry.id))
+        queue([{ op: 'duplicatePack', packId: packId }])
+      }
+
       /** 改名：重名先拦住，与新建同一条口径。 */
       const renamePack = (packId, current, next) => {
         const trimmed = String(next || '').trim()
@@ -3199,6 +3241,21 @@ window.__ModuleLoader__.load({
                   entry.name,
                 ),
               h('span', { style: S.badge }, overrides(entry) + ' 条覆盖'),
+              // 复制对 default 也开放：以默认为底改一套正是这个功能最典型的用法。
+              // 还没保存的 pack 不给入口——磁盘上没有实体，复制出来的是试算视图里的幻影。
+              realPackIds.has(entry.id)
+                ? h(
+                    Button,
+                    {
+                      title: '以这张 pack 为底复制一份（副本与原 pack 之后各改各的）',
+                      onClick: (event) => {
+                        event.stopPropagation()
+                        duplicatePack(entry.id)
+                      },
+                    },
+                    '复制',
+                  )
+                : null,
               // `default` 没有改名与删除入口：它是求值链终点，删掉或改个名都会让
               // 「未绑定即默认」失去指代。
               entry.builtin

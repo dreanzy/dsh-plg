@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { mkdir, mkdtemp, readFile, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
-import { normalizeCwd } from '../lib/policy.js'
+import { MAX_NAMES, normalizeCwd } from '../lib/policy.js'
 import {
   applyCommands,
   groupsPath,
@@ -66,6 +66,117 @@ test('createPack 写盘时永远保留 default，并按 id 排序', async () => 
   assert.equal(onDisk.packs.default.name, '默认')
   assert.equal(onDisk.packs.p1.name, '工作')
   assert.deepEqual(onDisk.ui, { showChip: true, defaultTab: 'groups' })
+})
+
+test('duplicatePack 深拷贝 rows 与 groups，副本与原 pack 再无关联', async () => {
+  await freshHome()
+  // 前置校验按写盘前的名册判 packId，所以先建包再改内容，不能同批。
+  await applyCommands(null, [{ op: 'createPack', name: '工作' }])
+  await applyCommands(null, [
+    { op: 'packGroup', packId: 'p1', groupId: 'g1', value: true },
+    {
+      op: 'packRow',
+      packId: 'p1',
+      rowKey: 'global:a',
+      patch: { enabled: false, mode: 'lazy', tools: ['read_*'], description: '浏览器' },
+    },
+  ])
+
+  await applyCommands(null, [{ op: 'duplicatePack', packId: 'p1' }])
+  const onDisk = await readJson(packsPath())
+  assert.equal(onDisk.packs.p2.name, '工作 2', '缺省名是原名 + 空格 + 序号')
+  assert.deepEqual(onDisk.packs.p2.groups, { g1: true })
+  assert.deepEqual(onDisk.packs.p2.rows['global:a'], {
+    enabled: false,
+    mode: 'lazy',
+    tools: ['read_*'],
+    description: '浏览器',
+  })
+
+  // 改副本不动原 pack：这是「副本」与「跟随」的分界。
+  await applyCommands(null, [{ op: 'packRow', packId: 'p2', rowKey: 'global:a', patch: { mode: 'eager' } }])
+  const after = await readJson(packsPath())
+  assert.equal(after.packs.p1.rows['global:a'].mode, 'lazy')
+  assert.equal(after.packs.p2.rows['global:a'].mode, 'eager')
+})
+
+test('duplicatePack 深拷贝 tools 数组：改副本的数组不动原 pack', async () => {
+  await freshHome()
+  await applyCommands(null, [{ op: 'createPack', name: '工作' }])
+  await applyCommands(null, [{ op: 'packRow', packId: 'p1', rowKey: 'global:a', patch: { tools: ['read_*'] } }])
+  await applyCommands(null, [{ op: 'duplicatePack', packId: 'p1' }])
+  await applyCommands(null, [{ op: 'packRow', packId: 'p2', rowKey: 'global:a', patch: { tools: ['write_*'] } }])
+
+  const after = await readJson(packsPath())
+  assert.deepEqual(after.packs.p1.rows['global:a'].tools, ['read_*'])
+  assert.deepEqual(after.packs.p2.rows['global:a'].tools, ['write_*'])
+})
+
+test('duplicatePack 序号避让，不做尾部数字识别', async () => {
+  await freshHome()
+  await applyCommands(null, [{ op: 'createPack', name: '前端' }])
+  await applyCommands(null, [{ op: 'duplicatePack', packId: 'p1' }])
+  await applyCommands(null, [{ op: 'duplicatePack', packId: 'p1' }])
+  const onDisk = await readJson(packsPath())
+  const names = Object.values(onDisk.packs).map((pack) => pack.name).sort()
+  assert.deepEqual(names, ['前端', '前端 2', '前端 3', '默认'].sort())
+
+  // 「前端 2」的副本叫「前端 2 2」：规则只有一条，可预测。
+  await applyCommands(null, [{ op: 'duplicatePack', packId: 'p2' }])
+  const after = await readJson(packsPath())
+  assert.ok(Object.values(after.packs).some((pack) => pack.name === '前端 2 2'))
+})
+
+test('duplicatePack 可从 default 复制，副本不带绑定', async () => {
+  const home = await freshHome()
+  const cwd = join(home, 'ws')
+  await applyCommands(null, [{ op: 'createPack', name: '工作' }])
+  await applyCommands(cwd, [{ op: 'bind', cwd: cwd, packId: 'p1' }])
+
+  await applyCommands(null, [{ op: 'duplicatePack', packId: 'default' }])
+  const onDisk = await readJson(packsPath())
+  const copyId = Object.keys(onDisk.packs).find((id) => id !== 'default' && id !== 'p1')
+  assert.equal(onDisk.packs[copyId].name, '默认 2')
+  // 绑定表原样：副本没有目录，复制不会把任何工作区切过去。
+  const state = await loadState(cwd)
+  assert.equal(state.bindings.bindings[normalizeCwd(cwd)], 'p1')
+  assert.equal(Object.values(state.bindings.bindings).includes(copyId), false)
+})
+
+test('duplicatePack 源不存在、显式重名都被拒绝并留 warning', async () => {
+  await freshHome()
+  await applyCommands(null, [{ op: 'createPack', name: '前端' }])
+  const before = await readFile(packsPath(), 'utf8')
+
+  // 本包的语义是「一条抛错整批中断」，所以两条命令各发一次，各验一条 warning。
+  warnedAbout(await applyCommands(null, [{ op: 'duplicatePack', packId: 'ghost' }]), /未知 pack/u)
+  assert.equal(await readFile(packsPath(), 'utf8'), before)
+
+  warnedAbout(await applyCommands(null, [{ op: 'duplicatePack', packId: 'p1', name: '前端' }]), /已存在/u)
+  assert.equal(await readFile(packsPath(), 'utf8'), before)
+})
+
+test('duplicatePack 显式名字照用，不追加序号', async () => {
+  await freshHome()
+  await applyCommands(null, [{ op: 'createPack', name: '前端' }])
+  await applyCommands(null, [{ op: 'duplicatePack', packId: 'p1', name: '后端' }])
+  const onDisk = await readJson(packsPath())
+  assert.ok(Object.values(onDisk.packs).some((pack) => pack.name === '后端'))
+})
+
+test('pack 数达上限时新建与复制都拒绝，不静默丢配置', async () => {
+  await freshHome()
+  const packs = {}
+  for (let index = 1; index < MAX_NAMES; index += 1) {
+    packs['p' + String(index)] = { name: 'pack' + String(index), groups: {}, rows: {} }
+  }
+  packs['default'] = { name: '默认', groups: {}, rows: {} }
+  await writeJson(packsPath(), { version: 1, ui: { showChip: true, defaultTab: 'groups' }, packs: packs })
+
+  // 一条抛错整批中断，所以两条命令各发一次。
+  warnedAbout(await applyCommands(null, [{ op: 'createPack', name: '再来一个' }]), /上限/u)
+  warnedAbout(await applyCommands(null, [{ op: 'duplicatePack', packId: 'p1' }]), /上限/u)
+  assert.equal(Object.keys((await readJson(packsPath())).packs).length, MAX_NAMES)
 })
 
 test('packRow 的三态：null 删该字段回到跟随，其余字段不动', async () => {

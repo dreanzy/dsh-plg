@@ -279,6 +279,10 @@ async function writeCommands(commands: readonly Command[]): Promise<void> {
         if (command.packId === DEFAULT_PACK_ID) throw new Error('默认 pack 不可改名')
         if (!known.has(command.packId)) throw new Error(`未知 pack：${command.packId}`)
         break
+      case 'duplicatePack':
+        // 源必须存在。副本本身是新 id，不进 `known`：同一批里没有命令能引用它。
+        if (!known.has(command.packId)) throw new Error(`未知 pack：${command.packId}`)
+        break
       case 'deletePack':
         if (command.packId === DEFAULT_PACK_ID) throw new Error('默认 pack 不可删除')
         if (!known.has(command.packId)) throw new Error(`未知 pack：${command.packId}`)

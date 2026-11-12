@@ -88,6 +88,8 @@ test('待保存键覆盖每一类可覆盖命令', () => {
     [{ op: 'assign', name: 's1' }, 'assign:s1'],
     [{ op: 'renamePack', packId: 'p1' }, 'renamePack:p1'],
     [{ op: 'renameGroup', groupId: 'g1' }, 'renameGroup:g1'],
+    // 复制与新建同类：每条都是独立一次决定，没有可覆盖的目标。
+    [{ op: 'duplicatePack', packId: 'p1' }, null],
   ]
   for (const [command, expected] of CASES) {
     assert.equal(pendingKey(command), expected)

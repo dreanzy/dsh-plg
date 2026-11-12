@@ -1,4 +1,5 @@
 import { pendingKeyOf } from '@dreanzy/dsh-pack-core'
+import { MAX_NAMES } from './policy.js'
 import { normalizeCwd } from './policy.js'
 import {
   DEFAULT_PACK_ID,
@@ -188,6 +189,45 @@ function nextPackId(packs: Readonly<Record<string, McpPack>>): string {
   }
 }
 
+/**
+ * 副本的显示名：原名 + 空格 + 序号，从 2 起，撞名就往后数。
+ *
+ * 不做尾部数字识别：「前端 2」的副本叫「前端 2 2」。规则只有一条，用户看一眼就能
+ * 预测下一个叫什么；识别尾部数字会让「前端 2 3」这类名字产生歧义。
+ */
+function copyName(packs: Readonly<Record<string, McpPack>>, base: string): string {
+  for (let index = 2; ; index += 1) {
+    const candidate = `${base} ${String(index)}`
+    let taken = false
+    for (const pack of Object.values(packs)) {
+      if (pack.name === candidate) {
+        taken = true
+        break
+      }
+    }
+    if (!taken) return candidate
+  }
+}
+
+/**
+ * 深拷贝一张 pack。
+ *
+ * 三层都要新对象：组开关、行策略表、以及每行策略里的 `tools` 数组。少拷一层，
+ * 副本与原 pack 就会共享同一个引用，改一边另一边跟着变。
+ */
+function clonePack(pack: McpPack): McpPack {
+  const rows: Record<string, RowPolicy> = {}
+  for (const [rowKey, policy] of Object.entries(pack.rows)) {
+    rows[rowKey] = policy.tools === undefined ? { ...policy } : { ...policy, tools: [...policy.tools] }
+  }
+  return { name: pack.name, groups: { ...pack.groups }, rows }
+}
+
+/** 写侧也按读侧的上限拒绝：写得进去、读不回来是最难排查的一类问题。 */
+function assertPackRoom(packs: Readonly<Record<string, McpPack>>): void {
+  if (Object.keys(packs).length >= MAX_NAMES) throw new Error(`pack 已达上限 ${String(MAX_NAMES)} 个`)
+}
+
 function nextGroupId(groups: readonly { id: string }[]): string {
   const taken = new Set(groups.map((group) => group.id))
   for (let index = groups.length + 1; ; index += 1) {
@@ -255,8 +295,40 @@ const CREATE_PACK: OpSpec = {
     if (command.op !== 'createPack') return
     const name = requireName(command.name)
     assertNameFree(draft.packs, name)
+    assertPackRoom(draft.packs)
     const id = nextPackId(draft.packs)
     draft.packs[id] = { name, groups: {}, rows: {} }
+  },
+}
+
+/**
+ * 复制一张 pack。
+ *
+ * 必须是一条命令而不是「客户端先 createPack 再 putPack」：新 id 由服务端生成，
+ * 客户端拼不出要写进后续命令的那个值。一条命令也保证副本要么完整存在、要么完全不存在。
+ */
+const DUPLICATE_PACK: OpSpec = {
+  op: 'duplicatePack',
+  files: ['packs'],
+  parse(record) {
+    const packId = readNonEmpty(record, 'packId')
+    if (packId === null) return 'packId 必须是非空字符串'
+    // name 可省：省了由服务端按「原名 + 序号」生成，面板走的就是这条路。
+    if (!Object.hasOwn(record, 'name')) return { op: 'duplicatePack', packId }
+    const name = readName(record)
+    if (name === null) return 'name 必须是非空字符串'
+    return { op: 'duplicatePack', packId, name }
+  },
+  key: () => null,
+  applyPacks(draft, command) {
+    if (command.op !== 'duplicatePack') return
+    const source = findPack(draft.packs, command.packId)
+    assertPackRoom(draft.packs)
+    const given = command.name === undefined ? '' : requireName(command.name)
+    if (given !== '') assertNameFree(draft.packs, given)
+    const id = nextPackId(draft.packs)
+    const copy = clonePack(source)
+    draft.packs[id] = { ...copy, name: given === '' ? copyName(draft.packs, source.name) : given }
   },
 }
 
@@ -469,6 +541,7 @@ export const OPS: Readonly<Record<Command['op'], OpSpec>> = {
   packRow: PACK_ROW,
   packGroup: PACK_GROUP,
   createPack: CREATE_PACK,
+  duplicatePack: DUPLICATE_PACK,
   renamePack: RENAME_PACK,
   deletePack: DELETE_PACK,
   bind: BIND,

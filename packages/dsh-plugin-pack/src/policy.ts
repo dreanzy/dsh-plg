@@ -17,8 +17,8 @@ import {
   type UiState,
 } from './types.js'
 
-/** 单个域的名字上限，只为防止文件被写成无界清单。 */
-const MAX_NAMES = 2000
+/** 单个域的名字上限，只为防止文件被写成无界清单。写侧也按它拒绝，见 ops.ts。 */
+export const MAX_NAMES = 2000
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)

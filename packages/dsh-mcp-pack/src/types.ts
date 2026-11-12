@@ -131,6 +131,7 @@ export type Command =
   | { readonly op: 'packRow'; readonly packId: string; readonly rowKey: string; readonly patch: RowPatch }
   | { readonly op: 'packGroup'; readonly packId: string; readonly groupId: string; readonly value: boolean | null }
   | { readonly op: 'createPack'; readonly name: string }
+  | { readonly op: 'duplicatePack'; readonly packId: string; readonly name?: string }
   | { readonly op: 'renamePack'; readonly packId: string; readonly name: string }
   | { readonly op: 'deletePack'; readonly packId: string }
   | { readonly op: 'bind'; readonly cwd: string; readonly packId: string | null }

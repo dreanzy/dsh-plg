@@ -96,7 +96,7 @@ dsh plugin --profile <profile> add "github:dreanzy/dsh-plg#<sha>&path:/packages/
 
 ## 写入语义
 
-每次保存提交的是一组**意图**（`{ op: 'packItem' | 'packGroup', packId, name, value: boolean | null }`、`createPack` / `renamePack` / `deletePack`、`bind`、分组的 `assign` / `createGroup` / `renameGroup` / `deleteGroup`、`showChip` / `defaultTab`），服务端在文件锁内读—改—写，不比对版本。命令幂等、可交换，写同一键即后点者赢，所以不存在 `stale-revision` 这类冲突。`null` 表示删掉这条键、回到跟随——写一个同值不等于跟随。
+每次保存提交的是一组**意图**（`{ op: 'packItem' | 'packGroup', packId, name, value: boolean | null }`、`createPack` / `duplicatePack` / `renamePack` / `deletePack`、`bind`、分组的 `assign` / `createGroup` / `renameGroup` / `deleteGroup`、`showChip` / `defaultTab`），服务端在文件锁内读—改—写，不比对版本。命令幂等、可交换，写同一键即后点者赢，所以不存在 `stale-revision` 这类冲突。`null` 表示删掉这条键、回到跟随——写一个同值不等于跟随。
 
 `apply` 另带一个可选 `dryRun: true`：同一套应用规则算完就返回视图，**不写盘**。面板的待保存改动靠它渲染「改了之后是什么样」，浏览器不复制求值链。
 
