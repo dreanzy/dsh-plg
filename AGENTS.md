@@ -14,6 +14,17 @@ The five canonical triage roles use their default label strings unchanged: `need
 
 Single-context layout: one `GLOSSARY.md` at the repo root plus `docs/adr/`. See `docs/agents/domain.md`.
 
+## 上游 API 观察清单
+
+`docs/dsh-api-watch.md` 记本项目对 `@deepseek-ai/*` 的脆弱依赖：官方没提供、本地手工复刻的规则，以及担心会变的接口。写代码时出现下面任一情况，当场加一条：
+
+- 手工复刻宿主的规则或对象形状，因为对应的包不是依赖
+- 用到某个接口，但觉得下游版本可能改名或改签名
+- 绕过了某个限制，期待官方以后提供正规做法
+- 想做某个能力，但上游还没提供接口或服务
+
+每条必填一个可执行判据和一个退役条件：`check` + `retireWhen`（已落地的），或 `probe` + `unblocksWhen`（还没法做的）。缺一不收。条件达成就删，不留着。检查 DSH 更新时先过这份清单，见 `my-dsh-upstream-check`。
+
 ## 客户端插件红线
 
 浏览器侧的 `client.js` 在 web boot 阶段加载。**它的任何异常都会把该 entry 判成 failed，进而让整个桌面端启动失败**——不是"面板不出来"，是 DSH 起不来。所以：
