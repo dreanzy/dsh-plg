@@ -66,7 +66,7 @@ test('四档全满时返回固定段名', () => {
   assert.equal(section.name, 'model-pack.delegation')
 })
 
-test('内置段不超 350 token（四档全配的最坏情况）', () => {
+test('内置段不超 500 token（四档全配的最坏情况）', () => {
   const section = delegationSection(FULL)
   assert.ok(section !== null)
   const tokens = estimateTokens(section.text)
@@ -76,7 +76,7 @@ test('内置段不超 350 token（四档全配的最坏情况）', () => {
   )
 })
 
-test('工具描述不超 400 token（四档全配的最坏情况）', () => {
+test('工具描述不超 200 token（四档全配的最坏情况）', () => {
   const description = describeTiers(FULL)
   assert.ok(description !== null)
   const tokens = estimateTokens(description)
@@ -111,6 +111,8 @@ test('内置编排段含判据、切轨道、并行、检查点与收尾验收',
   assert.match(BUILTIN_PROMPT.delegation, /a checkpoint path/)
   assert.match(BUILTIN_PROMPT.delegation, /must stand alone/)
   assert.match(BUILTIN_PROMPT.delegation, /a missed scope or an out-of-bounds change is a defect/)
+  assert.match(BUILTIN_PROMPT.delegation, /survives two fixes you verified yourself escalates to tier4/)
+  assert.match(BUILTIN_PROMPT.delegation, /state in the prompt what you already tried and ruled out/)
 })
 
 test('四档判据按判断力分级，不按文件数或阅读量', () => {
@@ -118,6 +120,7 @@ test('四档判据按判断力分级，不按文件数或阅读量', () => {
   assert.match(BUILTIN_PROMPT.tiers.tier2.text, /decides nothing/)
   assert.match(BUILTIN_PROMPT.tiers.tier3.text, /needing a decision/)
   assert.match(BUILTIN_PROMPT.tiers.tier4.text, /concurrency bugs/)
+  assert.match(BUILTIN_PROMPT.tiers.tier4.text, /survives repeated fixes/)
   for (const tierId of TIER_IDS) {
     assert.doesNotMatch(BUILTIN_PROMPT.tiers[tierId].text, /\d+\s*files?/i, tierId)
   }

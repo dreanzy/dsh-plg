@@ -25,8 +25,8 @@ import type { ResolvedPack } from './policy.js'
 /** 段名。编排层按这个名字写入系统提示词。 */
 export const DELEGATION_SECTION_NAME = 'model-pack.delegation'
 
-/** 段文本的 token 上限（spec §6.3：段 ≤450，实测占用见 spec 预算表）。 */
-export const DELEGATION_MAX_TOKENS = 450
+/** 段文本的 token 上限（spec §6.3：段 ≤500，实测占用见 spec 预算表）。 */
+export const DELEGATION_MAX_TOKENS = 500
 
 /** 一段待注入的系统提示词。 */
 export interface DelegationSection {
@@ -66,10 +66,11 @@ const DELEGATION = [
   'Start independent delegations together in one message, keep working while they run, and list the dispatched tracks at the end.',
   'Always delegate through subagent_tier and pick the tier by task difficulty; never guess a model yourself:',
   '',
-  'When unsure, take the higher tier; security or data migration goes straight to tier4; a reading-only task with no synthesis stays tier1.',
+  'When unsure, take the higher tier; security or data migration goes straight to tier4; a cause that survives two fixes you verified yourself escalates to tier4; a reading-only task with no synthesis stays tier1.',
   'Use subagent_fork only when the task needs this conversation\'s context; independent tasks must not use it.',
   'Give every delegation a checkpoint path; the child appends confirmed facts with file:line, ruled-out hypotheses, and the current blocker when a conclusion lands or past ~15 tool calls. Cap a single delegation at about 40 tool calls; past that, return what you have and let the parent decide whether to continue.',
   'A returned result must stand alone: conclusion, evidence locations, what was not done, what is still uncertain.',
+  'When delegating tier4, state in the prompt what you already tried and ruled out.',
   'Before finishing, check every delegation package item by item; a missed scope or an out-of-bounds change is a defect.',
 ].join('\n')
 
@@ -85,7 +86,7 @@ export const BUILTIN_PROMPT: PromptText = {
     tier1: { label: TIER_DEFAULT_NAMES.tier1, text: 'Reads and reports with citations; never writes. For answers that live in the files, not in your judgment.' },
     tier2: { label: TIER_DEFAULT_NAMES.tier2, text: 'Change whose shape an existing pattern or the request already fixes; may read, decides nothing.' },
     tier3: { label: TIER_DEFAULT_NAMES.tier3, text: 'Write work needing a decision: choose among approaches, or keep several modules consistent.' },
-    tier4: { label: TIER_DEFAULT_NAMES.tier4, text: 'Cause or target unknown: architecture, concurrency bugs, security, data migration.' },
+    tier4: { label: TIER_DEFAULT_NAMES.tier4, text: 'Cause or target unknown, or a cause that survives repeated fixes: architecture, concurrency bugs, security, data migration.' },
   },
 }
 

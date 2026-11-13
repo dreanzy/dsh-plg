@@ -35,7 +35,7 @@ const TIER_SHORT: Readonly<Record<TierId, string>> = {
 export const TIER_TOOL_NAME = 'subagent_tier'
 
 /** 工具描述的 token 预算（spec §6.3）。与段的预算分开断言：两处各有上限。 */
-export const TIER_DESCRIPTION_MAX_TOKENS = 400
+export const TIER_DESCRIPTION_MAX_TOKENS = 200
 
 /**
  * 使用的子智能体 provider。
