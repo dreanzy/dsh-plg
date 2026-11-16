@@ -131,6 +131,13 @@ test('parseCommands 拒绝非法形状', () => {
   )
 })
 
+test('命令条数超过上限时拒绝，不进入 O(n²) 路径', () => {
+  const many = Array.from({ length: 1001 }, () => ({ op: 'showChip', value: false }))
+  const result = parseCommands(many)
+  assert.equal(result.ok, false)
+  assert.match(result.message, /最多 1000 条/)
+})
+
 test('parseCommands 接受每种合法命令', () => {
   const parsed = parseCommands([
     { op: 'packItem', packId: 'default', name: 'plug-a', value: false },

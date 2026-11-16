@@ -474,6 +474,15 @@ test('手动添加目录的两条命令已被移除：parseCommands 不认 addEx
   assert.equal(parseCommands([{ op: 'removeExtra', cwd: 'D:/q' }]).ok, false)
 })
 
+test('命令条数超过上限时拒绝，不进入 O(n²) 路径', () => {
+  // 上限原先只有 skill 与 plugin 有，mcp 与 model 没有：2 万条要跑 70 秒并阻塞
+  // 宿主主线程。骨架收进 core 后四包一起受保护。
+  const many = Array.from({ length: 1001 }, () => ({ op: 'showChip', value: false }))
+  const result = parseCommands(many)
+  assert.equal(result.ok, false)
+  assert.match(result.message, /最多 1000 条/)
+})
+
 test('parseCommands 对坏条目拒绝整批', () => {
   assert.equal(parseCommands('nope').ok, false)
   assert.equal(parseCommands([]).ok, false)

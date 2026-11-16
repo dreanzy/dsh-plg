@@ -29,3 +29,12 @@ export {
 export { createResolver, normalizeCwd, type Decision, type GroupRegistryLike, type PackLike, type Resolver, type ResolverInput } from './policy.js'
 
 export { pendingKeyOf, PENDING_KEY_RULES, type PendingKeyCommand } from './pendingKeys.js'
+
+export {
+  parseCommands,
+  filesOf,
+  MAX_COMMANDS,
+  type OpSpec,
+  type OpTable,
+  type StoreFile,
+} from './ops.js'

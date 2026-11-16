@@ -1,4 +1,10 @@
-import { pendingKeyOf } from '@dreanzy/dsh-pack-core'
+import {
+  filesOf as filesOfTable,
+  parseCommands as parseCommandsTable,
+  type OpSpec,
+  type OpTable,
+  type StoreFile,
+} from '@dreanzy/dsh-pack-core'
 import { MAX_NAMES } from './policy.js'
 import { normalizeCwd } from './policy.js'
 import {
@@ -14,17 +20,12 @@ import {
 } from './types.js'
 
 /**
- * 一条命令的完整定义。
+ * 本包的命令定义。
  *
- * 原先一个 op 在四处各声明一次：`types.ts` 的 union、`routes.ts` 的 OPS 集合与校验分支、
- * `store.ts` 的应用分支、`client.js` 的队列键。加一个 op 要同步四个文件，漏一处就是
- * 「解析得过、落不了盘」或者「落得了盘、队列不去重」。
- *
- * 现在四件事收在一格里。`client.js` 的队列键仍是复制品——浏览器半边走不了服务端模块。
+ * 骨架（`op` / `files` / `parse` 的调用约定）在 `@dreanzy/dsh-pack-core`；
+ * 这里只把三个草稿类型绑到本包的形状上。`key` 已从 interface 删掉——它全仓零消费点，
+ * 队列键由 core 的 `pendingKeyOf` 直接查表。
  */
-
-/** 这批命令要落到哪份文件。决定事务边界。 */
-export type StoreFile = 'packs' | 'groups' | 'bindings'
 
 /** 写 `packs.json`（含 ui 段）时的草稿。 */
 export interface PacksDraft {
@@ -44,19 +45,7 @@ export interface BindingsDraft {
   changed: boolean
 }
 
-export interface OpSpec {
-  readonly op: Command['op']
-  readonly files: readonly StoreFile[]
-  /** 校验一条入站记录；不合法时返回一句人话（调用方会拼上 commands[i]）。 */
-  parse(record: Record<string, unknown>): Command | string
-  /** 待保存队列的去重键；`null` 表示没有可覆盖的目标，每条都独立。 */
-  key(command: Command): string | null
-  applyPacks?(draft: PacksDraft, command: Command): void
-  applyGroups?(draft: GroupsDraft, command: Command): void
-  /** 绑定合法性只能在 pack 写完之后判：同一批命令里可能刚建或刚删了 pack。 */
-  applyBindings?(draft: BindingsDraft, command: Command, knownPacks: ReadonlySet<string>): void
-}
-
+export type McpOpSpec = OpSpec<Command, PacksDraft, GroupsDraft, BindingsDraft>
 function asRecord(value: unknown): Record<string, unknown> | null {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
     ? (value as Record<string, unknown>)
@@ -242,7 +231,7 @@ function groupNameOf(command: Extract<Command, { op: 'createGroup' | 'renameGrou
   return name
 }
 
-const PACK_ROW: OpSpec = {
+const PACK_ROW: McpOpSpec = {
   op: 'packRow',
   files: ['packs'],
   parse(record) {
@@ -254,7 +243,6 @@ const PACK_ROW: OpSpec = {
     if (typeof patch === 'string') return patch
     return { op: 'packRow', packId, rowKey, patch }
   },
-  key: (command) => pendingKeyOf(command),
   applyPacks(draft, command) {
     if (command.op !== 'packRow') return
     const pack = findPack(draft.packs, command.packId)
@@ -262,7 +250,7 @@ const PACK_ROW: OpSpec = {
   },
 }
 
-const PACK_GROUP: OpSpec = {
+const PACK_GROUP: McpOpSpec = {
   op: 'packGroup',
   files: ['packs'],
   parse(record) {
@@ -274,7 +262,6 @@ const PACK_GROUP: OpSpec = {
     if (value !== null && typeof value !== 'boolean') return 'value 必须是布尔或 null'
     return { op: 'packGroup', packId, groupId, value }
   },
-  key: (command) => pendingKeyOf(command),
   applyPacks(draft, command) {
     if (command.op !== 'packGroup') return
     const pack = findPack(draft.packs, command.packId)
@@ -282,7 +269,7 @@ const PACK_GROUP: OpSpec = {
   },
 }
 
-const CREATE_PACK: OpSpec = {
+const CREATE_PACK: McpOpSpec = {
   op: 'createPack',
   files: ['packs'],
   parse(record) {
@@ -290,7 +277,6 @@ const CREATE_PACK: OpSpec = {
     if (name === null) return 'name 必须是非空字符串'
     return { op: 'createPack', name }
   },
-  key: () => null,
   applyPacks(draft, command) {
     if (command.op !== 'createPack') return
     const name = requireName(command.name)
@@ -307,7 +293,7 @@ const CREATE_PACK: OpSpec = {
  * 必须是一条命令而不是「客户端先 createPack 再 putPack」：新 id 由服务端生成，
  * 客户端拼不出要写进后续命令的那个值。一条命令也保证副本要么完整存在、要么完全不存在。
  */
-const DUPLICATE_PACK: OpSpec = {
+const DUPLICATE_PACK: McpOpSpec = {
   op: 'duplicatePack',
   files: ['packs'],
   parse(record) {
@@ -319,7 +305,6 @@ const DUPLICATE_PACK: OpSpec = {
     if (name === null) return 'name 必须是非空字符串'
     return { op: 'duplicatePack', packId, name }
   },
-  key: () => null,
   applyPacks(draft, command) {
     if (command.op !== 'duplicatePack') return
     const source = findPack(draft.packs, command.packId)
@@ -332,7 +317,7 @@ const DUPLICATE_PACK: OpSpec = {
   },
 }
 
-const RENAME_PACK: OpSpec = {
+const RENAME_PACK: McpOpSpec = {
   op: 'renamePack',
   files: ['packs'],
   parse(record) {
@@ -342,7 +327,6 @@ const RENAME_PACK: OpSpec = {
     if (name === null) return 'name 必须是非空字符串'
     return { op: 'renamePack', packId, name }
   },
-  key: (command) => pendingKeyOf(command),
   applyPacks(draft, command) {
     if (command.op !== 'renamePack') return
     if (command.packId === DEFAULT_PACK_ID) throw new Error('默认 pack 不可改名')
@@ -353,7 +337,7 @@ const RENAME_PACK: OpSpec = {
   },
 }
 
-const DELETE_PACK: OpSpec = {
+const DELETE_PACK: McpOpSpec = {
   op: 'deletePack',
   files: ['packs', 'bindings'],
   parse(record) {
@@ -361,7 +345,6 @@ const DELETE_PACK: OpSpec = {
     if (packId === null) return 'packId 必须是非空字符串'
     return { op: 'deletePack', packId }
   },
-  key: () => null,
   applyPacks(draft, command) {
     if (command.op !== 'deletePack') return
     if (command.packId === DEFAULT_PACK_ID) throw new Error('默认 pack 不可删除')
@@ -379,7 +362,7 @@ const DELETE_PACK: OpSpec = {
   },
 }
 
-const BIND: OpSpec = {
+const BIND: McpOpSpec = {
   op: 'bind',
   files: ['bindings'],
   parse(record) {
@@ -391,7 +374,6 @@ const BIND: OpSpec = {
     }
     return { op: 'bind', cwd, packId }
   },
-  key: (command) => pendingKeyOf(command),
   applyBindings(draft, command, knownPacks) {
     if (command.op !== 'bind') return
     const key = normalizeCwd(command.cwd)
@@ -411,7 +393,7 @@ const BIND: OpSpec = {
   },
 }
 
-const ASSIGN: OpSpec = {
+const ASSIGN: McpOpSpec = {
   op: 'assign',
   files: ['groups'],
   parse(record) {
@@ -423,7 +405,6 @@ const ASSIGN: OpSpec = {
     }
     return { op: 'assign', rowKey, groupId }
   },
-  key: (command) => pendingKeyOf(command),
   applyGroups(draft, command) {
     if (command.op !== 'assign') return
     if (command.groupId === null) {
@@ -437,7 +418,7 @@ const ASSIGN: OpSpec = {
   },
 }
 
-const CREATE_GROUP: OpSpec = {
+const CREATE_GROUP: McpOpSpec = {
   op: 'createGroup',
   files: ['groups'],
   parse(record) {
@@ -445,7 +426,6 @@ const CREATE_GROUP: OpSpec = {
     if (name === null) return 'name 必须是非空字符串'
     return { op: 'createGroup', name }
   },
-  key: () => null,
   applyGroups(draft, command) {
     if (command.op !== 'createGroup') return
     const name = groupNameOf(command)
@@ -454,7 +434,7 @@ const CREATE_GROUP: OpSpec = {
   },
 }
 
-const RENAME_GROUP: OpSpec = {
+const RENAME_GROUP: McpOpSpec = {
   op: 'renameGroup',
   files: ['groups'],
   parse(record) {
@@ -464,7 +444,6 @@ const RENAME_GROUP: OpSpec = {
     if (groupId === null) return 'groupId 必须是非空字符串'
     return { op: 'renameGroup', groupId, name }
   },
-  key: (command) => pendingKeyOf(command),
   applyGroups(draft, command) {
     if (command.op !== 'renameGroup') return
     const name = groupNameOf(command)
@@ -478,7 +457,7 @@ const RENAME_GROUP: OpSpec = {
   },
 }
 
-const DELETE_GROUP: OpSpec = {
+const DELETE_GROUP: McpOpSpec = {
   op: 'deleteGroup',
   files: ['packs', 'groups'],
   parse(record) {
@@ -486,7 +465,6 @@ const DELETE_GROUP: OpSpec = {
     if (groupId === null) return 'groupId 必须是非空字符串'
     return { op: 'deleteGroup', groupId }
   },
-  key: () => null,
   applyPacks(draft, command) {
     if (command.op !== 'deleteGroup') return
     for (const [id, pack] of Object.entries(draft.packs)) {
@@ -506,7 +484,7 @@ const DELETE_GROUP: OpSpec = {
   },
 }
 
-const SHOW_CHIP: OpSpec = {
+const SHOW_CHIP: McpOpSpec = {
   op: 'showChip',
   files: ['packs'],
   parse(record) {
@@ -514,14 +492,13 @@ const SHOW_CHIP: OpSpec = {
     if (typeof value !== 'boolean') return 'value 必须是布尔'
     return { op: 'showChip', value }
   },
-  key: () => null,
   applyPacks(draft, command) {
     if (command.op !== 'showChip') return
     draft.ui = { ...draft.ui, showChip: command.value }
   },
 }
 
-const DEFAULT_TAB: OpSpec = {
+const DEFAULT_TAB: McpOpSpec = {
   op: 'defaultTab',
   files: ['packs'],
   parse(record) {
@@ -529,7 +506,6 @@ const DEFAULT_TAB: OpSpec = {
     if (value === null) return 'value 必须是 groups、packs 或 workspace'
     return { op: 'defaultTab', value }
   },
-  key: () => null,
   applyPacks(draft, command) {
     if (command.op !== 'defaultTab') return
     draft.ui = { ...draft.ui, defaultTab: command.value }
@@ -537,7 +513,7 @@ const DEFAULT_TAB: OpSpec = {
 }
 
 /** op → 定义。加一个 op 只改这里与 `types.ts` 的 union。 */
-export const OPS: Readonly<Record<Command['op'], OpSpec>> = {
+export const OPS: OpTable<Command, PacksDraft, GroupsDraft, BindingsDraft> = {
   packRow: PACK_ROW,
   packGroup: PACK_GROUP,
   createPack: CREATE_PACK,
@@ -553,37 +529,19 @@ export const OPS: Readonly<Record<Command['op'], OpSpec>> = {
   defaultTab: DEFAULT_TAB,
 }
 
-/** 校验入站意图。宁可拒绝整批，也不要半懂地写一半。 */
+/**
+ * 校验入站意图。宁可拒绝整批，也不要半懂地写一半。
+ *
+ * 骨架在 `@dreanzy/dsh-pack-core`：数组检查、空批检查、条数上限、逐条查表、
+ * 错误消息拼下标。这里只把本包的表传进去。
+ */
 export function parseCommands(
   raw: unknown,
 ): { readonly ok: true; readonly commands: readonly Command[] } | { readonly ok: false; readonly message: string } {
-  if (!Array.isArray(raw)) return { ok: false, message: 'commands 必须是数组' }
-  if (raw.length === 0) return { ok: false, message: 'commands 不能为空' }
-  const commands: Command[] = []
-  for (const [index, entry] of raw.entries()) {
-    const record = asRecord(entry)
-    if (record === null) return { ok: false, message: `commands[${String(index)}] 不是对象` }
-    const op = record['op']
-    if (typeof op !== 'string') return { ok: false, message: `commands[${String(index)}] op 不是已知操作` }
-    // hasOwn：`OPS['toString']` 拿到的是 Object.prototype.toString，不是 undefined，
-    // 会让 spec.parse 抛 TypeError 并被报成 internal 而不是 bad-request。
-    const spec = Object.hasOwn(OPS, op) ? (OPS as Record<string, OpSpec | undefined>)[op] : undefined
-    if (spec === undefined) return { ok: false, message: `commands[${String(index)}] op 不是已知操作` }
-    const parsed = spec.parse(record)
-    if (typeof parsed === 'string') return { ok: false, message: `commands[${String(index)}] ${parsed}` }
-    commands.push(parsed)
-  }
-  return { ok: true, commands }
+  return parseCommandsTable(raw, OPS)
 }
 
 /** 这批命令会碰到哪些文件。事务边界由此决定。 */
 export function filesOf(commands: readonly Command[]): ReadonlySet<StoreFile> {
-  const files = new Set<StoreFile>()
-  for (const command of commands) {
-    // 命令已经过 parseCommands 校验，这里只防原型链键。
-    const spec = Object.hasOwn(OPS, command.op) ? OPS[command.op] : undefined
-    if (spec === undefined) continue
-    for (const file of spec.files) files.add(file)
-  }
-  return files
+  return filesOfTable(commands, OPS)
 }

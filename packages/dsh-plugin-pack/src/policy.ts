@@ -20,14 +20,6 @@ import {
 /** 单个域的名字上限，只为防止文件被写成无界清单。写侧也按它拒绝，见 ops.ts。 */
 export const MAX_NAMES = 2000
 
-/**
- * 一批命令的条数上限。
- *
- * `applyToPacks` 对每条命令复制一次整张 items 表，N 条命令是 O(N²)：实测 2 万条
- * 要跑 70 秒并阻塞宿主主线程。正常 UI 操作最多几百条。
- */
-export const MAX_COMMANDS = 1000
-
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
