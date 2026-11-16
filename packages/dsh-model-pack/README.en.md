@@ -66,7 +66,7 @@ Write commands on `api/model-pack/apply`: `createPack` / `duplicatePack` / `rena
 
 ## Editing and saving
 
-Edits queue up in the panel; nothing is written until you press Save (see the root [ADR 0006](../../docs/adr/0006-pending-changes-before-commit.md)). This package used to have a draft-and-save model of its own; the parts that wrote immediately (bindings, creating and deleting packs, the default page) now go through the same queue, so there is no second submit button.
+Edits queue up in the panel; nothing is written until you press Save (see the root [ADR 0006](https://github.com/dreanzy/dsh-plg/blob/main/docs/adr/0006-pending-changes-before-commit.md)). This package used to have a draft-and-save model of its own; the parts that wrote immediately (bindings, creating and deleting packs, the default page) now go through the same queue, so there is no second submit button.
 
 - Session route, the four tiers, tier names, prompts, bindings, creating, duplicating and renaming all just enqueue. The panel immediately renders what the change would look like, using a host-side **dry run** (`apply` with `dryRun: true`).
 - A bottom dock holds a notice line on top and the pending bar below it: Undo, Discard all, Save.

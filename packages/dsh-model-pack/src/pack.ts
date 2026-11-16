@@ -13,7 +13,6 @@ export const TIER_IDS = ['tier1', 'tier2', 'tier3', 'tier4'] as const
 
 export type TierId = (typeof TIER_IDS)[number]
 
-/** 档的出厂显示名。文件里没写 `name` 时用它，不写进 pack 本身。 */
 /**
  * 档的出厂显示名。
  *

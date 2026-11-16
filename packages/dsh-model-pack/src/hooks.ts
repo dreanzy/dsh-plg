@@ -573,7 +573,8 @@ export function installHooks(ctx: PluginContext, options: HooksOptions = {}): Ho
         if (agent.session.header?.origin === 'subagent') continue
         const cwd = cwdOf(agent)
         if (cwd === null) continue
-        if (!isBlank(agent)) continue
+        // 不在这里预检 isBlank：applySessionRoute 内部已有同一判定，且它是
+        // onCreated 路径的通用守卫。预检只省一次读盘，却多付一次全量事件快照。
         let resolved = resolvedByCwd.get(cwd)
         if (resolved === undefined) {
           resolved = resolve(await loadState(cwd, pathOptions), cwd)

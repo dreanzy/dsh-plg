@@ -64,7 +64,8 @@ window.__ModuleLoader__.load({
     const PROMPT_DELEGATION_KEY = 'delegation'
     const PROMPT_TIER_FIELDS = ['label', 'text']
     /** 模型位 pack 名缓存最多读几个工作区：每个工作区要一次 read，不做无界扇出。 */
-    const MAX_WORKSPACES = 8
+    /** 模型位标签缓存最多读几个目录。与其余三包的工作区页上限（30）不是一回事。 */
+    const LABEL_CWD_LIMIT = 8
 
     /** 工作区页每页显示几条；绑定表本身不截断，翻页拿全量。 */
     const WORKSPACES_PAGE = 20
@@ -1040,22 +1041,29 @@ window.__ModuleLoader__.load({
         }
       }
 
+      // 请求序号：llm/adapters-updated 与 connection/reset 可能连发，
+      // 慢的先发后到会把新目录覆盖成旧的，用户选到已下线的模型。
+      let loadSeq = 0
+
       const load = () => {
         const session = host.remote && host.remote.session
         if (!session || typeof session.modelCatalog !== 'function') {
           set('unavailable', [], '宿主没有提供模型目录（remote.session.modelCatalog 不存在），模型下拉为空')
           return
         }
+        const id = ++loadSeq
         set('loading', snapshot.groups, null)
         let pending
         try {
           pending = session.modelCatalog()
         } catch (error) {
+          if (id !== loadSeq) return
           set('error', [], '读取模型目录失败：' + String(error))
           return
         }
         Promise.resolve(pending).then(
           (response) => {
+            if (id !== loadSeq) return
             if (!response || response.ok !== true) {
               const message = response && response.error && response.error.message ? response.error.message : '未知原因'
               set('error', [], '读取模型目录失败：' + message)
@@ -1065,6 +1073,7 @@ window.__ModuleLoader__.load({
             set('ready', Array.isArray(value.groups) ? value.groups : [], null)
           },
           (failure) => {
+            if (id !== loadSeq) return
             set('error', [], '读取模型目录失败：' + String(failure && failure.message ? failure.message : failure))
           },
         )
@@ -3213,7 +3222,7 @@ window.__ModuleLoader__.load({
             if (typeof item.sessionId !== 'string' || item.sessionId === '') continue
             if (typeof item.cwd !== 'string' || item.cwd === '') continue
             nextSession.set(item.sessionId, item.cwd)
-            if (cwds.indexOf(item.cwd) < 0 && cwds.length < MAX_WORKSPACES) cwds.push(item.cwd)
+            if (cwds.indexOf(item.cwd) < 0 && cwds.length < LABEL_CWD_LIMIT) cwds.push(item.cwd)
           }
           const names = new Map()
           await Promise.all(
@@ -3261,16 +3270,11 @@ window.__ModuleLoader__.load({
       // 订阅缓存版本：这一处是纯渲染 slot，宿主不会因为我们的缓存变了而重渲染，
       // 不订阅就只能靠整页刷新。订阅函数是本模块自己的 signal，不碰宿主。
       //
-      // 外面包一层 try：万一宿主不在渲染期调用这个 slot，hook 会抛 Invalid hook call。
-      // 那时退回「只有整页刷新才更新」，与修复前一致——绝不能让异常泄给宿主，
-      // 那样官方触发按钮会退回默认文字。
-      try {
-        if (typeof useSyncExternalStore === 'function') {
-          useSyncExternalStore(labelVersion.subscribe, labelVersion.read, labelVersion.read)
-        }
-      } catch {
-        // 见上。
-      }
+      // **不能包 try**：hook 数量必须每次渲染一致。包了之后，某次非渲染期调用
+      // （hook 数 0）会让下一次渲染期调用（hook 数 1）触发 React 的
+      // 「Rendered more hooks than during the previous render」，把「标签不更新」
+      // 升级成「模型选择器崩溃」。宿主稳定在渲染期调用，这里不需要兜底。
+      useSyncExternalStore(labelVersion.subscribe, labelVersion.read, labelVersion.read)
       let modelName = ''
       let packName = ''
       try {
@@ -3338,13 +3342,18 @@ window.__ModuleLoader__.load({
     const chipOpen = createSignal(false)
 
     /** chip 上的名字：绑到哪张 pack 就显示哪个，未绑定是 null（由 `CHIP_LABEL` 补字）。 */
+    /** chip 的请求序号：两段串行（列工作区 → 读策略）窗口最大，旧响应必须丢弃。 */
+    let chipSeq = 0
+
     function refreshChipName(host, sessionId) {
       if (typeof sessionId !== 'string' || sessionId === '') {
         chipName.set(null)
         return
       }
+      const id = ++chipSeq
       listWorkspaces(host, sessionId).then(
         (listing) => {
+          if (id !== chipSeq) return
           const cwd = listing.currentCwd
           if (cwd === null) {
             chipName.set(null)
@@ -3352,19 +3361,24 @@ window.__ModuleLoader__.load({
           }
           api.read(cwd).then(
             (data) => {
+              if (id !== chipSeq) return
               // 悬空绑定（pack 已删）按「默认」显示：服务端求值链已经回落，
               // chip 上写「xxx（已删除）」只会让人以为还在用它。
-              const id = bindingOf(data)
-              const known = id !== null && isRecord(packsOf(data)[id])
-              chipName.set(known ? packNameOf(data, id) : null)
+              const bound = bindingOf(data)
+              const known = bound !== null && isRecord(packsOf(data)[bound])
+              chipName.set(known ? packNameOf(data, bound) : null)
             },
             () => {
+              if (id !== chipSeq) return
               // 读不到就退回默认：chip 本身不能因此消失。
               chipName.set(null)
             },
           )
         },
-        () => chipName.set(null),
+        () => {
+          if (id !== chipSeq) return
+          chipName.set(null)
+        },
       )
     }
     /**
@@ -3662,10 +3676,12 @@ window.__ModuleLoader__.load({
       }
       const ModelChip = (props) => {
         const sessionId = props && typeof props.sessionId === 'string' ? props.sessionId : undefined
-        env.sessionId = sessionId
         const name = useSyncExternalStore(chipName.subscribe, chipName.read, chipName.read)
         const open = useSyncExternalStore(chipOpen.subscribe, chipOpen.read, chipOpen.read)
         useEffect(() => {
+          // 写 env 必须放在 effect 里：渲染期赋值时，并发渲染下被丢弃的那次
+          // 可能后执行，env.sessionId 会停在旧会话，弹层读到错误目录。
+          env.sessionId = sessionId
           refreshChipName(host, sessionId)
         }, [sessionId])
         const bound = name !== null
@@ -3694,12 +3710,19 @@ window.__ModuleLoader__.load({
 
       // 入口与另外三个包一致：只挂设置页的 settings.section，不注册 plugins.item 卡片。
       // order 63 排在三者之后，四个领域的分区按 skill → plugin → mcp → model 固定。
-      ctx.slots.inject('settings.section', () =>
-        ctx.slots.register(
-          { name: 'settings.section', id: PANEL_ID, order: 63, label: () => TITLE },
-          SettingsSection,
-        ),
-      )
+      // 每处注册各自包 try：一处失败只丢这一个槽位。不包的话异常会让 applyPanel
+      // 中途退出，后面的 label、chip、overlay、定时器全部静默丢失——插件在界面上
+      // 完全消失，控制台只有一行笼统错误。
+      ctx.slots.inject('settings.section', () => {
+        try {
+          return ctx.slots.register(
+            { name: 'settings.section', id: PANEL_ID, order: 63, label: () => TITLE },
+            SettingsSection,
+          )
+        } catch {
+          return () => {}
+        }
+      })
 
       /**
        * 只注册 `conversation.input.model.label` 这一处，且只处理 placement 'trigger'。

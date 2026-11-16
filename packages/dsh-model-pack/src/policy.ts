@@ -182,6 +182,14 @@ async function loadBindings(options: PackPathOptions): Promise<{ bindings: Bindi
  * 悬空或未绑定时都退回 `default`。读侧必须容忍悬空：删除 pack 后
  * `workspaces.json` 里会留下指向它的键。
  */
+/**
+ * 一次响应里最多带多少条 warning。
+ *
+ * 解析降级、写入跳过、命令被忽略都往同一个数组里 push，没有上限时一个坏文件
+ * 能产出几千条、十几万字符，全部序列化进响应。客户端只显示前 4 条。
+ */
+const MAX_WARNINGS = 20
+
 export interface PackState {
   readonly packs: PackBook
   readonly ui: UiState
@@ -218,7 +226,7 @@ export async function loadState(cwd: string | null, options: PackPathOptions = {
     readText(workspacesPath(options), readWarnings),
   ])
   const state = buildState(cwd, packsText, promptsText, workspacesText, options)
-  return { ...state, warnings: [...readWarnings, ...state.warnings] }
+  return { ...state, warnings: [...readWarnings, ...state.warnings].slice(0, MAX_WARNINGS) }
 }
 
 /** 三份文本 → 视图状态。读盘与试算共用同一条解析路径，两者的视图不会漂移。 */
@@ -895,7 +903,7 @@ export async function applyCommands(
   }
 
   const state = await loadState(cwd, options)
-  return { ...state, written, warnings: [...state.warnings, ...warnings] }
+  return { ...state, written, warnings: [...state.warnings, ...warnings].slice(0, MAX_WARNINGS) }
 }
 
 /**
@@ -947,7 +955,7 @@ export async function previewCommands(
   }
 
   const state = buildState(cwd, packsText, promptsText, workspacesText, options)
-  return { ...state, warnings: [...readWarnings, ...state.warnings, ...warnings] }
+  return { ...state, warnings: [...readWarnings, ...state.warnings, ...warnings].slice(0, MAX_WARNINGS) }
 }
 
 /**

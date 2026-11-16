@@ -761,3 +761,23 @@ test('隔离：整轮测试没有在真实 home 下创建 pack 文件', async ()
   assert.equal(existsSync(realPacksFile), realPacksFileExisted)
   assert.equal(existsSync(workspacesPath({ home })), false)
 })
+test('bind 拒绝纯空白 packId', async () => {
+  const home = await tempRoot()
+  const { deps } = depsFor(home)
+  const envelope = await handleApply(deps, { commands: [{ op: 'bind', cwd: 'D:/x', packId: '   ' }] })
+  assert.equal(envelope.ok, false, '纯空白必须被拒')
+  assert.equal(envelope.error.code, 'bad-request')
+})
+
+test('warnings 有上限，坏文件不会撑爆响应', async () => {
+  const home = await tempRoot()
+  const tiers = {}
+  for (let i = 0; i < 200; i += 1) tiers['unknown' + String(i)] = { model: 'm' }
+  const { mkdir, writeFile } = await import('node:fs/promises')
+  const { dirname } = await import('node:path')
+  const { packsPath } = await import('../lib/policy.js')
+  await mkdir(dirname(packsPath({ home })), { recursive: true })
+  await writeFile(packsPath({ home }), JSON.stringify({ version: 1, packs: { default: { name: '默认', tiers } } }), 'utf8')
+  const state = await loadState(null, { home })
+  assert.ok(state.warnings.length <= 20, 'warnings 必须截断到 20 条，实际 ' + String(state.warnings.length))
+})

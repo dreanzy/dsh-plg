@@ -71,7 +71,7 @@
 
 ## 编辑与保存
 
-改动先攒在面板里，点「保存」才写盘（[ADR 0006](../../docs/adr/0006-pending-changes-before-commit.md)）。本包原先就有一套「改草稿 + 按保存」的模型，这次把原本即时写的那部分（绑定、新建）也统一进来，不再有两个提交入口：
+改动先攒在面板里，点「保存」才写盘（[ADR 0006](https://github.com/dreanzy/dsh-plg/blob/main/docs/adr/0006-pending-changes-before-commit.md)）。本包原先就有一套「改草稿 + 按保存」的模型，这次把原本即时写的那部分（绑定、新建）也统一进来，不再有两个提交入口：
 
 - 会话路由、四档、档名、提示词、绑定、新建、复制、改名都只是入队；面板立刻按服务端**试算**（`apply` 带 `dryRun: true`）的结果显示改动后的样子。
 - 面板底部是停靠区：上方一行提示，下方是待保存条——「撤销」「放弃全部」「保存」。
@@ -104,4 +104,3 @@ dsh plugin --profile <profile> add "github:dreanzy/dsh-plg#<sha>&path:/packages/
 
 > 依赖从 0.2.1 起改成 pnpm 的 `workspace:^`，那是仓库内部的写法，从 git 子目录装会解析不到。
 > 需要源码安装时把 `<sha>` 换成 `ae55214` 或更早的提交；更新的版本请走上面的 npm 安装。
-

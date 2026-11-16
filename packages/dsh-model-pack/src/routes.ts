@@ -65,16 +65,13 @@ export const ROUTES: { read: string; apply: string } = {
 /**
  * 一条写命令。
  *
- * 与 policy.ts 的 `PackCommand` 逐字段一致，但这里自己声明而不 import：
- * 路由层不应把 policy 的类型拖进它的公开签名，否则编排层换实现就要改路由。
- * 形状对不上时编译期看不出来，由 `parseCommands` 与 policy 的解析共同兜底。
+ * 与 `policy.ts` 的 `PackCommand` 是同一份定义：校验形状与落盘共用一种类型，
+ * 新增 op 时编译器会同时提醒两边。
  *
  * 一半与其余三个 pack 包同形（`createPack` / `renamePack` / `deletePack` /
  * `bind` / `showChip` / `defaultTab`）；另一半是本包
  * 特有的内容编辑命令：pack 本身就是内容，没有 item 与 group 那种逐项开关。
  */
-/** 与 `policy.ts` 的 `PackCommand` 是同一份定义：校验形状与落盘共用一种类型，
- * 新增 op 时编译器会同时提醒两边。 */
 type ValidCommand = PackCommand
 
 const OPS: ReadonlySet<string> = new Set([
@@ -189,7 +186,9 @@ function parseCommands(raw: unknown): { ok: true; commands: ValidCommand[] } | {
 
   const readId = (record: Record<string, unknown>, key: string): string | null => {
     const value = record[key]
-    return typeof value === 'string' && value.trim() !== '' ? value : null
+    // 返回 trim 后的值：putPack 自己 trim，其余命令直接用 packs[packId]，
+  // 不 trim 会让「保存 pack 内容成功、改会话路由报不存在」。
+  return typeof value === 'string' && value.trim() !== '' ? value.trim() : null
   }
 
   for (const [index, entry] of raw.entries()) {
@@ -263,7 +262,8 @@ function parseCommands(raw: unknown): { ok: true; commands: ValidCommand[] } | {
         const cwd = record['cwd']
         if (typeof cwd !== 'string' || cwd.trim() === '') return badField(index, 'cwd', '必须是非空字符串')
         const packId = record['packId']
-        if (packId !== null && (typeof packId !== 'string' || packId === '')) {
+        // trim 后判空：纯空白会落成永久悬空绑定，面板显示一条无法解读的「绑定失效」。
+    if (packId !== null && (typeof packId !== 'string' || packId.trim() === '')) {
           return badField(index, 'packId', '必须是 pack id 或 null')
         }
         commands.push({ op: 'bind', cwd, packId })
