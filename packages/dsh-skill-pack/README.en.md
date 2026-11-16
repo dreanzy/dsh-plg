@@ -36,7 +36,7 @@ Restart the Host and refresh the page. Two entry points: the chip at the right o
 
 ## Editing and saving
 
-Edits queue up in the panel; nothing is written until you press Save ([ADR 0006](../../docs/adr/0006-pending-changes-before-commit.md)):
+Edits queue up in the panel; nothing is written until you press Save ([ADR 0006](https://github.com/dreanzy/dsh-plg/blob/main/docs/adr/0006-pending-changes-before-commit.md)):
 
 - Flipping a switch, changing a binding, renaming, creating — all of it only enqueues. The panel immediately renders what the change would look like, using a host-side **dry run**.
 - A dock pinned to the bottom holds a notice line on top and the pending bar below it: Undo (drops the last change), Discard all, Save.

@@ -1,4 +1,4 @@
-import { appendFileSync, mkdirSync } from 'node:fs'
+import { appendFileSync, mkdirSync, statSync, truncateSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { type Inventory, type SkillSummaryLike, type SkillsFace } from './inventory.js'
@@ -24,9 +24,30 @@ function diagnose(message: string): void {
         : join(homedir(), '.dsh')
     const dir = join(home, 'logs')
     mkdirSync(dir, { recursive: true })
-    appendFileSync(join(dir, 'skill-pack-diagnose.log'), `${new Date().toISOString()} ${message}\n`)
+    const file = join(dir, 'skill-pack-diagnose.log')
+    // 超过 1MB 就清空：清单持续不完整时每次 skills/change 都写一行，
+    // 桌面端长期运行会累积到几十 MB，反而让「复现一次就有证据」失效。
+    try {
+      if (statSync(file).size > 1_000_000) truncateSync(file, 0)
+    } catch {
+      // 文件还不存在：正常路径。
+    }
+    appendFileSync(file, `${new Date().toISOString()} ${message}\n`)
   } catch {
     // 写不进去就算了。
+  }
+}
+
+/** 同一句说明只记一次：这条路径每次面板请求都会走，不去重会刷屏。 */
+const warnedOnce = new Set<string>()
+
+function warnOnce(key: string, message: string): void {
+  if (warnedOnce.has(key)) return
+  warnedOnce.add(key)
+  try {
+    process.stderr.write(message + '\n')
+  } catch {
+    // 记不了就算了。
   }
 }
 
@@ -274,6 +295,11 @@ export function installHooks(
    */
   const readFresh = async (cwd: string | null, scope: unknown): Promise<Inventory> => {
     const agent = typeof scope === 'object' && scope !== null ? agentByScope.get(scope) : undefined
+    // 宿主不保证 agents.get() 返回的对象与 agent/created 里那个是同一实例。
+    // 落空时退回 root 层，面板清单会与模型侧分叉——记一条 warn，别让它静默。
+    if (agent === undefined && scope !== undefined && scope !== null) {
+      warnOnce('scope-unregistered', 'dsh-skill-pack: scope 未登记，面板清单退回 global 层')
+    }
     const skills = agent === undefined ? rootSkills() : scopedSkills(agent)
     if (skills === null) throw new Error('取不到 skills 服务，无法读取清单')
     const request: { cwd?: string; scope?: unknown } = {}
@@ -353,7 +379,9 @@ export function installHooks(
 
     const hidden = view.hidden
     // 计划没变就跳过：这条判断留在调用方，reconcile 只管落地。
-    const key = hidden.join(',')
+    // 用 JSON.stringify 而不是 join(',')：skill 名可以含逗号，`['a,b']` 与
+    // `['a','b']` 的 join 结果相同，计划变更会被误判成没变。
+    const key = hidden.length === 0 ? '' : JSON.stringify(hidden)
     if (key === state.key) return
 
     // 只做名字 → 行的映射，不碰注册表；注册必须排进 reconcile 的队列，

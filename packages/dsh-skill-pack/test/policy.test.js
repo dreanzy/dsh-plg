@@ -11,6 +11,7 @@ import {
   serializeGroups,
   serializePacks,
 } from '../lib/policy.js'
+import { isOfficialSkill } from '../lib/inventory.js'
 
 /**
  * 本文件按「pack」语义重写。与旧用例的对应关系：
@@ -334,4 +335,15 @@ test('__proto__ 作为 pack id 时被保留', () => {
   const packs = parsed.value.book.packs
   assert.equal(Object.hasOwn(packs, '__proto__'), true)
   assert.equal(packs['__proto__'].name, 'x')
+})
+test('isOfficialSkill 按路径段匹配，不误判含 @deepseek-ai 子串的用户目录', () => {
+  // 用户自己的目录名含这个子串：不能判成官方，否则面板默认隐藏、用户找不到。
+  assert.equal(isOfficialSkill({ path: '/home/u/projects/@deepseek-ai-notes/my-skill/SKILL.md' }), false)
+  assert.equal(isOfficialSkill({ path: '/home/u/my-@deepseek-ai-skill/SKILL.md' }), false)
+  // 真正的官方路径：路径段恰好是 @deepseek-ai。
+  assert.equal(isOfficialSkill({ path: '/app/node_modules/@deepseek-ai/dsh-office/skills/x/SKILL.md' }), true)
+  assert.equal(isOfficialSkill({ path: 'C:\\app\\node_modules\\@deepseek-ai\\x\\SKILL.md' }), true)
+  // provider 白名单仍然生效。
+  assert.equal(isOfficialSkill({ provider: 'dsh-office' }), true)
+  assert.equal(isOfficialSkill({ provider: 'filesystem' }), false)
 })

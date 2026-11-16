@@ -85,6 +85,8 @@ export function effective(input: EffectiveInput): Effective {
     // 清单外的名字仍可问：链本身对任意名字都有答案。
     return known === undefined ? resolver.decide(name).value : known.value
   }
-  const hidden = complete ? names.filter((name) => !isOpen(name)).sort() : []
+  // 去重：宿主允许不同 provider 注册同名 skill，清单里会出现重复名字。
+  // 不去重会让 hidden 里出现两份同名项，遮蔽注册与 stuck 复验都多算一次。
+  const hidden = complete ? [...new Set(names)].filter((name) => !isOpen(name)).sort() : []
   return { complete, rows, hidden, isOpen }
 }

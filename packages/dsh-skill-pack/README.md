@@ -55,7 +55,7 @@ dsh plugin --profile <profile> add "github:dreanzy/dsh-plg#<sha>&path:/packages/
 
 ## 编辑与保存
 
-改动先攒在面板里，点「保存」才写盘（[ADR 0006](../../docs/adr/0006-pending-changes-before-commit.md)）：
+改动先攒在面板里，点「保存」才写盘（[ADR 0006](https://github.com/dreanzy/dsh-plg/blob/main/docs/adr/0006-pending-changes-before-commit.md)）：
 
 - 点开关、改绑定、改名、新建、复制都只是入队（「显示官方技能」「在输入框右侧显示入口」「打开设置时默认显示」这类视图偏好仍是即时写的，它们不改变模型行为）；面板立刻按服务端**试算**的结果显示改动后的样子。
 - 面板底部是停靠区：上方一行提示（例如「删除带走了两项未保存改动」），下方是待保存条——「撤销」（撤最后一条）、「放弃全部」、「保存」。
@@ -88,11 +88,11 @@ chip 弹层里换 pack 同样入队：点一行只是预览这张 pack 对这个
 
 每一次开关提交的是一组**意图**（`{键, 值|null}`），服务端在文件锁内读—改—写，不比对任何版本。命令幂等、可交换，写同一键即后点者赢，因此不存在 `stale-revision` 这类冲突。`null` 表示删掉这条键、回到跟随——写一个同值不等于跟随。
 
-详见 [docs/adr/0001-intent-writes.md](docs/adr/0001-intent-writes.md)。
+详见 [ADR 0001](https://github.com/dreanzy/dsh-plg/blob/main/docs/adr/0001-intent-writes.md)。
 
 ## 已知边界
 
-- **只管 skill**。MCP 的按工作区开关不在本包范围（MCP 一侧在 DSH 里没有干净的收窄点）。见 [docs/adr/0004-skill-only-scope.md](docs/adr/0004-skill-only-scope.md)。
+- **只管 skill**。MCP 的按工作区开关不在本包范围（MCP 一侧在 DSH 里没有干净的收窄点）。见 [ADR 0004](https://github.com/dreanzy/dsh-plg/blob/main/docs/adr/0004-skill-only-scope.md)。
 - 会话中途切换工作目录不会重算策略，重开会话即恢复。
 - 同层 first-wins：若别的插件先把同名 skill 注册进同一层，那条关不掉，面板会在该行标出「关不掉」。
 - 官方 `@deepseek-ai` 技能默认不在面板出现（判定见 `src/inventory.ts`），但模型仍可调用；打开「显示官方技能」后可逐项关闭，关掉后与自定义技能同规则：模型看不见，`/name` 也不生效。

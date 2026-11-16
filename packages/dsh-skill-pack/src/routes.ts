@@ -191,7 +191,9 @@ function originOf(row: SkillSummaryLike): string {
   const posix = row.path.replace(/\\/g, '/')
   if (posix.includes('@deepseek-ai')) return '官方'
   const at = posix.lastIndexOf('/skills/')
-  const root = at >= 0 ? posix.slice(0, at) : posix.slice(0, posix.lastIndexOf('/'))
+  // 无斜杠时 lastIndexOf 返回 -1，slice(0, -1) 会去掉最后一个字符。
+  const slash = posix.lastIndexOf('/')
+  const root = at >= 0 ? posix.slice(0, at) : slash >= 0 ? posix.slice(0, slash) : ''
   const segments = root.split('/').filter((segment) => segment !== '')
   const nodeModules = segments.lastIndexOf('node_modules')
   if (nodeModules >= 0 && nodeModules + 1 < segments.length) {

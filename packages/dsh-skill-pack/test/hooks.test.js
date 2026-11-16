@@ -471,3 +471,31 @@ test('agent/disposed 打掉该目录的求值缓存', async () => {
   ctx.emitSync('agent/disposed', { agent })
   assert.deepEqual(invalidated, [cwd])
 })
+test('skill 名含逗号时计划变更不被误判成没变', async () => {
+  const commaRows = [
+    { name: 'a,b', description: '', provider: 'filesystem', source: 'custom', path: '/x/ab/SKILL.md', invocation: { modelInvocable: true, userInvocable: true } },
+    { name: 'a', description: '', provider: 'filesystem', source: 'custom', path: '/x/a/SKILL.md', invocation: { modelInvocable: true, userInvocable: true } },
+    { name: 'b', description: '', provider: 'filesystem', source: 'custom', path: '/x/b/SKILL.md', invocation: { modelInvocable: true, userInvocable: true } },
+  ]
+  const { cwd } = await makeWorkspace({
+    packs: { default: { name: 'default', items: { 'a,b': false }, groups: {} } },
+  })
+  const skills = fakeSkills(commaRows)
+  const ctx = fakeCtx()
+  installHooks(ctx)
+  await ctx.emit('agent/created', { agent: agentFor(cwd, skills) })
+  const first = skills.registered.map((s) => s.name).sort()
+
+  // 改成关 a 和 b：join(',') 与第一轮结果相同，JSON.stringify 能区分。
+  await writeFile(
+    join(process.env['DSH_HOME'], 'packs', 'skill', 'packs.json'),
+    JSON.stringify({
+      version: 1,
+      ui: { showOfficialSkills: false, showChip: true, defaultTab: 'groups' },
+      packs: { default: { name: 'default', items: { a: false, b: false }, groups: {} } },
+    }, null, 2) + '\n',
+  )
+  await ctx.emit('skills/change', {})
+  const second = skills.registered.map((s) => s.name).sort()
+  assert.notDeepEqual(first, second, '计划变更必须被识别，不能被 join 碰撞吞掉')
+})

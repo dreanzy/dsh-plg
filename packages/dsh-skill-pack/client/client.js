@@ -2748,16 +2748,22 @@ window.__ModuleLoader__.load({
      * 判据用 `packId` 而不是 `binding`：`binding` 是原始记录，用户显式绑 `default`
      * 时它是 `'default'` 而非 null，拿它判断会把「显式绑默认」误认成「绑了别的 pack」。
      */
+    /** chip 的请求序号：快速切会话时丢弃旧响应，避免显示上一个会话的 pack 名。 */
+    let chipSeq = 0
+
     function refreshChipName(sessionId) {
       if (typeof sessionId !== 'string' || sessionId === '') {
         chipName.set(null)
         return
       }
+      const id = ++chipSeq
       api.workspace(sessionId).then(
         (view) => {
+          if (id !== chipSeq) return
           chipName.set(view && view.packId !== DEFAULT_PACK_ID ? view.packName : null)
         },
         () => {
+          if (id !== chipSeq) return
           // 读不到就退回 Default：chip 本身不能因此消失。
           chipName.set(null)
         },
@@ -2779,7 +2785,48 @@ window.__ModuleLoader__.load({
 
           // 组件必须是稳定标识符：内联箭头每次渲染都是新类型，React 会整棵卸载重挂
           // （AGENTS.md 客户端红线 4）。apply 只跑一次，闭包里拿 host 是安全的。
-          const SettingsSection = () => h(SettingsPanel, { host: host })
+    
+    /**
+     * 面板的错误边界。
+     *
+     * React 在渲染期抛错会卸载整棵子树，用户看到的就是「点进去一片空白」——没有
+     * 任何线索，只能去翻 DevTools。这里把异常转成一行可读文本，把「现象」变成
+     * 「原因」。apply 的 try 只兜注册期，兜不住渲染期。
+     */
+    /** 静态检查用的替身 React 没有 Component：没有它就退化成透传，不能在这里抛。 */
+    const BoundaryBase = typeof React.Component === 'function' ? React.Component : null
+
+    const PanelBoundary =
+      BoundaryBase === null
+        ? function PanelBoundaryPassThrough(props) {
+            return props.children
+          }
+        : class extends BoundaryBase {
+            constructor(props) {
+              super(props)
+              this.state = { error: null }
+            }
+
+            static getDerivedStateFromError(error) {
+              return { error: error }
+            }
+
+            render() {
+              if (this.state.error) {
+                const message =
+                  this.state.error && this.state.error.message ? this.state.error.message : String(this.state.error)
+                return h(
+                  'div',
+                  { style: S.error },
+                  '面板渲染失败：' + message,
+                  h('div', { style: { ...S.hint, marginTop: '6px' } }, '这是插件自身的错误，不影响会话与其他插件。'),
+                )
+              }
+              return this.props.children
+            }
+          }
+
+      const SettingsSection = () => h(PanelBoundary, null, h(SettingsPanel, { host: host }))
           // 设置页侧栏的图标：宿主给 `settings.section.icon` 留了槽位，按 section 的 id
           // 匹配。不注册就落到 `navIcon(id)` 的通用齿轮上，那一排分不清谁是谁。
           const SettingsIcon = (props) => h(ChipIcon, { size: props && props.size ? props.size : 16 })
@@ -2808,10 +2855,12 @@ window.__ModuleLoader__.load({
 
           const SkillChip = (props) => {
             const sessionId = props && props.sessionId ? props.sessionId : undefined
-            env.sessionId = sessionId
             const name = useSyncExternalStore(chipName.subscribe, chipName.read, chipName.read)
             const isOpen = useSyncExternalStore(subscribeChip, readChipOpen, readChipOpen)
             useEffect(() => {
+              // 写 env 必须放在 effect 里：渲染期赋值时，并发渲染下被丢弃的那次
+              // 可能后执行，env.sessionId 会停在旧会话。
+              env.sessionId = sessionId
               refreshChipName(sessionId)
             }, [sessionId])
             const bound = name !== null

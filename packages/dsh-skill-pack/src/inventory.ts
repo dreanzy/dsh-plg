@@ -69,6 +69,9 @@ const OFFICIAL_SCOPE = '@deepseek-ai'
 const OFFICIAL_PROVIDERS: ReadonlySet<string> = new Set(['dsh-office'])
 
 export function isOfficialSkill(entry: { path?: string; provider?: string }): boolean {
-  if (entry.path !== undefined && entry.path.includes(OFFICIAL_SCOPE)) return true
+  // 按路径段匹配，不是子串：`includes('@deepseek-ai')` 会把
+  // `~/projects/@deepseek-ai-notes/my-skill` 也判成官方，用户自己的 skill
+  // 因此在面板里默认隐藏，找不到也关不掉。
+  if (entry.path !== undefined && entry.path.split(/[\\/]/u).includes(OFFICIAL_SCOPE)) return true
   return entry.provider !== undefined && OFFICIAL_PROVIDERS.has(entry.provider)
 }

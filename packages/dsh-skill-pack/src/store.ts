@@ -71,18 +71,29 @@ async function readForWrite(
     return null
   }
   if (text === undefined || text.trim() === '') return text
+  const reason = unparseableReason(text)
+  if (reason !== null) {
+    note(warnings, `${label} ${reason}，已拒绝写入`)
+    return null
+  }
+  return text
+}
+
+/**
+ * 这份文本能不能安全改写。`null` 表示可以。
+ *
+ * 真写与试算共用：试算若跳过这一步，坏文件上会产出一个「全部重置」的假视图，
+ * 而真写拒绝——面板预览显示一个永远不会发生的状态。
+ */
+function unparseableReason(text: string): string | null {
   let raw: unknown
   try {
     raw = JSON.parse(text)
   } catch {
-    note(warnings, `${label} 不是合法 JSON，已拒绝写入`)
-    return null
+    return '不是合法 JSON'
   }
-  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
-    note(warnings, `${label} 顶层不是对象，已拒绝写入`)
-    return null
-  }
-  return text
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return '顶层不是对象'
+  return null
 }
 
 /**
@@ -326,6 +337,15 @@ function computeText(
   warnings: string[],
   mutate: (current: string | undefined) => string | null,
 ): string | undefined {
+  // 与真写同一条前置判定：坏文件上真写会跳过，试算也必须跳过，
+  // 否则预览显示一个永远不会发生的状态。
+  if (current !== undefined && current.trim() !== '') {
+    const reason = unparseableReason(current)
+    if (reason !== null) {
+      note(warnings, `${label} ${reason}，试算已跳过`)
+      return current
+    }
+  }
   try {
     const next = mutate(current)
     return next === null ? current : next

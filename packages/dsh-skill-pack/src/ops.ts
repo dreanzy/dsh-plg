@@ -107,9 +107,14 @@ function setKey(
   return next
 }
 
+/** 名字上限：超长名字会撑破面板布局，含控制字符的名字会在日志里伪造行。 */
+const MAX_NAME_CHARS = 64
+
 function requireName(raw: string): string {
   const name = raw.trim()
   if (name === '') throw new Error('pack 名不能为空')
+  if (name.length > MAX_NAME_CHARS) throw new Error(`pack 名过长（上限 ${String(MAX_NAME_CHARS)} 字符）`)
+  if (/[\u0000-\u001f]/u.test(name)) throw new Error('pack 名不能含控制字符')
   return name
 }
 
@@ -175,6 +180,8 @@ function nextGroupId(groups: readonly { id: string }[]): string {
 const groupNameOf = (command: Extract<Command, { op: 'createGroup' | 'renameGroup' }>): string => {
   const name = command.name.trim()
   if (name === '') throw new Error('分组名不能为空')
+  if (name.length > MAX_NAME_CHARS) throw new Error(`分组名过长（上限 ${String(MAX_NAME_CHARS)} 字符）`)
+  if (/[\u0000-\u001f]/u.test(name)) throw new Error('分组名不能含控制字符')
   return name
 }
 
@@ -347,6 +354,11 @@ const BIND: OpSpec = {
       return
     }
     if (!knownPacks.has(command.packId)) throw new Error(`未知 pack：${command.packId}`)
+    // 写侧按读侧的上限拒绝：写得进去、读不回来是最难排查的一类问题。
+    // 读侧按字典序截断到 MAX_NAMES，超出的绑定会静默消失。
+    if (draft.bindings[key] === undefined && Object.keys(draft.bindings).length >= MAX_NAMES) {
+      throw new Error(`绑定已达上限 ${String(MAX_NAMES)} 个`)
+    }
     if (draft.bindings[key] !== command.packId) {
       draft.bindings[key] = command.packId
       draft.changed = true
