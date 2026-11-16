@@ -11,9 +11,9 @@
  * 目的是让这些规则能在 `os.tmpdir()` 下被完整验证，而不依赖 DSH 进程。
  */
 
-import { mkdir, readFile } from 'node:fs/promises'
-import { dirname, join } from 'node:path'
-import { withFileLock, writeFileAtomic } from '@deepseek-ai/dsh-atomic-write'
+import { readFile } from 'node:fs/promises'
+import { join } from 'node:path'
+import { previewText, transact } from '@dreanzy/dsh-pack-core'
 import { dshHomePath } from '@deepseek-ai/dsh-home-paths'
 import {
   DEFAULT_PACK,
@@ -382,68 +382,26 @@ const COMMAND_TARGET: Readonly<Record<PackCommand['op'], CommandTarget>> = {
 }
 
 /**
- * 一次写事务：建父目录 → 拿跨进程锁 → 读 → 改 → 原子覆盖写。
+ * 单个文件一次写事务。
  *
- * 父目录必须在拿锁之前建好：withFileLock 用 `wx` 直接建 `.lock` 兄弟文件，它不建父目录。
- * 读失败（非 ENOENT）时跳过写入而不是覆盖——读不到就写等于拿缺省值抹掉别人的配置。
- * 读得到但读不懂（坏 JSON、顶层不是对象）同样跳过：解析失败会得到一份空名册，照写
- * 就是拿空名册覆盖用户手改坏的文件，而这种覆盖没有任何办法撤回。
- * `mutate` 返回 `null` 表示这一批没有实际改变：不落盘，兼容读期间凭空建空文件会让
- * 旧文件的降级路径立刻失效。
+ * 骨架在 `@dreanzy/dsh-pack-core`：建父目录、拿锁、读、判、改、原子写。这里只决定
+ * 「失败怎么记」——model 的选择是记一条 warning 并返回 false，调用方聚合成
+ * `state.written`，路由据此回错误信封。
+ *
+ * `label` 用完整路径：model 的状态文件路径由 `options` 注入（测试要指到 tmpdir），
+ * 只写 basename 会丢掉「哪个 profile」这条诊断信息。
  */
-async function transact(
+async function writeFileSafely(
   path: string,
   mutate: (current: string | undefined) => string | null,
   warnings: string[],
 ): Promise<boolean> {
-  // 返回 false 表示这份文件没写成。调用方据此让路由回错误信封——写盘失败却回
-  // `ok: true` 时，用户看到「保存成功」，重启后配置回退，且界面上没有任何线索。
-  let ok = true
-  try {
-    await mkdir(dirname(path), { recursive: true, mode: 0o700 })
-    await withFileLock(path, async () => {
-      let current: string | undefined
-      try {
-        current = await readFile(path, 'utf8')
-      } catch (error) {
-        if (errorCode(error) !== 'ENOENT') {
-          warnings.push(`写入前读取 ${path} 失败，已跳过本次写入：${String(error)}`)
-          ok = false
-          return
-        }
-        current = undefined
-      }
-      if (current !== undefined && !isOverwritable(current)) {
-        warnings.push(`写入前发现 ${path} 不是合法 JSON，已跳过本次写入`)
-        ok = false
-        return
-      }
-      const next = mutate(current)
-      if (next === null) return
-      await writeFileAtomic(path, next, { mode: 0o600, dirMode: 0o700 })
-    })
-  } catch (error) {
-    warnings.push(`写入 ${path} 失败：${String(error)}`)
-    ok = false
-  }
-  return ok
-}
-
-/**
- * 写前判定：这份内容还能被安全改写吗。
- *
- * 空文件算可写：它表示「还没有任何决定」，不是「读不懂」。其余只要解析出来的顶层
- * 不是对象，就当作外部改坏，由调用方跳过写入并记 warning。
- */
-function isOverwritable(text: string): boolean {
-  if (text.trim() === '') return true
-  let parsed: unknown
-  try {
-    parsed = JSON.parse(text)
-  } catch {
+  const result = await transact(path, path, mutate)
+  if (!result.ok) {
+    warnings.push(result.reason)
     return false
   }
-  return typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)
+  return true
 }
 
 /** 名字已存在？`default` 的出厂名也参与比较：两张同名 pack 在面板上分不清。 */
@@ -873,14 +831,14 @@ export async function applyCommands(
   if (plan.packs) {
     // seed 承接读侧：文件缺席时以读到的内容为起点，不让第一次保存清空已有决定。
     const seed = await loadPacks(options)
-    if (!(await transact(packsPath(options), (current) => applyToPacks(current, commands, seed, warnings), warnings))) {
+    if (!(await writeFileSafely(packsPath(options), (current) => applyToPacks(current, commands, seed, warnings), warnings))) {
       written = false
     }
   }
   if (plan.prompts) {
     const seed = await loadPrompts(options)
     if (
-      !(await transact(
+      !(await writeFileSafely(
         promptsPath(options),
         (current) => applyToPrompts(current, commands, seed.value, warnings),
         warnings,
@@ -892,7 +850,7 @@ export async function applyCommands(
   if (plan.bindings) {
     const seed = await loadBindings(options)
     if (
-      !(await transact(
+      !(await writeFileSafely(
         workspacesPath(options),
         (current) => applyToBindings(current, commands, seed.bindings, warnings),
         warnings,
@@ -937,19 +895,19 @@ export async function previewCommands(
   if (plan.packs) {
     // seed 承接读侧：文件缺席时以旧配置为起点，与真写同一份起点。
     const seed = packsFromText(packsCurrent, packsPath(options))
-    packsText = computeText(packsCurrent, 'packs.json', warnings, (current) =>
+    packsText = await computeText(packsPath(options), 'packs.json', warnings, (current) =>
       applyToPacks(current, commands, seed, warnings),
     )
   }
   if (plan.prompts) {
     const seed = promptsFromText(promptsCurrent, promptsPath(options))
-    promptsText = computeText(promptsCurrent, 'prompts.json', warnings, (current) =>
+    promptsText = await computeText(promptsPath(options), 'prompts.json', warnings, (current) =>
       applyToPrompts(current, commands, seed.value, warnings),
     )
   }
   if (plan.bindings) {
     const seed = bindingsFromText(workspacesCurrent, workspacesPath(options))
-    workspacesText = computeText(workspacesCurrent, 'workspaces.json', warnings, (current) =>
+    workspacesText = await computeText(workspacesPath(options), 'workspaces.json', warnings, (current) =>
       applyToBindings(current, commands, seed.bindings, warnings),
     )
   }
@@ -964,24 +922,19 @@ export async function previewCommands(
  * `null` 表示这批命令对这份文件没有实际变化（或原文已损坏），沿用原文即可；
  * 命令非法时跳过这份文件并记 warning——与 `transact` 的失败口径一致。
  */
-function computeText(
-  current: string | undefined,
+async function computeText(
+  path: string,
   label: string,
   warnings: string[],
   mutate: (current: string | undefined) => string | null,
-): string | undefined {
-  // 与 transact 同一条前置判定：坏 JSON 上真写会跳过，试算也必须跳过，
-  // 否则面板预览显示一个永远不会发生的状态。
-  if (current !== undefined && !isOverwritable(current)) {
-    warnings.push(`${label} 不是合法 JSON，试算已跳过`)
-    return current
+): Promise<string | undefined> {
+  // 与真写同一条前置判定：坏文件上真写会跳过，试算也必须跳过，否则面板预览显示
+  // 一个永远不会发生的状态。判定住在 core 的 previewText 里。
+  const result = await previewText(path, label, mutate)
+  if (!result.ok) {
+    warnings.push(result.reason)
+    return await readText(path, warnings)
   }
-  try {
-    const next = mutate(current)
-    return next === null ? current : next
-  } catch (error) {
-    warnings.push(`${label} 试算失败：${String(error)}`)
-    return current
-  }
+  return result.next === null ? await readText(path, warnings) : result.next
 }
 

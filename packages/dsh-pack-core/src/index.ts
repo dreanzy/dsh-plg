@@ -16,7 +16,15 @@ export { createReconciler, type Dispose, type Reconciler } from './reconcile.js'
 
 export type { Envelope, ErrorCode } from './protocol.js'
 
-export { storePaths, readText, type StorePaths } from './store.js'
+export {
+  storePaths,
+  readText,
+  transact,
+  previewText,
+  writableReason,
+  type StorePaths,
+  type TransactResult,
+} from './store.js'
 
 export { createResolver, normalizeCwd, type Decision, type GroupRegistryLike, type PackLike, type Resolver, type ResolverInput } from './policy.js'
 

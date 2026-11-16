@@ -85,6 +85,16 @@
 - 判据：`packages/dsh-pack-core/test/session.test.js` 断言两条通道的降级顺序、`Symbol.dispose` 被调用一次、释放失败只记一条带包名的 warn
 - 退役：宿主提供官方的「sessionId → 当前工作目录」解析接口，或把 `observeSession` 的释放改成显式 `dispose()` 方法
 
+### atomic-write-lock-order
+
+- 包：`@deepseek-ai/dsh-atomic-write`
+- 复刻对象：`withFileLock` 用 `wx` 直接建 `<file>.lock`，**不建父目录**；`writeFileAtomic` 自己会 mkdir，但那是拿锁之后的事。因此父目录必须在拿锁之前建好
+- 位置：`packages/dsh-pack-core/src/store.ts:93`
+- 起始版本：0.2.2-rc.3
+- 为什么：这是本地代码依赖上游的**未文档化行为**。上游哪天改成「父目录不存在就抛」，本地「先 mkdir 再拿锁」的顺序假设就从冗余变成必需；反过来若上游改成自己建父目录，本地那一步也不会坏——但没人会知道可以删
+- 判据：比对 `dsh-atomic-write` 的 `withFileLock` 实现，确认它仍用 `wx` 建锁文件且不 mkdir 父目录
+- 退役：上游在 `withFileLock` 里自己建父目录，或文档化这条顺序要求
+
 ## blocked
 
 当前无条目。

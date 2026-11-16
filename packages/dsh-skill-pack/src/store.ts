@@ -1,8 +1,5 @@
 import { OPS, filesOf, type BindingsDraft, type GroupsDraft, type PacksDraft } from './ops.js'
-import { readText, storePaths } from '@dreanzy/dsh-pack-core'
-import { mkdir } from 'node:fs/promises'
-import { dirname } from 'node:path'
-import { withFileLock, writeFileAtomic } from '@deepseek-ai/dsh-atomic-write'
+import { previewText, readText, storePaths, transact, writableReason } from '@dreanzy/dsh-pack-core'
 import {
   normalizeCwd,
   parseBindings,
@@ -57,6 +54,9 @@ function note(warnings: string[], message: string): void {
  * 空名册覆盖回去等于删掉用户的全部决定（坏 JSON 正是被解析成空 book 的）。
  *
  * 空文件仍然可写：它不是损坏，只是还没写过。
+ *
+ * 只用于 `applyCommands` 里 bind 分支的那次预读（要先知道有哪些 pack id）。
+ * 写事务自己的读与判定在 core 的 `transact` 里，不经过这里。
  */
 async function readForWrite(
   path: string,
@@ -70,8 +70,7 @@ async function readForWrite(
     note(warnings, `读取 ${label} 失败，本次未写入：${String(error)}`)
     return null
   }
-  if (text === undefined || text.trim() === '') return text
-  const reason = unparseableReason(text)
+  const reason = writableReason(text)
   if (reason !== null) {
     note(warnings, `${label} ${reason}，已拒绝写入`)
     return null
@@ -80,58 +79,19 @@ async function readForWrite(
 }
 
 /**
- * 这份文本能不能安全改写。`null` 表示可以。
+ * 单个文件一次写事务。失败只记 warning：三个文件各自独立，一个坏了不该拖住另外两个。
  *
- * 真写与试算共用：试算若跳过这一步，坏文件上会产出一个「全部重置」的假视图，
- * 而真写拒绝——面板预览显示一个永远不会发生的状态。
+ * 骨架在 `@dreanzy/dsh-pack-core`：建父目录、拿锁、读、判、改、原子写。这里只决定
+ * 「失败怎么记」——skill 的选择是记一条 warning 然后继续写下一个文件。
  */
-function unparseableReason(text: string): string | null {
-  let raw: unknown
-  try {
-    raw = JSON.parse(text)
-  } catch {
-    return '不是合法 JSON'
-  }
-  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return '顶层不是对象'
-  return null
-}
-
-/**
- * 一次写事务：建父目录 → 拿跨进程锁 → 读 → 改 → 原子覆盖写。
- *
- * 父目录必须在拿锁之前建好：`withFileLock` 用 `wx` 直接建 `<file>.lock`，
- * 它不会建父目录。`writeFileAtomic` 自己会 mkdir，但那是拿锁之后的事。
- */
-async function transact(
-  path: string,
-  label: string,
-  warnings: string[],
-  mutate: (current: string | undefined) => string | null,
-): Promise<void> {
-  await mkdir(dirname(path), { recursive: true, mode: 0o700 })
-  await withFileLock(path, async () => {
-    const current = await readForWrite(path, label, warnings)
-    // 没有可写的基线就跳过本次写入：不覆盖、也不凭空建一份。
-    if (current === null) return
-    const next = mutate(current)
-    // `null` 表示这一批命令没有实际改变：不落盘，不留下无意义的空文件。
-    if (next === null) return
-    await writeFileAtomic(path, next, { mode: 0o600, dirMode: 0o700 })
-  })
-}
-
-/** 单个文件一次写事务。失败只记 warning：三个文件各自独立，一个坏了不该拖住另外两个。 */
 async function writeFileSafely(
   path: string,
   label: string,
   warnings: string[],
   mutate: (current: string | undefined) => string | null,
 ): Promise<void> {
-  try {
-    await transact(path, label, warnings, mutate)
-  } catch (error) {
-    note(warnings, `${label} 更新失败：${String(error)}`)
-  }
+  const result = await transact(path, label, mutate)
+  if (!result.ok) note(warnings, result.reason)
 }
 
 /**
@@ -297,26 +257,18 @@ export async function previewCommands(
 ): Promise<PolicyState> {
   const warnings: string[] = []
   const files = filesOf(commands)
-  const [packsCurrent, groupsCurrent, workspacesCurrent] = await Promise.all([
-    readText(packsPath()),
-    readText(groupsPath()),
-    readText(workspacesPath()),
-  ])
-
-  let packsText = packsCurrent
-  let groupsText = groupsCurrent
-  let workspacesText = workspacesCurrent
-
-  if (files.has('packs')) {
-    packsText = computeText(packsCurrent, 'packs.json', warnings, (current) => applyToPacks(current, commands))
-  }
-  if (files.has('groups')) {
-    groupsText = computeText(groupsCurrent, 'groups.json', warnings, (current) => applyToGroups(current, commands))
-  }
+  // 每个文件只读一次：要改的走 computeText（它自己读），不改的直接读。
+  const packsText = files.has('packs')
+    ? await computeText(packsPath(), 'packs.json', warnings, (current) => applyToPacks(current, commands))
+    : await readText(packsPath())
+  const groupsText = files.has('groups')
+    ? await computeText(groupsPath(), 'groups.json', warnings, (current) => applyToGroups(current, commands))
+    : await readText(groupsPath())
+  let workspacesText = files.has('bindings') ? undefined : await readText(workspacesPath())
   if (files.has('bindings')) {
     // 与真写同一顺序：bind 的目标要在 pack 变化之后才判定。
     const known = new Set(Object.keys(parsePacks(packsText).value.book.packs))
-    workspacesText = computeText(workspacesCurrent, 'workspaces.json', warnings, (current) =>
+    workspacesText = await computeText(workspacesPath(), 'workspaces.json', warnings, (current) =>
       applyToBindings(current, commands, known),
     )
   }
@@ -331,28 +283,20 @@ export async function previewCommands(
  * `null` 表示这批命令对这份文件没有实际变化（或原文已损坏），沿用原文即可；
  * 命令非法时跳过这份文件并记 warning——与 `writeFileSafely` 的失败口径一致。
  */
-function computeText(
-  current: string | undefined,
+async function computeText(
+  path: string,
   label: string,
   warnings: string[],
   mutate: (current: string | undefined) => string | null,
-): string | undefined {
+): Promise<string | undefined> {
   // 与真写同一条前置判定：坏文件上真写会跳过，试算也必须跳过，
-  // 否则预览显示一个永远不会发生的状态。
-  if (current !== undefined && current.trim() !== '') {
-    const reason = unparseableReason(current)
-    if (reason !== null) {
-      note(warnings, `${label} ${reason}，试算已跳过`)
-      return current
-    }
+  // 否则预览显示一个永远不会发生的状态。判定住在 core 的 previewText 里。
+  const result = await previewText(path, label, mutate)
+  if (!result.ok) {
+    note(warnings, result.reason)
+    return await readText(path)
   }
-  try {
-    const next = mutate(current)
-    return next === null ? current : next
-  } catch (error) {
-    note(warnings, `${label} 更新失败：${String(error)}`)
-    return current
-  }
+  return result.next === null ? await readText(path) : result.next
 }
 
 /** 未落盘时的空状态，供读取失败的降级路径使用。 */

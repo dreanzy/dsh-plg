@@ -401,7 +401,7 @@ test('写入被拒不再回 error.code：仍是 ok，失败说明进 warnings', 
     deps(entries),
   )
   assert.equal(result.ok, true)
-  assert.equal(result.value.warnings.some((line) => /拒绝覆盖/u.test(line)), true, result.value.warnings.join('；'))
+  assert.equal(result.value.warnings.some((line) => /已拒写以免覆盖/u.test(line)), true, result.value.warnings.join('；'))
   // 原文件不动，视图照常给出来。
   assert.equal(await readFile(packsPath(), 'utf8'), broken)
   assert.equal(result.value.packId, 'default')

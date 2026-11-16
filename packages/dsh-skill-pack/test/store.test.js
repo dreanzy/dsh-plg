@@ -305,14 +305,14 @@ test('packs.json 内容坏掉时拒写，原文件字节不变', async () => {
   await writeFile(packsPath(), broken)
   const state = await applyCommands(null, [{ op: 'packItem', packId: 'default', name: 'alpha', value: false }])
   assert.equal(await readFile(packsPath(), 'utf8'), broken)
-  assert.match(state.warnings.join('\n'), /packs\.json 不是合法 JSON，已拒绝写入/)
+  assert.match(state.warnings.join('\n'), /packs\.json 不是合法 JSON，已拒写以免覆盖/)
 
   // 顶层不是对象：同样拒写。
   const notObject = '[]\n'
   await writeFile(packsPath(), notObject)
   const top = await applyCommands(null, [{ op: 'packItem', packId: 'default', name: 'alpha', value: false }])
   assert.equal(await readFile(packsPath(), 'utf8'), notObject)
-  assert.match(top.warnings.join('\n'), /packs\.json 顶层不是对象，已拒绝写入/)
+  assert.match(top.warnings.join('\n'), /packs\.json 顶层不是对象，已拒写以免覆盖/)
 })
 
 test('packs.json 读不出来（非 ENOENT）时跳过写入，不覆盖也不新建', async () => {
@@ -320,7 +320,7 @@ test('packs.json 读不出来（非 ENOENT）时跳过写入，不覆盖也不�
   // 让路径成为一个目录：readFile 抛 EISDIR，不是 ENOENT。
   await mkdir(packsPath(), { recursive: true })
   const state = await applyCommands(null, [{ op: 'packItem', packId: 'default', name: 'alpha', value: false }])
-  assert.match(state.warnings.join('\n'), /读取 packs\.json 失败，本次未写入/)
+  assert.match(state.warnings.join('\n'), /packs\.json 读取失败，本次未写入/)
   // 路径还是那个目录：既没被覆盖成文件，也没在别处凭空造一份。
   assert.equal((await stat(packsPath())).isDirectory(), true)
 })

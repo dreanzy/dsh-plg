@@ -28,6 +28,7 @@ ADR-0002 记的是"重复的基础设施约 150 行，对三包 13672 行约 1%"
 | `session`（`resolveSession` / `RouteContext` / `SessionResolution`） | 三份逐字同构，skill 那份已漂移成内联 cwd 解析；`observeSession` 的释放纪律漏一次就是长期泄漏 |
 | `reconcile` | 三份逐字相同，测试也一样 |
 | `store` 的落盘骨架（原子写、`<cwd>/.dsh/<包名>.json`、`$DSH_HOME/<包名>/`） | 路径规则是四包共有的外部契约 |
+| `store` 的写事务（`transact` / `previewText` / `writableReason`） | 四份骨架逐字相同，只有失败约定不同；试算与真写共用同一条前置判定，否则预览会显示一个永远不会发生的状态 |
 | `policy` 的层 / 覆盖 / 跟随求值链 | plugin↔skill 0.90；各包的条目 schema 仍留在自己包里 |
 | `effective` 的 `{ complete, rows, isOpen }` 骨架 | 三个包已同形，mcp 刚补齐 complete |
 | `snapshot` 的缓存骨架（`read` / `refresh` / `invalidate` / `stats` 与键规则） | 两包形状一致，键规则各留参数 |
@@ -39,7 +40,8 @@ ADR-0002 记的是"重复的基础设施约 150 行，对三包 13672 行约 1%"
 - **`inventory` / `policy` 的条目 schema**：被管理对象不同（skill、插件贡献、MCP 行、模型路由）。
 - **mcp 的 `carrier` / `pool` / `gate`**：只有 mcp 需要。
 - **`tools`**：mcp 与 model 各一套，语义无关。
-- **`transact`（写事务）**：三份签名与错误传播约定不同——plugin 吞掉错误、写进 warnings、返回 boolean；mcp 与 skill 抛异常由 `applyCommands` 记。统一会改掉两个包的语义，只共享它读的那一步（`readText`）。
+- **写循环（一批命令命中多个文件时的顺序与短路）**：skill 与 model 不短路（一个文件失败仍写其余），plugin 与 mcp 短路。这是各包的语义选择，不是重复代码——skill 的「先写 groups 再写 packs」有具体的 fail-open 理由。core 只提供单文件的 `transact`，循环留在包里。
+- **字段级前置校验**：plugin 的 `brokenReason` 会逐字段查 `packs.items` 的值是不是布尔，那是它的领域知识。core 只提供最松的一档（JSON 合法 + 顶层是对象），plugin 在 `mutate` 之前自己再查一遍。
 
 边界（客户端）：四份 `client.js` 是手写单文件，宿主不打包它，只能 `require('react')`。队列键这类**规则**放进 core（`PENDING_KEY_RULES`），客户端的实现仍是复制品，但四个包的 `test/client.test.js` 逐 op 比对两边结果，漂移会让用例直接失败。面板组件要不要共享，等真的改四遍、且出过一次不一致再谈构建期拼接——不提前引入第二套构建链。
 

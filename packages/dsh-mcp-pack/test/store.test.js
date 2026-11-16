@@ -365,7 +365,7 @@ test('坏 packs.json 拒绝覆盖，原文件保持', async () => {
   await mkdir(dirname(packsPath()), { recursive: true })
   const broken = '{ oops'
   await writeFile(packsPath(), broken)
-  warnedAbout(await applyCommands(null, [{ op: 'showChip', value: false }]), /拒绝覆盖/u)
+  warnedAbout(await applyCommands(null, [{ op: 'showChip', value: false }]), /已拒写以免覆盖/u)
   assert.equal(await readFile(packsPath(), 'utf8'), broken)
 })
 

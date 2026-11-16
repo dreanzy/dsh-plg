@@ -29,7 +29,7 @@
 | `session` | `resolveSession` · `RouteContext` · `SessionResolution` |
 | `reconcile` | `createReconciler` · `Dispose` · `Reconciler` |
 | `protocol` | `Envelope` · `ErrorCode` |
-| `store` | `storePaths` · `readText` |
+| `store` | `storePaths` · `readText` · `transact` · `previewText` · `writableReason` · `TransactResult` |
 | `policy` | `createResolver` · `normalizeCwd` · `Decision` · `Resolver` |
 
 ## 版本

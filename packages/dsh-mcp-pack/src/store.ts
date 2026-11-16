@@ -1,8 +1,5 @@
 import { OPS, filesOf, type BindingsDraft, type GroupsDraft, type PacksDraft } from './ops.js'
-import { readText, storePaths } from '@dreanzy/dsh-pack-core'
-import { mkdir } from 'node:fs/promises'
-import { dirname } from 'node:path'
-import { withFileLock, writeFileAtomic } from '@deepseek-ai/dsh-atomic-write'
+import { previewText, readText, storePaths, transact } from '@dreanzy/dsh-pack-core'
 import {
   normalizeCwd,
   parseBindings,
@@ -56,62 +53,19 @@ function readFailure(label: string, error: unknown): Error {
 }
 
 /**
- * 写入前的读。
+ * 单个文件一次写事务。
  *
- * 非 ENOENT 的读失败（权限、目录占位、被别的进程独占）不能当成「文件不存在」：
- * 那会拿一份空名册把原文件盖掉。这里让本次写入作罢，由 `applyCommands` 记进 warnings。
- * 读侧不走这里：读侧照旧抛，降级成什么只由 `parse*` 决定。
+ * 骨架在 `@dreanzy/dsh-pack-core`：建父目录、拿锁、读、判、改、原子写。这里只决定
+ * 「失败怎么记」——mcp 的选择是把失败原因抛成异常，由 `writeCommands` 的调用方收成
+ * warning 并停下这一批。
  */
-async function readForWrite(path: string, label: string): Promise<string | undefined> {
-  try {
-    return await readText(path)
-  } catch (error) {
-    throw readFailure(label, error)
-  }
-}
-
-/**
- * 写之前确认目标文件还能读懂。
- *
- * 读侧把坏文件降级成空策略；写侧若照抄那份空结果，一次手误编辑就会被下一次保存
- * 覆盖成空文件。这里直接拒绝，让面板把错误显示出来。
- */
-function assertWritable(current: string | undefined, label: string): void {
-  if (current === undefined || current.trim() === '') return
-  let parsed: unknown
-  try {
-    parsed = JSON.parse(current)
-  } catch (error) {
-    throw new Error(`${label} 不是合法 JSON，拒绝覆盖：${String(error)}`)
-  }
-  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
-    throw new Error(`${label} 顶层不是对象，拒绝覆盖`)
-  }
-}
-
-/**
- * 一次写事务：建父目录 → 拿跨进程锁 → 读 → 改 → 原子覆盖写。
- *
- * 父目录必须在拿锁之前建好：`withFileLock` 用 `wx` 直接建 `<file>.lock`，
- * 它不会建父目录。`writeFileAtomic` 自己会 mkdir，但那是拿锁之后的事。
- */
-async function transact(
+async function writeFileSafely(
   path: string,
   label: string,
   mutate: (current: string | undefined) => string | null,
 ): Promise<void> {
-  await mkdir(dirname(path), { recursive: true, mode: 0o700 })
-  await withFileLock(path, async () => {
-    const current = await readForWrite(path, label)
-    const next = mutate(current)
-    // `null` 表示这一批命令没有实际改变：不落盘，不凭空建空文件。
-    if (next === null) return
-    try {
-      await writeFileAtomic(path, next, { mode: 0o600, dirMode: 0o700 })
-    } catch (error) {
-      throw new Error(`写入 ${label} 失败：${String(error)}`)
-    }
-  })
+  const result = await transact(path, label, mutate)
+  if (!result.ok) throw new Error(result.reason)
 }
 
 
@@ -224,7 +178,6 @@ function nextPackId(packs: Readonly<Record<string, McpPack>>): string {
 /** 写 packs.json。文件缺席时从缺省名册起步。 */
 /** 写 `packs.json`。文件缺席时从空策略起写，`default` 由 `parsePacks` 补齐。 */
 function applyToPacks(current: string | undefined, commands: readonly Command[]): string {
-  assertWritable(current, 'packs.json')
   const parsed = parsePacks(current).value
   const draft: PacksDraft = { packs: { ...parsed.book.packs }, ui: { ...parsed.ui } }
   for (const command of commands) OPS[command.op].applyPacks?.(draft, command)
@@ -233,7 +186,6 @@ function applyToPacks(current: string | undefined, commands: readonly Command[])
 
 /** 写 `groups.json`。文件缺席时从空注册表起写。 */
 function applyToGroups(current: string | undefined, commands: readonly Command[]): string {
-  assertWritable(current, 'groups.json')
   const parsed = current === undefined ? EMPTY_GROUPS : parseGroups(current).value
   const draft: GroupsDraft = { groups: [...parsed.groups], assignments: { ...parsed.assignments } }
   for (const command of commands) OPS[command.op].applyGroups?.(draft, command)
@@ -248,7 +200,6 @@ function applyToBindings(
   commands: readonly Command[],
   knownPacks: ReadonlySet<string>,
 ): string | null {
-  assertWritable(current, 'workspaces.json')
   const parsed = parseBindings(current)
   const draft: BindingsDraft = { bindings: { ...parsed.value.bindings }, changed: false }
   for (const command of commands) OPS[command.op].applyBindings?.(draft, command, knownPacks)
@@ -319,14 +270,14 @@ async function writeCommands(commands: readonly Command[]): Promise<void> {
   assertCrossFile(commands, known)
 
   if (files.has('packs')) {
-    await transact(packsPath(), 'packs.json', (current) => applyToPacks(current, commands))
+    await writeFileSafely(packsPath(), 'packs.json', (current) => applyToPacks(current, commands))
   }
   if (files.has('groups')) {
-    await transact(groupsPath(), 'groups.json', (current) => applyToGroups(current, commands))
+    await writeFileSafely(groupsPath(), 'groups.json', (current) => applyToGroups(current, commands))
   }
   if (files.has('bindings')) {
     // bind 的合法目标要在 pack 写完之后再读：同一批命令里可能有 createPack / deletePack。
-    await transact(workspacesPath(), 'workspaces.json', (current) => applyToBindings(current, commands, known))
+    await writeFileSafely(workspacesPath(), 'workspaces.json', (current) => applyToBindings(current, commands, known))
   }
 }
 
@@ -392,35 +343,29 @@ export async function previewCommands(
 ): Promise<PolicyState> {
   const warnings: string[] = []
   const files = filesOf(commands)
-  const [packsCurrent, groupsCurrent, workspacesCurrent] = await Promise.all([
-    readText(packsPath()),
-    readText(groupsPath()),
-    readText(workspacesPath()),
-  ])
-
+  // 跨文件前置校验要先知道名册：这一次读是校验的输入，不是「多读一遍」。
+  const packsCurrent = await readText(packsPath())
   // 与真写同一份前置校验：不合法就整批不应用，而不是「部分生效」。
   try {
     assertCrossFile(commands, new Set(Object.keys(parsePacks(packsCurrent).value.book.packs)))
   } catch (error) {
     warnings.push(error instanceof Error ? error.message : String(error))
-    const state = buildState(cwd, packsCurrent, groupsCurrent, workspacesCurrent)
+    const state = buildState(cwd, packsCurrent, await readText(groupsPath()), await readText(workspacesPath()))
     return { ...state, warnings: [...warnings, ...state.warnings] }
   }
 
-  let packsText = packsCurrent
-  let groupsText = groupsCurrent
-  let workspacesText = workspacesCurrent
-
-  if (files.has('packs')) {
-    packsText = computeText(packsCurrent, 'packs.json', warnings, (current) => applyToPacks(current, commands))
-  }
-  if (files.has('groups')) {
-    groupsText = computeText(groupsCurrent, 'groups.json', warnings, (current) => applyToGroups(current, commands))
-  }
+  // 每个文件只读一次：要改的走 computeText（它自己读），不改的直接读。
+  const packsText = files.has('packs')
+    ? await computeText(packsPath(), 'packs.json', warnings, (current) => applyToPacks(current, commands))
+    : packsCurrent
+  const groupsText = files.has('groups')
+    ? await computeText(groupsPath(), 'groups.json', warnings, (current) => applyToGroups(current, commands))
+    : await readText(groupsPath())
+  let workspacesText = files.has('bindings') ? undefined : await readText(workspacesPath())
   if (files.has('bindings')) {
     // 与真写同一顺序：bind 的目标要在 pack 变化之后才判定。
     const known = new Set(Object.keys(parsePacks(packsText).value.book.packs))
-    workspacesText = computeText(workspacesCurrent, 'workspaces.json', warnings, (current) =>
+    workspacesText = await computeText(workspacesPath(), 'workspaces.json', warnings, (current) =>
       applyToBindings(current, commands, known),
     )
   }
@@ -435,19 +380,20 @@ export async function previewCommands(
  * `null` 表示这批命令对这份文件没有实际变化（或原文已损坏），沿用原文即可；
  * 命令非法时跳过这份文件并记 warning——与真写的失败口径一致。
  */
-function computeText(
-  current: string | undefined,
+async function computeText(
+  path: string,
   label: string,
   warnings: string[],
   mutate: (current: string | undefined) => string | null,
-): string | undefined {
-  try {
-    const next = mutate(current)
-    return next === null ? current : next
-  } catch (error) {
-    noteWarning(warnings, `${label} 更新失败：${String(error)}`)
-    return current
+): Promise<string | undefined> {
+  // 与真写同一条前置判定：坏文件上真写会跳过，试算也必须跳过。判定住在 core 的
+  // previewText 里，与 transact 共用同一个 writableReason。
+  const result = await previewText(path, label, mutate)
+  if (!result.ok) {
+    noteWarning(warnings, result.reason)
+    return await readText(path)
   }
+  return result.next === null ? await readText(path) : result.next
 }
 
 /**

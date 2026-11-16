@@ -441,7 +441,7 @@ test('packs.json 坏掉时 apply 仍返回 ok:true，拒写说明落在 warnings
   )
   // 写入失败不是请求错误：信封保持 ok，失败说明与读警告同住在 warnings。
   assert.equal(result.ok, true)
-  assert.match(result.value.warnings.join('\n'), /packs\.json 不是合法 JSON，已拒绝写入/)
+  assert.match(result.value.warnings.join('\n'), /packs\.json 不是合法 JSON，已拒写以免覆盖/)
   assert.equal(await readFile(packsFile(home), 'utf8'), broken)
 })
 
