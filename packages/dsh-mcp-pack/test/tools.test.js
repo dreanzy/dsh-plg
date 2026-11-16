@@ -12,7 +12,7 @@ function fakePool() {
       state.acquired.push({ key, spec })
       const handle = {
         key,
-        connection: { key, listTools: async () => [], callTool: async () => ({}), close: async () => {} },
+        connection: { key, alive: () => true, listTools: async () => [], callTool: async () => ({}), close: async () => {} },
         tools: [
           { name: 'read_file', description: '', inputSchema: {} },
           { name: 'delete_file', description: '', inputSchema: {} },

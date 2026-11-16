@@ -8,6 +8,7 @@ function fakeConnection(key, tools = [{ name: 'a', description: '', inputSchema:
     state,
     connection: {
       key,
+      alive: () => state.dead !== true,
       listTools: async () => tools,
       callTool: async () => ({}),
       close: async () => { state.closed += 1 },
@@ -134,5 +135,35 @@ test('旧 handle 二次 release 不误减新 entry 的引用', async () => {
   pool.release(old)
   assert.equal(pool.size(), 1, '新 entry 不该被旧 handle 关掉')
   assert.equal(made[1].state.closed, 0)
+  await pool.closeAll()
+})
+test('连接崩溃后池重连，不把死连接交出去', async () => {
+  let connects = 0
+  const made = []
+  const pool = createPool({
+    connect: async (key) => {
+      connects += 1
+      const item = fakeConnection(key)
+      made.push(item)
+      return item.connection
+    },
+  })
+  const first = await pool.acquire('k', spec)
+  // 模拟子进程崩溃：传输关闭。
+  made[0].state.dead = true
+  const second = await pool.acquire('k', spec)
+  assert.equal(connects, 2, '死连接必须重连')
+  assert.notEqual(second.connection, first.connection)
+  await pool.closeAll()
+})
+
+test('连接仍活着时复用，不重连', async () => {
+  let connects = 0
+  const pool = createPool({
+    connect: async (key) => { connects += 1; return fakeConnection(key).connection },
+  })
+  await pool.acquire('k', spec)
+  await pool.acquire('k', spec)
+  assert.equal(connects, 1)
   await pool.closeAll()
 })

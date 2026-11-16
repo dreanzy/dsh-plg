@@ -35,7 +35,7 @@ export function effective(input: EffectiveInput): Effective {
   const { policy, rows, complete } = input
   const defaultPack = defaultPackOf(policy.packs)
   const computed = rows.map((row) =>
-    resolveRow(row.rowKey, policy.pack, policy.packId, defaultPack, policy.groups),
+    resolveRow(row.rowKey, policy.pack, policy.packId, defaultPack, policy.groups, row.declaredDisabled),
   )
   // 宿主按 serverName 互斥，同一个名字最多一行；重复时后者覆盖，与 policies 一致。
   const byName = new Map<string, ResolvedRow>()

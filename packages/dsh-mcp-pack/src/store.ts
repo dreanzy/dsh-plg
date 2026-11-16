@@ -257,18 +257,15 @@ function applyToBindings(
 
 
 
-/** 真正落盘的那一半：前置校验 + 三个文件按固定顺序写。失败照旧抛出，由调用方收成 warning。 */
-async function writeCommands(commands: readonly Command[]): Promise<void> {
-  const files = filesOf(commands)
-  // 名册读不出来时无从校验 pack id：整批作罢，别写到一个看不见的名册上。
-  let known: Set<string>
-  try {
-    known = new Set(Object.keys((await loadPacks()).book.packs))
-  } catch (error) {
-    throw readFailure('packs.json', error)
-  }
-
-  // 写任何文件之前先把跨文件的前置条件验一遍：packs 写成功、bindings 抛错会留下半提交。
+/**
+ * 跨文件前置校验：一批命令里引用的 pack id 必须存在。
+ *
+ * 真写与试算共用这一份。试算若跳过它，同一批 `createPack + bind p1` 会显示
+ * 「绑定成功」，保存后却报「未知 pack」——面板的预览在跨文件命令上系统性说谎。
+ */
+function assertCrossFile(commands: readonly Command[], known: Set<string>): void {
+  // 本批是否新建 pack：新建的 id 由服务端生成，前置阶段无从得知。
+  const createsPack = commands.some((command) => command.op === 'createPack' || command.op === 'duplicatePack')
   for (const command of commands) {
     switch (command.op) {
       case 'packRow':
@@ -289,7 +286,15 @@ async function writeCommands(commands: readonly Command[]): Promise<void> {
         known.delete(command.packId)
         break
       case 'bind':
-        if (command.packId !== null && command.packId !== DEFAULT_PACK_ID && !known.has(command.packId)) {
+        // 目标可能是本批 createPack 刚建的 pack，而新 id 由服务端生成、前置阶段
+        // 拿不到。所以只拦「明确不存在且本批也没新建」的 id：本批有 createPack
+        // 时放行，交给 applyToBindings 用写后重读的名册再判一次。
+        if (
+          command.packId !== null &&
+          command.packId !== DEFAULT_PACK_ID &&
+          !known.has(command.packId) &&
+          !createsPack
+        ) {
           throw new Error(`未知 pack：${command.packId}`)
         }
         break
@@ -297,6 +302,21 @@ async function writeCommands(commands: readonly Command[]): Promise<void> {
         break
     }
   }
+}
+
+/** 真正落盘的那一半：前置校验 + 三个文件按固定顺序写。失败照旧抛出，由调用方收成 warning。 */
+async function writeCommands(commands: readonly Command[]): Promise<void> {
+  const files = filesOf(commands)
+  // 名册读不出来时无从校验 pack id：整批作罢，别写到一个看不见的名册上。
+  let known: Set<string>
+  try {
+    known = new Set(Object.keys((await loadPacks()).book.packs))
+  } catch (error) {
+    throw readFailure('packs.json', error)
+  }
+
+  // 写任何文件之前先把跨文件的前置条件验一遍：packs 写成功、bindings 抛错会留下半提交。
+  assertCrossFile(commands, known)
 
   if (files.has('packs')) {
     await transact(packsPath(), 'packs.json', (current) => applyToPacks(current, commands))
@@ -377,6 +397,15 @@ export async function previewCommands(
     readText(groupsPath()),
     readText(workspacesPath()),
   ])
+
+  // 与真写同一份前置校验：不合法就整批不应用，而不是「部分生效」。
+  try {
+    assertCrossFile(commands, new Set(Object.keys(parsePacks(packsCurrent).value.book.packs)))
+  } catch (error) {
+    warnings.push(error instanceof Error ? error.message : String(error))
+    const state = buildState(cwd, packsCurrent, groupsCurrent, workspacesCurrent)
+    return { ...state, warnings: [...warnings, ...state.warnings] }
+  }
 
   let packsText = packsCurrent
   let groupsText = groupsCurrent

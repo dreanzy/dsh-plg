@@ -88,6 +88,14 @@ export function createPool(options: PoolOptions = {}): Pool {
         if (slots.get(key) === slot) slots.delete(key)
         return await acquire(key, spec)
       }
+      // 底层传输已断（子进程崩溃、HTTP 断开）：摘掉重连，而不是把死连接交出去。
+      // 没有这一条，server 崩一次就永久废掉，每次调用都报 Not connected。
+      if (!entry.connection.alive()) {
+        live.delete(key)
+        if (slots.get(key) === slot) slots.delete(key)
+        void entry.connection.close().catch(() => undefined)
+        return await acquire(key, spec)
+      }
       entry.refs += 1
       return { key: entry.key, connection: entry.connection, tools: entry.tools }
   }

@@ -361,3 +361,16 @@ test('normalizeCwd 在 Windows 上大小写与尾斜杠落到同一个键', { sk
 test('normalizeCwd 保留盘符根目录的尾斜杠', () => {
   assert.equal(normalizeCwd('C:\\'), process.platform === 'win32' ? 'c:/' : 'C:/')
 })
+test('declaredDisabled 参与求值：用户标 disabled 的行默认关闭', () => {
+  const defaultPack = { name: 'default', groups: {}, rows: {} }
+  const open = resolveRow('global:a', null, 'default', defaultPack, { groups: [], assignments: {} }, false)
+  const closed = resolveRow('global:a', null, 'default', defaultPack, { groups: [], assignments: {} }, true)
+  assert.equal(open.open, true)
+  assert.equal(closed.open, false, 'declaredDisabled 必须让内置缺省变成关闭')
+})
+
+test('pack 显式 enabled 压过 declaredDisabled', () => {
+  const defaultPack = { name: 'default', groups: {}, rows: { 'global:a': { enabled: true } } }
+  const row = resolveRow('global:a', null, 'default', defaultPack, { groups: [], assignments: {} }, true)
+  assert.equal(row.open, true, 'pack 里显式写 true 时以 pack 为准')
+})

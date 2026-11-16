@@ -481,6 +481,14 @@ export function resolveRow(
   packId: string,
   defaultPack: McpPack,
   groups: GroupRegistry = EMPTY_GROUPS,
+  /**
+   * 用户在 `cordis.patch.yml` 里写的 `disabled: true`。
+   *
+   * 只影响**内置缺省**：pack 里显式写了 enabled 时仍以 pack 为准。不读它的话，
+   * 宿主层面的禁用开关对本插件无效——用户标了 disabled，模型仍能在名册里看到
+   * 并加载，闸门还会把 `disabled: true` 覆盖成 false。
+   */
+  declaredDisabled = false,
 ): ResolvedRow {
   const groupId = groupOf(groups, rowKey) ?? null
   const enabled = pickEnabled(rowKey, pack, defaultPack, groupId ?? undefined)
@@ -493,8 +501,8 @@ export function resolveRow(
   return {
     rowKey,
     groupId,
-    open: enabled.value ?? true,
-    openGlobal: global.value ?? true,
+    open: enabled.value ?? !declaredDisabled,
+    openGlobal: global.value ?? !declaredDisabled,
     mode: mode.value ?? DEFAULT_MODE,
     tools: tools.value ?? [],
     description: description.value ?? '',

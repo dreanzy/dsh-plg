@@ -47,7 +47,7 @@
 
 ## 编辑与保存
 
-改动先攒在面板里，点「保存」才写盘（[ADR 0006](../../docs/adr/0006-pending-changes-before-commit.md)）：
+改动先攒在面板里，点「保存」才写盘（[ADR 0006](https://github.com/dreanzy/dsh-plg/blob/main/docs/adr/0006-pending-changes-before-commit.md)）：
 
 - 拨开关、改绑定、新建、复制、改名都只是入队（入口开关与默认页这类视图偏好仍是即时写的）；面板立刻按服务端**试算**（`apply` 带 `dryRun: true`）的结果显示改动后的样子。
 - 面板底部是停靠区：上方一行提示（例如「删除带走了两项未保存改动」），下方是待保存条——「撤销」「放弃全部」「保存」。

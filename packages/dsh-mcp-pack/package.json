@@ -73,11 +73,11 @@
     "@dreanzy/dsh-pack-core": "workspace:^",
     "@deepseek-ai/dsh-atomic-write": "^0.2.0-rc.2 || ^0.2.1-0 || ^0.2.2-rc.0",
     "@deepseek-ai/dsh-home-paths": "^0.2.0-rc.2 || ^0.2.1-0 || ^0.2.2-rc.0",
-    "@modelcontextprotocol/sdk": "^1.32.2"
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
-    "typescript": "^5.0.0",
-    "zod": "4.6.7"
+    "typescript": "^5.0.0"
   }
 }

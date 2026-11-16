@@ -235,12 +235,15 @@ export function createOnDemandTools(deps: OnDemandDeps): { load: unknown; unload
 
       const tools = toolsOf(agent)
       if (tools === null) throw new Error('the calling agent has no tools service; cannot register MCP tools')
+      // resolveFactory 必须在读 previous 之前 await：读与写之间一旦有 await，
+      // 两个并发的 mcp_load 会都读到 undefined，各自 acquire（refs +2）、各自注册
+      // 同名工具，后者覆盖前者并丢掉前者的 disposers。
+      const factory = await deps.resolveFactory()
       const perAgent = loadedOf(agent)
       const previous = perAgent.get(target.rowKey)
       // 重复调用只增不减：描述承诺 widen，收窄会让模型第二次调用后丢掉刚加载的工具。
       const already = new Set(previous?.toolNames ?? [])
       const fresh = selected.filter((tool) => !already.has(publicToolName(target.serverName, tool.name)))
-      const factory = await deps.resolveFactory()
       const { built } = buildNativeDefinitions({
         factory,
         ctx: agent.ctx,

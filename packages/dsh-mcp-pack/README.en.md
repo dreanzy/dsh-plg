@@ -49,7 +49,7 @@ The footer's runtime self-check reports whether the host adapters were found, wh
 
 ## Editing and saving
 
-Edits queue up in the panel; nothing is written until you press Save (see the root [ADR 0006](../../docs/adr/0006-pending-changes-before-commit.md)):
+Edits queue up in the panel; nothing is written until you press Save (see the root [ADR 0006](https://github.com/dreanzy/dsh-plg/blob/main/docs/adr/0006-pending-changes-before-commit.md)):
 
 - Flipping a switch, changing a binding, creating or renaming all just enqueue. The panel immediately renders what the change would look like, using a host-side **dry run** (`apply` with `dryRun: true`).
 - A bottom dock holds a notice line on top and the pending bar below it: Undo, Discard all, Save.

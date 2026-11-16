@@ -30,6 +30,14 @@ export interface McpToolInfo {
 /** 一条活连接。 */
 export interface McpConnection {
   readonly key: string
+  /**
+   * 底层传输是否还活着。
+   *
+   * stdio 子进程崩溃、HTTP 断开后连接对象仍在，池无从得知。没有这个判据时，
+   * 后续 acquire 会一直返回死连接，每次 callTool 都报 Not connected，直到用户
+   * 手动 unload——server 崩一次就永久废掉。
+   */
+  alive(): boolean
   listTools(): Promise<readonly McpToolInfo[]>
   callTool(name: string, args: Record<string, unknown>, options?: { readonly signal?: AbortSignal; readonly timeoutMs?: number }): Promise<unknown>
   close(): Promise<void>
@@ -140,9 +148,15 @@ export async function connectMcp(key: string, spec: ConnectionSpec, options: { r
   const client = new Client({ name: 'dsh-mcp-pack', version: '0.1.0' }, { capabilities: {} })
   await client.connect(createTransport(spec))
   const deadline = timeoutOf(options.timeoutMs, 30_000)
+  // 传输关闭后 SDK 会调 onclose；此后这条连接不可再用。
+  let dead = false
+  client.onclose = () => {
+    dead = true
+  }
 
   return {
     key,
+    alive: () => !dead,
     async listTools() {
       const result = await client.listTools(undefined, { timeout: deadline })
       return result.tools.map((tool) => ({

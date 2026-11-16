@@ -89,3 +89,19 @@ test('坏 servers.json 拒绝覆盖，原文件保持', async () => {
     await rm(dir, { recursive: true, force: true })
   }
 })
+test('servers 是数组时拒绝覆盖，原文件保持', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'mcp-servers-'))
+  try {
+    const path = join(dir, 'servers.json')
+    const broken = '{"version":1,"servers":[]}'
+    await writeFile(path, broken)
+    const def = { transport: 'stdio', command: 'node', args: [], env: {}, cwd: '' }
+    await assert.rejects(
+      () => updateOwned(dir, (current) => upsertServer(current, 'unity', def)),
+      /servers 不是对象/u,
+    )
+    assert.equal(await readFile(path, 'utf8'), broken, '原文件必须逐字节不变')
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})

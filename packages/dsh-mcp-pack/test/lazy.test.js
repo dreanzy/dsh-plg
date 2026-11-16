@@ -14,6 +14,7 @@ function fakePool() {
         key,
         connection: {
           key,
+          alive: () => true,
           listTools: async () => [],
           callTool: async (name, args) => {
             state.called.push({ name, args })

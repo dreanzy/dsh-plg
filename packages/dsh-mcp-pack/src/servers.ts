@@ -172,6 +172,8 @@ function assertReadableOwned(text: string | undefined): void {
   }
   const record = asRecord(parsed)
   if (record === null || record['version'] !== 1) throw new Error('servers.json 版本或形状不认识，拒绝覆盖')
+  // 字段级形状：servers 是数组时读侧降级成空表，写侧照写就是拿空表覆盖原内容。
+  if (asRecord(record['servers']) === null) throw new Error('servers.json 的 servers 不是对象，拒绝覆盖')
 }
 
 /**
