@@ -156,3 +156,31 @@ test('Windows 上同一目录的两种写法命中同一格', { skip: process.pl
   await f.snapshot.refresh('d:\\projects\\sample\\')
   assert.equal(f.calls.readInventory, 1)
 })
+test('在飞的 refresh 被 invalidate 后不把旧值写回缓存', async () => {
+  // 让 loadPolicy 卡住，制造「refresh 在飞时被失效」的窗口。
+  let release
+  const gate = new Promise((resolve) => { release = resolve })
+  let items = { 'off-a': false }
+  let calls = 0
+  const snapshot = createScopeSnapshot({
+    loadPolicy: async () => {
+      calls += 1
+      if (calls === 1) await gate
+      return policyOf(items)
+    },
+    readInventory: async () => ({ rows: [row('off-a')], complete: true }),
+    fingerprint: async () => '0',
+  })
+
+  const pending = snapshot.refresh('/proj')
+  // 失效发生在计算中途：指纹不变，只有世代号能区分。
+  snapshot.invalidate('/proj')
+  items = {}
+  release()
+  await pending
+
+  // 旧值不得留在缓存里：下一次 refresh 必须重算并看到新策略。
+  const after = await snapshot.refresh('/proj')
+  assert.deepEqual(after.hidden, [], '失效后必须读到新策略，而不是被写回的旧值')
+  assert.equal(calls, 2, '旧值写回会让第二次刷新命中缓存，不再读盘')
+})

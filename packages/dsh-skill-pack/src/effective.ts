@@ -67,8 +67,15 @@ export function effective(input: EffectiveInput): Effective {
       groupId: resolver.groupOf(name) ?? null,
       open: complete ? decision.value : null,
       openGlobal: globalResolver.decide(name).value,
-      itemGlobal: defaultPack.items[name] ?? null,
-      itemWorkspace: policy.pack === null ? null : (policy.pack.items[name] ?? null),
+      // 用 hasOwn 而不是直接索引：`items['toString']` 会拿到原型上的函数，
+      // 被当成「用户设过这个键」。
+      itemGlobal: Object.hasOwn(defaultPack.items, name) ? (defaultPack.items[name] ?? null) : null,
+      itemWorkspace:
+        policy.pack === null
+          ? null
+          : Object.hasOwn(policy.pack.items, name)
+            ? (policy.pack.items[name] ?? null)
+            : null,
       decidedBy: decision.packId,
       decidedVia: decision.via,
     })

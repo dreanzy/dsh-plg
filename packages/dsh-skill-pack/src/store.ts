@@ -176,8 +176,11 @@ function buildState(
   const bindings: Bindings = parsedBindings.value
 
   const binding = cwdKey === null ? null : (bindings.bindings[cwdKey] ?? null)
+  // 必须用 hasOwn：`packs['toString']` 拿到的是 Object.prototype.toString，
+  // 不是 undefined，会让 pack 变成一个函数，求值时抛 TypeError 并被吞成一条 warn，
+  // 结果是该工作区所有被关掉的 skill 全部重新可见（fail-open）。
   const resolvedId =
-    binding === null || binding === DEFAULT_PACK_ID || packs[binding] === undefined ? DEFAULT_PACK_ID : binding
+    binding === null || binding === DEFAULT_PACK_ID || !Object.hasOwn(packs, binding) ? DEFAULT_PACK_ID : binding
   return {
     packs: { packs },
     ui: parsedPacks.value.ui,
@@ -237,11 +240,15 @@ export async function applyCommands(cwd: string | null, commands: readonly Comma
   const files = filesOf(commands)
   const warnings: string[] = []
 
-  if (files.has('packs')) {
-    await writeFileSafely(packsPath(), 'packs.json', warnings, (current) => applyToPacks(current, commands))
-  }
+  // 顺序是硬要求：`deleteGroup` 同时命中两个文件，先写 groups 再写 packs。
+  // 反过来的话，groups.json 写失败时 packs.json 里该组的开关已被清空，组却还在——
+  // 组内成员从「关」变成「跟随 → 默认开」，是 fail-open 方向。
+  // 先删组定义则安全：残留的组开关不影响求值（`groupOf` 只认仍存在的组）。
   if (files.has('groups')) {
     await writeFileSafely(groupsPath(), 'groups.json', warnings, (current) => applyToGroups(current, commands))
+  }
+  if (files.has('packs')) {
+    await writeFileSafely(packsPath(), 'packs.json', warnings, (current) => applyToPacks(current, commands))
   }
   if (files.has('bindings')) {
     // bind 的合法目标要在 pack 写完之后再读：同一批命令里可能有 createPack / deletePack。

@@ -20,6 +20,14 @@ import {
 /** 单个域的名字上限，只为防止文件被写成无界清单。写侧也按它拒绝，见 ops.ts。 */
 export const MAX_NAMES = 2000
 
+/**
+ * 一批命令的条数上限。
+ *
+ * `applyToPacks` 对每条命令复制一次整张 items 表，N 条命令是 O(N²)：实测 2 万条
+ * 要跑 70 秒并阻塞宿主主线程（所有会话的流式输出一起停摆）。正常 UI 操作最多几百条。
+ */
+export const MAX_COMMANDS = 1000
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
@@ -57,7 +65,9 @@ function parseMap(raw: unknown, label: string, warnings: string[]): Record<strin
       warnings.push(`${label}.${name} 不是布尔值，已忽略`)
       continue
     }
-    out[name] = value
+    // 用 defineProperty 而不是赋值：`out['__proto__'] = value` 在普通对象上改的是
+    // 原型，键被静默丢弃且没有 warning。defineProperty 永远写自有属性。
+    Object.defineProperty(out, name, { value, enumerable: true, writable: true, configurable: true })
   }
   return out
 }
@@ -145,7 +155,13 @@ export function parsePacks(text: string | undefined): ParseResult<ParsedPacks> {
           }
           const pack = parsePack(id, rawPacks[id], warnings)
           // 内置 pack 的显示名固定「默认」：文件里可能是旧名（default 等），读侧一并归一。
-          packs[id] = id === DEFAULT_PACK_ID ? { ...pack, name: DEFAULT_PACK_NAME } : pack
+          // defineProperty 保证 `__proto__` 这类 id 也落成自有属性而不是改原型。
+          Object.defineProperty(packs, id, {
+            value: id === DEFAULT_PACK_ID ? { ...pack, name: DEFAULT_PACK_NAME } : pack,
+            enumerable: true,
+            writable: true,
+            configurable: true,
+          })
         }
       }
     }
@@ -263,7 +279,12 @@ export function parseGroups(text: string | undefined): ParseResult<GroupRegistry
           warnings.push(`assignments.${name} 不是分组 id，已忽略`)
           continue
         }
-        assignments[name] = groupId
+        Object.defineProperty(assignments, name, {
+          value: groupId,
+          enumerable: true,
+          writable: true,
+          configurable: true,
+        })
       }
     }
   }

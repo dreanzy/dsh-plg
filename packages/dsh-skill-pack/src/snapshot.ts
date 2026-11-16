@@ -116,6 +116,14 @@ export function createScopeSnapshot(deps: SnapshotDeps): ScopeSnapshot {
   /** cwd 键 → 该目录下所有 scope 的键。用于按目录失效。 */
   const keysByCwd = new Map<string, Set<string>>()
   const inflight = new Map<string, Promise<SnapshotValue>>()
+  /**
+   * 每个键的世代号：`invalidate` 加一。
+   *
+   * `compute` 在多个 await 之后才写回 `entries`，指纹是**失效之前**取的。没有世代号时，
+   * 一次在飞的 refresh 会把改动前的旧值连同旧指纹写回缓存，之后所有 refresh 因为指纹
+   * 没变而一直命中它——保存策略后永久不生效，直到文件字节数或 mtime 变化。
+   */
+  const epochs = new Map<string, number>()
 
   const remember = (cwdKey: string, key: string): void => {
     let keys = keysByCwd.get(cwdKey)
@@ -134,6 +142,7 @@ export function createScopeSnapshot(deps: SnapshotDeps): ScopeSnapshot {
     force: boolean,
   ): Promise<SnapshotValue> => {
     const cached = entries.get(key)
+    const epoch = epochs.get(key) ?? 0
     const stamp = await fingerprint(cwd)
     if (!force && cached !== undefined && cached.fingerprint === stamp) return cached.value
 
@@ -152,7 +161,8 @@ export function createScopeSnapshot(deps: SnapshotDeps): ScopeSnapshot {
       policy,
       warnings: policy.warnings,
     }
-    entries.set(key, { value, fingerprint: stamp })
+    // 计算期间被失效过：这一份是旧策略，不能写回缓存。
+    if ((epochs.get(key) ?? 0) === epoch) entries.set(key, { value, fingerprint: stamp })
     remember(cwdKey, key)
     return value
   }
@@ -174,14 +184,26 @@ export function createScopeSnapshot(deps: SnapshotDeps): ScopeSnapshot {
     },
     invalidate(cwd) {
       if (cwd === undefined) {
+        // 全量失效：所有在飞的 refresh 都作废，且不能再写回缓存。
+        for (const key of entries.keys()) epochs.set(key, (epochs.get(key) ?? 0) + 1)
+        for (const key of inflight.keys()) epochs.set(key, (epochs.get(key) ?? 0) + 1)
         entries.clear()
         keysByCwd.clear()
         return
       }
       const cwdKey = cwdKeyOf(cwd)
       const keys = keysByCwd.get(cwdKey)
+      // 在飞的 refresh 还没 remember，keysByCwd 里查不到它；按前缀扫 inflight 补上，
+      // 否则「首次刷新途中保存」会让失效落空，旧值照样写回缓存。
+      const prefix = cwdKey + '|'
+      for (const key of inflight.keys()) {
+        if (key.startsWith(prefix)) epochs.set(key, (epochs.get(key) ?? 0) + 1)
+      }
       if (keys === undefined) return
-      for (const key of keys) entries.delete(key)
+      for (const key of keys) {
+        epochs.set(key, (epochs.get(key) ?? 0) + 1)
+        entries.delete(key)
+      }
       keysByCwd.delete(cwdKey)
     },
   }

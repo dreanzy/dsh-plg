@@ -1,5 +1,5 @@
 import { pendingKeyOf } from '@dreanzy/dsh-pack-core'
-import { MAX_NAMES, normalizeCwd } from './policy.js'
+import { MAX_COMMANDS, MAX_NAMES, normalizeCwd } from './policy.js'
 import {
   DEFAULT_PACK_ID,
   type Bindings,
@@ -514,13 +514,20 @@ export const OPS: Readonly<Record<Command['op'], OpSpec>> = {
 export function parseCommands(raw: unknown): { ok: true; commands: Command[] } | { ok: false; message: string } {
   if (!Array.isArray(raw)) return { ok: false, message: 'commands 必须是数组' }
   if (raw.length === 0) return { ok: false, message: 'commands 不能为空' }
+  // 条数上限：applyToPacks 对每条命令复制一次整张 items 表，2 万条要跑 70 秒并
+  // 阻塞宿主主线程。正常 UI 操作最多几百条，1000 条足够。
+  if (raw.length > MAX_COMMANDS) {
+    return { ok: false, message: `commands 一次最多 ${String(MAX_COMMANDS)} 条，收到 ${String(raw.length)} 条` }
+  }
   const commands: Command[] = []
   for (const [index, entry] of raw.entries()) {
     const record = asRecord(entry)
     if (record === null) return { ok: false, message: `commands[${String(index)}] 不是对象` }
     const op = record['op']
     if (typeof op !== 'string') return { ok: false, message: `commands[${String(index)}] op 不是已知操作` }
-    const spec = (OPS as Record<string, OpSpec | undefined>)[op]
+    // 必须用 hasOwn：`OPS['toString']` 拿到的是 Object.prototype.toString，
+    // 不是 undefined，会让 spec.parse 抛 TypeError 并被报成 internal。
+    const spec = Object.hasOwn(OPS, op) ? (OPS as Record<string, OpSpec | undefined>)[op] : undefined
     if (spec === undefined) return { ok: false, message: `commands[${String(index)}] op 不是已知操作` }
     const parsed = spec.parse(record)
     if (typeof parsed === 'string') return { ok: false, message: `commands[${String(index)}] ${parsed}` }

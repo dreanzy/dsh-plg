@@ -483,3 +483,17 @@ test('同一个 dryRun 请求连发两次结果一致：命令是绝对状态，
   assert.deepEqual(second.value.packs, first.value.packs)
   assert.equal(fileExists(packsFile(home)) ? (await readJson(packsFile(home))).packs.p1 : undefined, undefined)
 })
+test('原型链上的 op 被当成未知操作，不是 internal', () => {
+  for (const op of ['toString', 'constructor', '__proto__', 'hasOwnProperty']) {
+    const parsed = parseCommands([{ op }])
+    assert.equal(parsed.ok, false, op)
+    assert.match(parsed.message, /不是已知操作/u)
+  }
+})
+
+test('命令条数超过上限时拒绝，不进入 O(n²) 路径', () => {
+  const many = Array.from({ length: 1001 }, () => ({ op: 'packItem', packId: 'default', name: 'a', value: true }))
+  const parsed = parseCommands(many)
+  assert.equal(parsed.ok, false)
+  assert.match(parsed.message, /最多 1000 条/u)
+})

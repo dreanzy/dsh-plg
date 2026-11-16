@@ -318,3 +318,20 @@ test('groups / bindings 超过上限时截断并留 warning', () => {
   assert.equal(Object.keys(parsedBindings.value.bindings).length, 2000)
   assert.equal(parsedBindings.warnings.some((line) => line.includes('超过 2000')), true)
 })
+test('__proto__ 作为名字时决定被保留，不静默丢弃', () => {
+  // 必须用 JSON 字符串：对象字面量里的 `__proto__:` 是设原型，根本产生不了这个键。
+  const parsed = parsePacks(
+    '{"version":1,"packs":{"default":{"name":"默认","items":{"__proto__":false,"alpha":false}}}}',
+  )
+  const items = parsed.value.book.packs['default'].items
+  assert.equal(Object.hasOwn(items, '__proto__'), true, '__proto__ 必须落成自有属性')
+  assert.equal(items['__proto__'], false)
+  assert.equal(items['alpha'], false)
+})
+
+test('__proto__ 作为 pack id 时被保留', () => {
+  const parsed = parsePacks('{"version":1,"packs":{"__proto__":{"name":"x","items":{"a":false}}}}')
+  const packs = parsed.value.book.packs
+  assert.equal(Object.hasOwn(packs, '__proto__'), true)
+  assert.equal(packs['__proto__'].name, 'x')
+})
