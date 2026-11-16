@@ -1,6 +1,6 @@
 # @dreanzy/dsh-pack-core
 
-四个 pack 插件共用的服务端骨架：会话目录、装配记账、求值与落盘规则、协议类型。
+四个 pack 插件共用的服务端骨架：会话目录与解析、装配记账、求值与落盘规则、协议类型。
 
 边界见 [ADR-0007](https://github.com/dreanzy/dsh-plg/blob/main/docs/adr/0007-shared-core-package.md)。
 
@@ -26,6 +26,7 @@
 | 模块 | 导出 |
 | --- | --- |
 | `cwd` | `projectedCwd` · `cwdFromAgent` · `cwdFromObserved` |
+| `session` | `resolveSession` · `RouteContext` · `SessionResolution` |
 | `reconcile` | `createReconciler` · `Dispose` · `Reconciler` |
 | `protocol` | `Envelope` · `ErrorCode` |
 | `store` | `storePaths` · `readText` |

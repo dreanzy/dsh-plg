@@ -94,7 +94,7 @@ export function apply(ctx: unknown): void {
       context.logger.warn(`${name}: connection 服务在册但没有 fetch.register，路由未注册（策略仍生效）`)
       return
     }
-    const routeCtx: RouteContext = { get: (key) => context.get(key), logger: context.logger }
+    const routeCtx: RouteContext = { get: (key) => context.get(key), logger: context.logger, label: name }
     // 与 hooks 共用同一份快照：面板上的隐藏集必须就是会话里生效的那一份。
     const deps: RouteDeps = { snapshot: hooks.snapshot, reapply: hooks.reapply, stuck: hooks.stuck }
     const disposers: Array<() => unknown> = []

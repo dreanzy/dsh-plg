@@ -75,6 +75,16 @@
 - 判据：`packages/dsh-model-pack/test/hooks.test.js` 断言 `agentTeams.isEnabled` 返回 true 时 `model-pack.team` 段文本非空、返回 false 或抛错时为空串
 - 退役：官方给 `systemPrompt` 段提供「按团队模式条件注入」的声明式入口，或 `team:policy` 段本身改为引用实际可用的委派工具
 
+### session-resolve-services
+
+- 包：`@deepseek-ai/dsh-agents` / `@deepseek-ai/dsh-session`（服务名 `agents` 与 `sessionQuery`）
+- 复刻对象：把 `sessionId` 解析成工作目录的两条通道 —— `agents.get(id)` 返回的 Agent 本体（`session.projections.faceOf('workingDirectory')`），以及 `sessionQuery.observeSession(id)` 返回的观察体（`projections.values.workingDirectory`）。观察体只暴露 `Symbol.dispose`，没有 `.dispose()`，且必须在 `finally` 里释放
+- 位置：`packages/dsh-pack-core/src/session.ts:32`
+- 起始版本：0.2.2-rc.3
+- 为什么：core 里第一个**主动探测宿主服务**的模块。`cwd.ts` 只吃已经拿到的对象，不探测；`session.ts` 按服务名现取、按方法名现调，形状写错时降级路径会静默失效（面板显示「未生效」而不是报错），而漏释放观察体是一条不可见的长期泄漏
+- 判据：`packages/dsh-pack-core/test/session.test.js` 断言两条通道的降级顺序、`Symbol.dispose` 被调用一次、释放失败只记一条带包名的 warn
+- 退役：宿主提供官方的「sessionId → 当前工作目录」解析接口，或把 `observeSession` 的释放改成显式 `dispose()` 方法
+
 ## blocked
 
 当前无条目。

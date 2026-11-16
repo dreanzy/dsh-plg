@@ -1,7 +1,7 @@
 import type { Envelope, ErrorCode } from '@dreanzy/dsh-pack-core'
+import { cwdFromAgent, resolveSession, type RouteContext, type SessionResolution } from '@dreanzy/dsh-pack-core'
 import { defaultPackOf } from './policy.js'
 import { effective } from './effective.js'
-import { projectedCwd } from './hooks.js'
 import { isOfficialSkill, type SkillSummaryLike, type SkillsFace } from './inventory.js'
 import { applyCommands, previewCommands, type PolicyState } from './store.js'
 import type { ScopeSnapshot, SnapshotValue } from './snapshot.js'
@@ -15,13 +15,7 @@ import {
   type UiState,
 } from './types.js'
 
-/** 路由层需要的最小 ctx 面。 */
-export interface RouteContext {
-  get(name: string): unknown
-  logger: { warn(message: string): void }
-}
-
-export type { Envelope, ErrorCode }
+export type { Envelope, ErrorCode, RouteContext }
 
 /**
  * 路由层依赖。
@@ -97,80 +91,9 @@ export interface WorkspaceView extends GlobalView {
   readonly stuck: readonly string[]
 }
 
-function asRecord(value: unknown): Record<string, unknown> | null {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) return null
-  return value as Record<string, unknown>
-}
-
 function readString(source: Record<string, unknown> | null, key: string): string | null {
   const value = source?.[key]
   return typeof value === 'string' && value !== '' ? value : null
-}
-
-/**
- * 把 `sessionId` 解析成工作目录与它的 live Agent。
- *
- * `agent` 必须是 `agents.get()` 返回的**对象本体**：`dsh-scope` 按对象身份查
- * 作用域链，形状相同的替身查不到 agent 层，清单会静默退化成 global 层。
- * 它同时是 `snapshot({ scope })` 的唯一合法入参。
- *
- * 先问 live Agent，再退回 `sessionQuery` 的只读观察（后者没有 scope，只能给出 cwd）。
- *
- * `observeSession` 的观察体**必须在 finally 里释放**：宿主为每次观察保留订阅，
- * 漏一次就是一条长期泄漏；它只暴露 `Symbol.dispose`，没有 `.dispose()`。
- */
-async function resolveSession(
-  ctx: RouteContext,
-  sessionId: string,
-): Promise<{ cwd: string; live: boolean; agent: unknown } | null> {
-  const agents = asRecord(ctx.get('agents'))
-  const get = agents?.['get']
-  if (typeof get === 'function') {
-    try {
-      const agent = get.call(agents, sessionId)
-      const record = asRecord(agent)
-      const session = asRecord(record?.['session'])
-      // 工作目录的权威值在投影里：`cd` 与切换工作区只改投影，`header.cwd` 是会话
-      // 创建时的快照。投影还没写过（新会话）时退回 header.cwd——顺序与宿主
-      // `skill-catalog` 一致。
-      const cwd = projectedCwd(session) ?? readString(asRecord(session?.['header']), 'cwd')
-      if (cwd !== null) return { cwd, live: true, agent }
-    } catch {
-      // Agent 侧失败不致命，继续问 sessionQuery。
-    }
-  }
-
-  const query = asRecord(ctx.get('sessionQuery'))
-  const observe = query?.['observeSession']
-  if (typeof observe === 'function') {
-    let observation: unknown
-    try {
-      // 不带 `projectionMode: 'none'`：历史会话的当前目录同样只在投影里。
-      observation = await (observe as (id: string) => Promise<unknown>).call(query, sessionId)
-      const observed = asRecord(observation)
-      const projections = asRecord(observed?.['projections'])
-      const values = asRecord(projections?.['values'])
-      const cwd = readString(values, 'workingDirectory') ?? readString(asRecord(observed?.['header']), 'cwd')
-      if (cwd !== null) return { cwd, live: false, agent: undefined }
-    } catch {
-      // 未知会话在这里 reject；交给调用方报错。
-    } finally {
-      releaseObservation(ctx, observation, sessionId)
-    }
-  }
-
-  return null
-}
-
-function releaseObservation(ctx: RouteContext, observation: unknown, sessionId: string): void {
-  const record = asRecord(observation)
-  if (record === null) return
-  try {
-    const dispose = (record as Record<symbol, unknown>)[Symbol.dispose]
-    if (typeof dispose === 'function') (dispose as () => void).call(observation)
-  } catch (error) {
-    ctx.logger.warn(`dsh-skill-pack: 释放会话观察失败（sessionId=${sessionId}）：${String(error)}`)
-  }
 }
 
 /**
@@ -292,7 +215,7 @@ async function readAnyView(ctx: RouteContext, deps: RouteDeps, sessionId?: strin
     try {
       const session = await resolveSession(ctx, sessionId)
       // 非 live 的观察没有 scope，只能用它的 cwd；那种情况交给下面的启发式。
-      if (session !== null && session.agent !== undefined) {
+      if (session !== null && session.live) {
         return await deps.snapshot.refresh(session.cwd, session.agent)
       }
     } catch {
@@ -303,9 +226,8 @@ async function readAnyView(ctx: RouteContext, deps: RouteDeps, sessionId?: strin
     const agentsService = ctx.get('agents') as { list?: () => unknown } | undefined
     const list = typeof agentsService?.list === 'function' ? (agentsService.list.call(agentsService) as unknown[]) : []
     const agent = Array.isArray(list) ? list[0] : undefined
-    const session = (agent as { session?: unknown } | undefined)?.session
     // 投影优先：这条回退路径以前直接读会话头，切目录后会按旧目录刷新。
-    const cwd = projectedCwd(session) ?? readString(asRecord(asRecord(session)?.['header']), 'cwd')
+    const cwd = cwdFromAgent(agent)
     if (agent !== undefined && typeof cwd === 'string' && cwd !== '') {
       return await deps.snapshot.refresh(cwd, agent)
     }
@@ -348,14 +270,15 @@ export async function handleGlobal(
 
 async function buildWorkspaceView(
   ctx: RouteContext,
-  cwd: string,
-  agent: unknown,
-  live: boolean,
+  session: SessionResolution,
   stuck: readonly string[],
   deps: RouteDeps,
   /** 试算后的策略状态；给出时视图按它渲染，但清单仍来自真实快照。 */
   policy?: PolicyState,
 ): Promise<Envelope<WorkspaceView>> {
+  const { cwd } = session
+  const agent = session.live ? session.agent : undefined
+  const { live } = session
   const skills = rootSkills(ctx)
   if (skills === null) return { ok: false, error: { code: 'internal', message: 'skills 服务不可用' } }
   // 带 scope 的一次读取已经包含 default 层（`[global, ...chainLayers(scope)]`），
@@ -401,7 +324,7 @@ export async function handleWorkspace(
     if (resolved === null) {
       return { ok: false, error: { code: 'unknown-session', message: `未找到会话：${sessionId}` } }
     }
-    return await buildWorkspaceView(ctx, resolved.cwd, resolved.agent, resolved.live, deps.stuck(), deps)
+    return await buildWorkspaceView(ctx, resolved, deps.stuck(), deps)
   } catch (error) {
     return { ok: false, error: { code: 'internal', message: `读取工作区策略失败：${String(error)}` } }
   }
@@ -435,7 +358,7 @@ export async function handleApply(
 
     // `bind` 自带 cwd，所以写入本身不再依赖会话；sessionId 只决定回哪种视图。
     const sessionId = readString(body, 'sessionId')
-    let target: { cwd: string; live: boolean; agent: unknown } | null = null
+    let target: SessionResolution | null = null
     if (sessionId !== null) {
       try {
         target = await resolveSession(ctx, sessionId)
@@ -459,7 +382,7 @@ export async function handleApply(
     }
 
     if (target === null) return withWriteWarnings(await handleGlobal(ctx, deps, undefined, state), state.warnings)
-    const view = await buildWorkspaceView(ctx, target.cwd, target.agent, target.live, deps.stuck(), deps, state)
+    const view = await buildWorkspaceView(ctx, target, deps.stuck(), deps, state)
     return withWriteWarnings(view, state.warnings)
   } catch (error) {
     // 写入失败已经在 warnings 里，走不到这里；命令解析失败走上面的 bad-request。

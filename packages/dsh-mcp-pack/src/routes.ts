@@ -1,5 +1,5 @@
 import type { Envelope, ErrorCode } from '@dreanzy/dsh-pack-core'
-import { cwdFromAgent, cwdFromObserved } from '@dreanzy/dsh-pack-core'
+import { resolveSession, type RouteContext, type SessionResolution } from '@dreanzy/dsh-pack-core'
 import { scanRows } from './inventory.js'
 import { effective } from './effective.js'
 import { defaultPackOf, rowEntryOf } from './policy.js'
@@ -22,13 +22,7 @@ import {
   type UiState,
 } from './types.js'
 
-/** 路由层需要的最小 ctx 面。 */
-export interface RouteContext {
-  get(name: string): unknown
-  logger: { warn(message: string): void }
-}
-
-export type { Envelope, ErrorCode }
+export type { Envelope, ErrorCode, RouteContext }
 
 /**
  * 路由层依赖。
@@ -92,69 +86,9 @@ export interface RowsView {
   }
 }
 
-function asRecord(value: unknown): Record<string, unknown> | null {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) return null
-  return value as Record<string, unknown>
-}
-
 function readString(source: Record<string, unknown> | null, key: string): string | null {
   const value = source?.[key]
   return typeof value === 'string' && value !== '' ? value : null
-}
-
-/**
- * 把 `sessionId` 解析成工作目录与它的 live Agent。
- *
- * `agent` 必须是 `agents.get()` 返回的**对象本体**：`dsh-scope` 按对象身份查
- * 作用域链，形状相同的替身查不到 agent 层。它同时是后续按 agent 注册工具的唯一合法入参。
- *
- * 先问 live Agent，再退回 `sessionQuery` 的只读观察。观察体**必须在 finally 里
- * 释放**：宿主为每次观察保留订阅，漏一次就是一条长期泄漏。
- */
-export async function resolveSession(
-  ctx: RouteContext,
-  sessionId: string,
-): Promise<{ cwd: string; live: boolean; agent: unknown } | null> {
-  const agents = asRecord(ctx.get('agents'))
-  const get = agents?.['get']
-  if (typeof get === 'function') {
-    try {
-      const agent = (get as (id: string) => unknown).call(agents, sessionId)
-      const cwd = cwdFromAgent(agent)
-      if (cwd !== null) return { cwd, live: true, agent }
-    } catch {
-      // Agent 侧失败不致命，继续问 sessionQuery。
-    }
-  }
-
-  const query = asRecord(ctx.get('sessionQuery'))
-  const observe = query?.['observeSession']
-  if (typeof observe === 'function') {
-    let observation: unknown
-    try {
-      // 不带 `projectionMode: 'none'`：历史会话的当前目录同样只在投影里。
-      observation = await (observe as (id: string) => Promise<unknown>).call(query, sessionId)
-      const cwd = cwdFromObserved(observation)
-      if (cwd !== null) return { cwd, live: false, agent: undefined }
-    } catch {
-      // 未知会话在这里 reject；交给调用方报错。
-    } finally {
-      releaseObservation(ctx, observation, sessionId)
-    }
-  }
-
-  return null
-}
-
-function releaseObservation(ctx: RouteContext, observation: unknown, sessionId: string): void {
-  const record = asRecord(observation)
-  if (record === null) return
-  try {
-    const dispose = (record as Record<symbol, unknown>)[Symbol.dispose]
-    if (typeof dispose === 'function') (dispose as () => void).call(observation)
-  } catch (error) {
-    ctx.logger.warn(`dsh-mcp-pack: 释放会话观察失败（sessionId=${sessionId}）：${String(error)}`)
-  }
 }
 
 /** 全部 pack，`default` 排第一，其余按 id 排序。 */
@@ -308,7 +242,7 @@ export async function handleApply(
 
   // `bind` 自带 cwd，所以写入本身不依赖会话；sessionId 只决定回哪种视图。
   const sessionId = body === null ? null : readString(body, 'sessionId')
-  let session: { cwd: string; live: boolean; agent: unknown } | null = null
+  let session: SessionResolution | null = null
   if (sessionId !== null) {
     session = await resolveSession(ctx, sessionId)
     if (session === null) {

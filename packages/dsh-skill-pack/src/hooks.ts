@@ -2,8 +2,7 @@ import { appendFileSync, mkdirSync, statSync, truncateSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { type Inventory, type SkillSummaryLike, type SkillsFace } from './inventory.js'
-import { createReconciler, type Dispose } from '@dreanzy/dsh-pack-core'
-import { projectedCwd } from '@dreanzy/dsh-pack-core'
+import { createReconciler, cwdFromAgent, type Dispose } from '@dreanzy/dsh-pack-core'
 import { createScopeSnapshot, fingerprintOf, type ScopeSnapshot } from './snapshot.js'
 import { loadState } from './store.js'
 
@@ -96,22 +95,14 @@ function asRecord(value: unknown): Record<string, unknown> | null {
     : null
 }
 
-/** 投影的读取实现在 `@dreanzy/dsh-pack-core`：顺序与理由见那边的注释。 */
-export { projectedCwd }
-
 /**
- * 工作目录的权威值在投影里。
+ * 工作目录的权威值在投影里，取法在 `@dreanzy/dsh-pack-core`：顺序与理由见那边的注释。
  *
- * `cd` 与切换工作区只改 `workingDirectory` 投影，`header.cwd` 是会话创建时的快照。
- * 读 header 会让「切到另一个工作区后仍按上一个目录求值」——清单、绑定与开关全部停在
- * 旧目录。投影还没写过（新会话）时退回 header.cwd。
+ * 吃 `agent.raw` 而不是 `agent.session`：core 的 `cwdFromAgent` 要的是宿主给的
+ * 对象本体，形状与 plugin / mcp 的 hooks 一致。
  */
 function cwdOf(agent: AgentLike): string | null {
-  const session = asRecord(agent.raw)?.['session']
-  const projected = projectedCwd(session)
-  if (projected !== null) return projected
-  const cwd = agent.session.header?.cwd
-  return typeof cwd === 'string' && cwd !== '' ? cwd : null
+  return cwdFromAgent(agent.raw)
 }
 
 /**

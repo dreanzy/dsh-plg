@@ -1,3 +1,5 @@
+import { asRecord, nonEmpty } from './unknown.js'
+
 /**
  * 会话当前工作目录。
  *
@@ -9,16 +11,6 @@
  * 会把「还没 cd 过的新会话」解析成宿主安装目录。顺序与宿主 `skill-catalog` 一致：
  * 投影 → header.cwd → 缺省。
  */
-
-function asRecord(value: unknown): Record<string, unknown> | null {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : null
-}
-
-function nonEmpty(value: unknown): string | null {
-  return typeof value === 'string' && value !== '' ? value : null
-}
 
 /** 读 `workingDirectory` 投影的原始值。 */
 export function projectedCwd(session: unknown): string | null {
