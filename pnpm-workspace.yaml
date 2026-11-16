@@ -1,4 +1,2 @@
 packages:
   - packages/*
-minimumReleaseAgeExclude:
-  - '@dreanzy/dsh-pack-core@0.1.0'

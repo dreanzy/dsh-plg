@@ -33,7 +33,7 @@
 - 为什么：宿主对 `serverName` 的约束，超出即无法挂载；本地逐字复刻
 - 判据：比对 dsh-mcp-client 的 `SERVER_NAME_PATTERN` 字符集与长度，并确认入口仍导出该常量
 - 退役：上游把该常量移出入口后，本地复刻成为唯一来源，条目转 `fragile`；或上游提供公开名校验入口
-- 备注：0.2.2-rc.3 入口已导出，但该导出登记在 `scripts/plugin-entry-existing-exports.ts` 的债务清单里（原文 "existing debt, not an approved exception"），随时可能被清理，不能当稳定 API 依赖
+- 备注：0.2.2-rc.3 入口已导出，但该导出登记在上游 `@deepseek-ai/dsh` 仓库的 `scripts/plugin-entry-existing-exports.ts` 债务清单里（原文 "existing debt, not an approved exception"），随时可能被清理，不能当稳定 API 依赖
 
 ### mcp-server-config-shape
 
@@ -59,7 +59,7 @@
 
 - 包：`@deepseek-ai/dsh-subagent`
 - 复刻对象：`SubagentActivationSpec` 的形状 —— `provider` / `delivery` / `prompt` / `parent` / `agentOptions` / `cwd` / `maxDepth` / `signal` 全部在 **spec 顶层**，没有 `request` 这一层；`signal` 必填
-- 位置：`packages/dsh-model-pack/src/tools.ts:294`
+- 位置：`packages/dsh-model-pack/src/tools.ts:306`
 - 起始版本：0.2.2-rc.1
 - 为什么：`@deepseek-ai/dsh-subagent` 不在 dsh-model-pack 的依赖里，spec 只能以 `Record<string, unknown>` 手工构造，没有 import 宿主类型，签名比对抓不到。形状写错时 `startActivation` 在 `spec.parent.id` 处抛 `TypeError`，探测通过、启动失败，只在真正调用工具时暴露
 - 判据：比对 `dsh-subagent/src/types.ts` 的 `SubagentActivationSpec` 字段集与嵌套层级，并确认 `signal` 是否仍必填
@@ -69,7 +69,7 @@
 
 - 包：`@deepseek-ai/dsh-agent-team`
 - 复刻对象：团队开关的读取方式 —— `agentTeams.isEnabled(agent)` 读根会话投影里的 `team/mode` 事件；开关是**会话级**，不是工作区级
-- 位置：`packages/dsh-model-pack/src/hooks.ts:200`
+- 位置：`packages/dsh-model-pack/src/hooks.ts:218`
 - 起始版本：0.2.2-rc.3
 - 为什么：`@deepseek-ai/dsh-agent-team` 不在 dsh-model-pack 的依赖里，只能按服务名现取、按方法名现调。官方 `team:policy` 段（order 600）在团队开启时让模型用裸名 `subagent` 派成员，而本插件注册 `subagent_tier` 后会 deny 它——不读这个开关就无法只在团队开启时纠偏
 - 判据：`packages/dsh-model-pack/test/hooks.test.js` 断言 `agentTeams.isEnabled` 返回 true 时 `model-pack.team` 段文本非空、返回 false 或抛错时为空串
