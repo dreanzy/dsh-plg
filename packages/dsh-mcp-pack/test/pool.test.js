@@ -77,3 +77,62 @@ test('closeAll 关闭全部常驻连接', async () => {
   assert.equal(first.state.closed, 1)
   assert.equal(second.state.closed, 1)
 })
+test('acquire 在 await 期间被 release：重开而不是拿到死连接', async () => {
+  let connects = 0
+  const made = []
+  const pool = createPool({
+    connect: async (key) => {
+      connects += 1
+      const item = fakeConnection(key)
+      made.push(item)
+      return item.connection
+    },
+  })
+  // 先建立一条，再让它在 acquire 的 await 窗口里被释放。
+  const first = await pool.acquire('k', spec)
+  const pending = pool.acquire('k', spec)
+  pool.release(first)
+  const second = await pending
+  assert.equal(connects, 2, '死连接必须重开')
+  assert.notEqual(second.connection, first.connection)
+  assert.equal(pool.size(), 1)
+  await pool.closeAll()
+})
+
+test('closeAll 与在飞的 open 竞态：不把连接塞回 live', async () => {
+  let release
+  const gate = new Promise((resolve) => { release = resolve })
+  const made = fakeConnection('k')
+  const pool = createPool({
+    connect: async () => {
+      await gate
+      return made.connection
+    },
+  })
+  const pending = pool.acquire('k', spec)
+  await pool.closeAll()
+  release()
+  await assert.rejects(() => pending, /连接池已关闭/u)
+  assert.equal(pool.size(), 0, '关闭后不得留下 entry')
+  assert.equal(made.state.closed, 1, '作废的连接必须自己关掉')
+})
+
+test('旧 handle 二次 release 不误减新 entry 的引用', async () => {
+  const made = []
+  const pool = createPool({
+    connect: async (key) => {
+      const item = fakeConnection(key)
+      made.push(item)
+      return item.connection
+    },
+  })
+  const old = await pool.acquire('k', spec)
+  pool.release(old)
+  const fresh = await pool.acquire('k', spec)
+  assert.notEqual(fresh.connection, old.connection)
+  // 旧 handle 再释放一次：不能把新 entry 的 refs 减到 0。
+  pool.release(old)
+  assert.equal(pool.size(), 1, '新 entry 不该被旧 handle 关掉')
+  assert.equal(made[1].state.closed, 0)
+  await pool.closeAll()
+})

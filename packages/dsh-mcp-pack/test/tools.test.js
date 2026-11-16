@@ -159,3 +159,15 @@ test('适配器取不到时报错，不静默降级', async () => {
   const ctx = build({ resolveFactory: async () => { throw new Error('no adapter') } })
   await assert.rejects(() => ctx.load.execute({ server: 'srv' }, { agent: fakeAgent(ctx.tools) }), /no adapter/u)
 })
+test('resolveFactory 抛错时释放连接引用，不泄漏', async () => {
+  const { load, poolState } = build({ resolveFactory: async () => { throw new Error('adapter gone') } })
+  await assert.rejects(() => load.execute({ server: 'srv' }, { agent: fakeAgent(fakeTools()) }), /adapter gone/u)
+  assert.deepEqual(poolState.state.released, ['global:srv'], '失败路径必须释放连接引用')
+})
+
+test('取不到 tools 服务时释放连接引用', async () => {
+  const { load, poolState } = build()
+  const agent = { id: 'agent-1', ctx: { get: () => undefined } }
+  await assert.rejects(() => load.execute({ server: 'srv' }, { agent }), /no tools service/u)
+  assert.deepEqual(poolState.state.released, ['global:srv'], '失败路径必须释放连接引用')
+})

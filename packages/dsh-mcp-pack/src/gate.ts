@@ -10,12 +10,15 @@ export interface GateContext {
 export interface GateDeps {
   readonly context: GateContext
   /**
-   * 某个 server 该不该挂载：`eager` 挂，其余不挂。
+   * 某个 server 该不该挂载：**启用且 `eager`** 才挂，其余不挂。
    *
    * 返回 `null` 表示**策略尚未就绪**（首次重算还没跑完）：此时什么都不做，
    * 等下一次 reconcile 再判。宁可晚一轮，也不要在空策略上把用户的 server 全摘掉。
+   *
+   * 只看 mode 不看 enabled 会让「工作区里禁用、default 里 eager」的行照常挂载：
+   * 用户明确关掉的 server 起进程、工具照常暴露。两个字段必须一起判。
    */
-  readonly modeOf: (serverName: string) => 'eager' | 'dynamic' | 'lazy' | null
+  readonly mountOf: (serverName: string) => { readonly enabled: boolean; readonly mode: 'eager' | 'dynamic' | 'lazy' } | null
 }
 
 export interface Gate {
@@ -63,10 +66,10 @@ export function createGate(deps: GateDeps): Gate {
       const serverName = entryServerName(entry)
       if (serverName === null) continue
       try {
-        const mode = deps.modeOf(serverName)
+        const decision = deps.mountOf(serverName)
         // 未就绪：保持现状，等下一次重算。
-        if (mode === null) continue
-        if (mode === 'eager') {
+        if (decision === null) continue
+        if (decision.enabled && decision.mode === 'eager') {
           await release(entry)
         } else {
           suppress(entry)

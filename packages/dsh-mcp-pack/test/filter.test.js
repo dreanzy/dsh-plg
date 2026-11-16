@@ -57,3 +57,18 @@ test('filterTools 报出隐藏数量并保持原顺序', () => {
   assert.deepEqual(result.visible.map((tool) => tool.name), ['a', 'c'])
   assert.equal(result.hidden, 1)
 })
+test('连续星号折叠：不产生指数级回溯', () => {
+  const filter = parseToolFilter('*************x')
+  const started = Date.now()
+  // 16 字符的不匹配名字：折叠前这里要跑近 4 秒。
+  assert.equal(admits(filter, 'aaaaaaaaaaaaaaaa'), false)
+  assert.ok(Date.now() - started < 100, '折叠后必须立刻返回')
+})
+
+test('连续星号与单个星号语义相同', () => {
+  const many = parseToolFilter('a***b')
+  const one = parseToolFilter('a*b')
+  for (const name of ['ab', 'axb', 'axxxb', 'a/b']) {
+    assert.equal(admits(many, name), admits(one, name), name)
+  }
+})

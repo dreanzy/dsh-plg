@@ -40,7 +40,10 @@ export function toolRuleEntries(value: unknown): readonly string[] {
  */
 function compilePattern(pattern: string): RegExp {
   const escaped = pattern.replace(/[.+^${}()|[\]\\]/gu, '\\$&')
-  const wildcard = escaped.split('*').map((part) => part.split('?').join('.')).join('.*')
+  // 连续 `*` 先折叠成一个：`***` 与 `*` 语义相同，但展开成 `.*.*.*` 会让正则
+  // 对不匹配的长名字指数级回溯。工具名来自外部 MCP server，不可信。
+  const collapsed = escaped.replace(/\*{2,}/gu, '*')
+  const wildcard = collapsed.split('*').map((part) => part.split('?').join('.')).join('.*')
   return new RegExp(`^${wildcard}$`, 'u')
 }
 

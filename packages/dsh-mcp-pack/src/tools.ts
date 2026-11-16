@@ -1,4 +1,5 @@
 import { buildNativeDefinitions, type DefinitionFactory } from './carrier.js'
+import { disposeQuietly } from './dispose.js'
 import { admits, filterTools, type ToolFilter } from './filter.js'
 import { callOptionsFromExec, type ConnectionSpec, type McpConnection, type McpToolInfo } from './mcp-connection.js'
 import type { Pool, PoolHandle } from './pool.js'
@@ -79,13 +80,8 @@ function toolsOf(agent: AgentLike): { register(definition: unknown): () => unkno
 }
 
 function disposeAll(disposers: readonly (() => unknown)[]): void {
-  for (const dispose of disposers) {
-    try {
-      dispose()
-    } catch {
-      // 注销失败不影响后续释放。
-    }
-  }
+  // 注销失败不影响后续释放；异步 rejection 也必须吞掉，否则会崩掉宿主进程。
+  for (const dispose of disposers) disposeQuietly(dispose)
 }
 
 /** 文本结果块。宿主的 render 只认这个形状。 */
@@ -184,6 +180,24 @@ export function createOnDemandTools(deps: OnDemandDeps): { load: unknown; unload
       }
 
       const handle = await deps.pool.acquire(target.rowKey, target.spec)
+      // acquire 之后任何一条抛错路径都必须释放引用：否则 refs 永不归零，
+      // 连接与子进程永不关闭，而模型每次重试都再泄漏一个。
+      try {
+        return await loadWith(handle, target, args, agent)
+      } catch (error) {
+        deps.pool.release(handle)
+        throw error
+      }
+    },
+  })
+
+  /** acquire 之后的全部工作：任何抛错都由调用方释放连接引用。 */
+  const loadWith = async (
+    handle: PoolHandle,
+    target: ToolTarget,
+    args: Record<string, unknown>,
+    agent: AgentLike,
+  ) => {
       const { visible, hidden } = filterTools(handle.tools, target.filter)
       const query = typeof args['query'] === 'string' ? args['query'] : ''
       const one = typeof args['tool'] === 'string' ? args['tool'].trim() : ''
@@ -242,8 +256,8 @@ export function createOnDemandTools(deps: OnDemandDeps): { load: unknown; unload
           added.push(tools.register(item.definition))
         }
       } catch (error) {
+        // 连接引用由外层统一释放（acquire 之后的任何抛错都走那里），这里只撤工具。
         disposeAll(added)
-        deps.pool.release(handle)
         throw new Error(`failed to register tools for "${target.serverName}": ${String(error)}`)
       }
 
@@ -262,8 +276,7 @@ export function createOnDemandTools(deps: OnDemandDeps): { load: unknown; unload
         hidden,
         note: selected.length === 0 && previous === undefined ? 'the tool filter admits nothing on this server' : '',
       }
-    },
-  })
+  }
 
   const unload = deps.defineTool({
     name: 'mcp_unload',

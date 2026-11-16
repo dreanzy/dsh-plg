@@ -49,22 +49,29 @@ export function createPool(options: PoolOptions = {}): Pool {
   const connect = options.connect ?? ((key, spec) => connectMcp(key, spec))
   const slots = new Map<string, Slot>()
   const live = new Map<string, Entry>()
+  /** 池已关闭：`open` 在飞时被 `closeAll` 打断，恢复后不能再把连接塞回 `live`。 */
+  let closed = false
 
   async function open(key: string, spec: ConnectionSpec): Promise<Entry> {
     const connection = await connect(key, spec)
+    let handed = false
     try {
       const tools = await connection.listTools()
+      // 两个 await 之间池可能已被关闭：这条连接没人认领，必须自己关掉，
+      // 否则 stdio 下就是一个永不退出的子进程。
+      if (closed) throw new Error('连接池已关闭，本次连接作废')
       const entry: Entry = { key, connection, tools, refs: 0 }
       live.set(key, entry)
+      handed = true
       return entry
     } catch (error) {
-      await connection.close().catch(() => undefined)
+      // 只关一次：closed 分支抛出的错误也会走到这里。
+      if (!handed) await connection.close().catch(() => undefined)
       throw error
     }
   }
 
-  return {
-    async acquire(key, spec) {
+  const acquire = async (key: string, spec: ConnectionSpec): Promise<PoolHandle> => {
       let slot = slots.get(key)
       if (slot === undefined) {
         slot = { entry: open(key, spec) }
@@ -75,12 +82,24 @@ export function createPool(options: PoolOptions = {}): Pool {
         })
       }
       const entry = await slot.entry
+      // await 期间这条 entry 可能已被 release 关掉（refs 归零、从 live 摘除）。
+      // 此时拿到的是一条死连接：重开一次，而不是把 refs 加到一个没人管的 entry 上。
+      if (live.get(key) !== entry) {
+        if (slots.get(key) === slot) slots.delete(key)
+        return await acquire(key, spec)
+      }
       entry.refs += 1
       return { key: entry.key, connection: entry.connection, tools: entry.tools }
-    },
+  }
+
+  return {
+    acquire,
     release(handle) {
       const entry = live.get(handle.key)
       if (entry === undefined) return
+      // 只释放属于当前 entry 的 handle：旧 handle 二次 release 会减到新 entry 的
+      // refs 上，提前关掉别的会话正在用的连接。
+      if (handle.connection !== entry.connection) return
       entry.refs -= 1
       if (entry.refs > 0) return
       live.delete(entry.key)
@@ -94,6 +113,7 @@ export function createPool(options: PoolOptions = {}): Pool {
       return [...live.keys()]
     },
     async closeAll() {
+      closed = true
       const entries = [...live.values()]
       live.clear()
       slots.clear()

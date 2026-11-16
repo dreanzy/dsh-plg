@@ -64,3 +64,18 @@ test('fiber 处置抛错不会冒泡', () => {
   assert.doesNotThrow(() => suppress(entry))
   assert.equal(entry.disabled, true)
 })
+test('fiber 处置返回 rejected Promise 不会逃逸成 unhandledRejection', async () => {
+  const seen = []
+  const onUnhandled = (reason) => { seen.push(reason) }
+  process.on('unhandledRejection', onUnhandled)
+  try {
+    const entry = new Entry(mcp('a'), { dispose: () => Promise.reject(new Error('async boom')) })
+    assert.doesNotThrow(() => suppress(entry))
+    // 给 rejection 一个被观察到机会。
+    await new Promise((resolve) => setImmediate(resolve))
+    assert.deepEqual(seen, [], '异步处置失败必须被吞掉')
+    assert.equal(entry.disabled, true)
+  } finally {
+    process.off('unhandledRejection', onUnhandled)
+  }
+})

@@ -1,3 +1,5 @@
+import { disposeQuietly } from './dispose.js'
+
 /** 宿主的 MCP 客户端插件名。一个实例连一台 server。 */
 export const MCP_CLIENT_MODULE = '@deepseek-ai/dsh-mcp-client'
 
@@ -44,12 +46,11 @@ export function isSuppressed(entry: EntryLike): boolean {
 export function suppress(entry: EntryLike): boolean {
   if (isSuppressed(entry)) return false
   Object.defineProperty(entry, 'disabled', { value: true, configurable: true, enumerable: false })
-  try {
-    // 已经挂载过的行：立刻断开连接并注销工具。
-    void entry.fiber?.dispose?.()
-  } catch {
-    // 处置失败不致命：遮蔽已生效，下一次装配时它不会被重新拉起。
-  }
+  // 已经挂载过的行：立刻断开连接并注销工具。
+  // 处置失败不致命：遮蔽已生效，下一次装配时它不会被重新拉起。
+  // 必须走 disposeQuietly：fiber.dispose() 是异步的，裸 void 会让 rejection 逃逸成
+  // unhandledRejection，Node 22+ 默认直接终止进程。
+  disposeQuietly(entry.fiber?.dispose)
   return true
 }
 

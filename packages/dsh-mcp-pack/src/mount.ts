@@ -1,3 +1,4 @@
+import { disposeQuietly } from './dispose.js'
 import type { ServerDef } from './servers.js'
 
 /** Cordis 上下文里挂载插件用到的面。 */
@@ -65,12 +66,9 @@ export function mountMcpServer(
   return {
     serverName,
     dispose() {
-      try {
-        const disposable = handle as { dispose?: unknown } | null
-        if (typeof disposable?.dispose === 'function') (disposable.dispose as () => unknown).call(handle)
-      } catch {
-        // 卸载失败只影响这一次，没有可回滚的状态。
-      }
+      // 卸载失败只影响这一次，没有可回滚的状态；异步 rejection 同样要吞掉。
+      const disposable = handle as { dispose?: unknown } | null
+      if (typeof disposable?.dispose === 'function') disposeQuietly(disposable.dispose.bind(handle))
     },
   }
 }

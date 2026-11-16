@@ -216,7 +216,11 @@ export function apply(ctx: unknown): void {
   const gate = createGate({
     context: { get: (key) => context.get(key), on: (event, listener) => context.on(event, listener), logger: context.logger },
     // 策略未就绪时返回 null：闸门什么都不做，等下一轮。
-    modeOf: (serverName) => state.policyOf(serverName)?.mode ?? null,
+    // 同时给出 enabled 与 mode：只看 mode 会让「工作区禁用 + default eager」的行照常挂载。
+    mountOf: (serverName) => {
+      const policy = state.policyOf(serverName)
+      return policy === null ? null : { enabled: policy.enabled, mode: policy.mode }
+    },
   })
 
   /**
@@ -306,7 +310,8 @@ export function apply(ctx: unknown): void {
       const servers: string[] = []
       // policies 与名册段、`mcp_load` 同出一份求值：这里只筛选，不重算。
       for (const [serverName, policy] of view.policies) {
-        if (!policy.enabled || policy.mode === 'eager') continue
+        // 禁用的行同样要罩住：闸门对「禁用 + eager」的行不摘，遮蔽是它唯一的兜底。
+        if (policy.enabled && policy.mode === 'eager') continue
         servers.push(serverName)
       }
       return servers
