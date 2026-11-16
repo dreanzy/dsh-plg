@@ -45,7 +45,7 @@ Single-context layout: one `GLOSSARY.md` at the repo root plus `docs/adr/`. See 
 验收分两步，缺一不可：
 
 1. **测试脚本**：`pnpm test`，或逐包 `node --test --test-isolation=none packages/<pkg>/test/`。
-2. **隔离 profile 端到端**：建独立 profile（`dsh <name> --from-default-profile web`），用 `link:` 装本仓库的包，启动 web 服务，走真实 HTTP 路由把面板的操作序列跑一遍。
+2. **隔离 profile 端到端**：`pnpm e2e`（即 `node scripts/e2e.mjs`）。它自己建 profile、装包、起服务、跑断言、清理，不碰 `~/.dsh/profiles`。手动做时见下面的步骤。
 
 端到端判据：
 
