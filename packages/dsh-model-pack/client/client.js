@@ -1134,6 +1134,18 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * 绑定命令的待保存键。
+     *
+     * 服务端按归一化后的 cwd 落盘，所以「这一行有没有未保存改动」也必须按归一化后的
+     * cwd 查。两边各写一遍时 Windows 上必然不等（`C:\\x` vs `c:/x`），
+     * 待保存标记永不出现，底部条说「已改 1 项」却看不出是哪行。
+     */
+    function bindKeyOf(cwd) {
+      const key = normalizeCwd(cwd)
+      return 'bind:' + (key === null ? cwd : key)
+    }
+
+    /**
      * 已知工作区：从会话列表里取 cwd，去重、按最近更新排序。
      *
      * 这是「当前工作区」的唯一来源——插件页是全局页面，没有会话上下文；
@@ -1604,7 +1616,10 @@ window.__ModuleLoader__.load({
         case 'renamePack':
           return 'renamePack:' + command.packId
         case 'bind':
-          return 'bind:' + command.cwd
+          // 与渲染处的查询键同源：服务端按归一化后的 cwd 落盘，渲染也按归一化后的
+          // cwd 查。两边各写一遍时 Windows 上必然不等（`C:\x` vs `c:/x`），
+          // 待保存标记永不出现。
+          return bindKeyOf(command.cwd)
         default:
           // 新建、复制与提示词补丁没有可覆盖的目标：前两者每条都是独立一次决定，
           // 后者的每条只带自己那几个键（按单键去重会丢掉别的键）。
@@ -2712,7 +2727,7 @@ window.__ModuleLoader__.load({
           ? h('div', { style: S.empty }, '还没有可绑定的工作区：打开过一次会话的目录会出现在这里。')
           : paths.slice(0, limit).map((cwd) => {
               const key = normalizeCwd(cwd)
-              const dirty = key !== null && pending.keys.has('bind:' + key)
+              const dirty = key !== null && pending.keys.has(bindKeyOf(cwd))
               const bound = boundOf(cwd)
               // 悬空引用（pack 已删）显示成「默认」，与服务端读侧的行为一致。
               const value = bound !== null && packs.some((pack) => pack.id === bound) ? bound : ''
@@ -2936,12 +2951,15 @@ window.__ModuleLoader__.load({
        * 丢掉几条要说出来——无声丢改动比丢改动本身更糟。
        */
       const deletePack = (packId, name) => {
-        // `duplicatePack` 的 packId 是**源**，不是目标：副本一旦生成就与原 pack 无关，
-        // 删掉源不该顺手取消「复制它」这条命令。
-        const removed = pending.drop((command) => command.op !== 'duplicatePack' && command.packId === packId)
-        if (expanded === packId) setExpanded(null)
-        setNotice(removed > 0 ? '已删除「' + name + '」，并丢弃对它的 ' + removed + ' 项未保存改动' : null)
-        void run([{ op: 'deletePack', packId: packId }]).then(() => {
+        // 先写盘，成功后再丢队列。反过来做的话，写盘失败时未保存改动已经清空、
+        // 提示还说「已删除」，而 pack 其实还在——这是唯一会丢用户改动的一条路径。
+        void run([{ op: 'deletePack', packId: packId }]).then((ok) => {
+          if (ok === null) return
+          // `duplicatePack` 的 packId 是**源**，不是目标：副本一旦生成就与原 pack 无关，
+          // 删掉源不该顺手取消「复制它」这条命令。
+          const removed = pending.drop((command) => command.op !== 'duplicatePack' && command.packId === packId)
+          if (expanded === packId) setExpanded(null)
+          setNotice(removed > 0 ? '已删除「' + name + '」，并丢弃对它的 ' + removed + ' 项未保存改动' : null)
           // 写盘换了 base，手里那份试算必然过时：先丢掉，名册立刻回落到新的真实视图，
           // 再按新 base 重算。否则这张 pack 会多留一次往返的时间。
           pending.resetPreview()

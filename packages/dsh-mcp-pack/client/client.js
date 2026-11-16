@@ -684,7 +684,9 @@ window.__ModuleLoader__.load({
         case 'packGroup':
           return 'packGroup:' + command.packId + ':' + command.groupId
         case 'bind':
-          return 'bind:' + command.cwd
+          // 与渲染处的查询键同源：服务端按归一化后的 cwd 落盘，渲染也按归一化后的
+          // cwd 查。两边各写一遍时 Windows 上必然不等，待保存标记永不出现。
+          return bindKeyOf(command.cwd)
         case 'assign':
           return 'assign:' + command.rowKey
         case 'renamePack':
@@ -1311,6 +1313,18 @@ window.__ModuleLoader__.load({
         return /^[a-z]:$/iu.test(stripped) ? stripped + '/' : stripped
       }
       return unified
+    }
+
+    /**
+     * 绑定命令的待保存键。
+     *
+     * 服务端按归一化后的 cwd 落盘，所以「这一行有没有未保存改动」也必须按归一化后的
+     * cwd 查。两边各写一遍时 Windows 上必然不等（`C:\\x` vs `c:/x`），
+     * 待保存标记永不出现。
+     */
+    function bindKeyOf(cwd) {
+      const key = normalizeCwd(cwd)
+      return 'bind:' + (key === null ? cwd : key)
     }
 
     function isWindows() {
@@ -3457,7 +3471,7 @@ window.__ModuleLoader__.load({
                 // 内置 default 与「未绑定」等价（服务端把 bind default 当解绑），悬空引用也
                 // 走这里：两者都显示成「默认」，否则下拉里会出现两个同名的默认项。
                 const value = bound === null || bound === DEFAULT_PACK_ID || !hasPack(packs, bound) ? '' : bound
-                const changed = pending.keys.has('bind:' + normalizeCwd(cwd))
+                const changed = pending.keys.has(bindKeyOf(cwd))
                 return h(
                   'div',
                   {
