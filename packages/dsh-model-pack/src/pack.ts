@@ -363,7 +363,15 @@ export function parsePacks(text: string | undefined, path?: string): ParseResult
         const ids = Object.keys(rawPacks).sort()
         if (ids.length > MAX_PACKS) {
           warnings.push(`packs 超过 ${String(MAX_PACKS)} 个，已只保留前 ${String(MAX_PACKS)} 个`)
-          ids.length = MAX_PACKS
+          // default 必须留下：它是求值链的终点，被截掉会让所有未绑定工作区
+          // 回落到出厂内置，表现为「插件突然不生效」而文件看起来完好。
+          const kept: string[] = ids.filter((id) => id === DEFAULT_PACK_ID)
+          for (const id of ids) {
+            if (kept.length >= MAX_PACKS) break
+            if (id !== DEFAULT_PACK_ID) kept.push(id)
+          }
+          ids.length = 0
+          ids.push(...kept)
         }
         for (const id of ids) {
           if (id === '') {

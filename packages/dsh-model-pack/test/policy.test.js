@@ -862,3 +862,49 @@ test('隔离：整轮测试没有在真实 home 下创建 pack 或提示词文�
   assert.equal(existsSync(realPacksFile), realPacksFileExisted)
   assert.equal(existsSync(realPromptsFile), realPromptsFileExisted)
 })
+test('putPack 不能绕过 pack 数量上限', async () => {
+  const home = await tempRoot()
+  const commands = []
+  for (let index = 0; index < MAX_PACKS + 5; index += 1) {
+    commands.push({ op: 'putPack', packId: 'x' + String(index), pack: { name: 'n' + String(index), tiers: {} } })
+  }
+  const state = await applyCommands(null, commands, { home })
+  assert.ok(state.warnings.some((w) => w.includes('上限')), '必须报上限')
+  const onDisk = JSON.parse(await readFile(packsPath({ home }), 'utf8'))
+  assert.ok(Object.keys(onDisk.packs).length <= MAX_PACKS, '落盘不得超限')
+  assert.equal(Object.keys(state.packs.packs).length, Object.keys(onDisk.packs).length, '读回必须与落盘一致')
+})
+
+test('读侧截断保留 default', async () => {
+  const home = await tempRoot()
+  const packs = {}
+  for (let index = 0; index < MAX_PACKS; index += 1) {
+    packs['a' + String(index).padStart(3, '0')] = { name: 'n' + String(index), tiers: {} }
+  }
+  packs['default'] = { name: '默认', tiers: { tier1: { model: 'm' } } }
+  await seedPacks(home, { version: 1, packs })
+  const state = await loadState(null, { home })
+  assert.equal(state.defaultFromFile, true, 'default 不能被截掉')
+  assert.ok(state.packs.packs['default'] !== undefined)
+})
+
+test('试算与真写对坏 JSON 口径一致', async () => {
+  const home = await tempRoot()
+  await writeAt(packsPath({ home }), '{ broken')
+  const commands = [{ op: 'createPack', name: '标准' }]
+  const preview = await previewCommands(null, commands, { home })
+  const applied = await applyCommands(null, commands, { home })
+  assert.equal(
+    Object.keys(preview.packs.packs).length,
+    Object.keys(applied.packs.packs).length,
+    '试算与真写的 pack 数必须一致',
+  )
+  assert.equal(await readFile(packsPath({ home }), 'utf8'), '{ broken', '真写必须跳过')
+})
+
+test('写盘失败时 applyCommands 报 written: false', async () => {
+  const home = await tempRoot()
+  await writeAt(packsPath({ home }), '{ broken')
+  const state = await applyCommands(null, [{ op: 'createPack', name: '标准' }], { home })
+  assert.equal(state.written, false, '写盘被跳过时必须报 false')
+})

@@ -197,6 +197,14 @@ export interface PackState {
   readonly defaultFromFile: boolean
   /** 提示词覆盖；缺省字段跟随内置（spec §6.3.1）。 */
   readonly prompts: PromptOverrides
+  /**
+   * 这一批命令是否全部写成了。
+   *
+   * 只有 `applyCommands` 会给出 `false`（读失败、坏文件、落盘失败）；读路径与试算
+   * 恒为 `true`。路由据此决定回成功信封还是错误信封——写盘失败却回 `ok: true`
+   * 时，用户看到「保存成功」，重启后配置回退，界面上没有任何线索。
+   */
+  readonly written?: boolean
   readonly warnings: readonly string[]
 }
 
@@ -379,7 +387,10 @@ async function transact(
   path: string,
   mutate: (current: string | undefined) => string | null,
   warnings: string[],
-): Promise<void> {
+): Promise<boolean> {
+  // 返回 false 表示这份文件没写成。调用方据此让路由回错误信封——写盘失败却回
+  // `ok: true` 时，用户看到「保存成功」，重启后配置回退，且界面上没有任何线索。
+  let ok = true
   try {
     await mkdir(dirname(path), { recursive: true, mode: 0o700 })
     await withFileLock(path, async () => {
@@ -389,12 +400,14 @@ async function transact(
       } catch (error) {
         if (errorCode(error) !== 'ENOENT') {
           warnings.push(`写入前读取 ${path} 失败，已跳过本次写入：${String(error)}`)
+          ok = false
           return
         }
         current = undefined
       }
       if (current !== undefined && !isOverwritable(current)) {
         warnings.push(`写入前发现 ${path} 不是合法 JSON，已跳过本次写入`)
+        ok = false
         return
       }
       const next = mutate(current)
@@ -403,7 +416,9 @@ async function transact(
     })
   } catch (error) {
     warnings.push(`写入 ${path} 失败：${String(error)}`)
+    ok = false
   }
+  return ok
 }
 
 /**
@@ -575,6 +590,13 @@ function applyToPacks(
         const id = command.packId.trim()
         if (id === '') {
           warnings.push('pack id 不能为空，已忽略')
+          break
+        }
+        // 与 createPack / duplicatePack 同一口径：写侧拒绝，读侧就不会触发截断。
+        // 少了这一条，客户端一次批量 putPack 就能把名册撑到任意大，超出的部分
+        // 落盘成功但永远读不回来。
+        if (!Object.hasOwn(packs, id) && Object.keys(packs).length >= MAX_PACKS) {
+          warnings.push(`pack 已达上限 ${String(MAX_PACKS)} 个，写入已忽略`)
           break
         }
         const pack = parsePack(command.pack, id, warnings)
@@ -837,27 +859,43 @@ export async function applyCommands(
 ): Promise<PackState> {
   const plan = targets(commands)
   const warnings: string[] = []
+  /** 有文件没写成：路由据此回错误信封，而不是让用户看到「保存成功」。 */
+  let written = true
 
   if (plan.packs) {
     // seed 承接读侧：文件缺席时以读到的内容为起点，不让第一次保存清空已有决定。
     const seed = await loadPacks(options)
-    await transact(packsPath(options), (current) => applyToPacks(current, commands, seed, warnings), warnings)
+    if (!(await transact(packsPath(options), (current) => applyToPacks(current, commands, seed, warnings), warnings))) {
+      written = false
+    }
   }
   if (plan.prompts) {
     const seed = await loadPrompts(options)
-    await transact(promptsPath(options), (current) => applyToPrompts(current, commands, seed.value, warnings), warnings)
+    if (
+      !(await transact(
+        promptsPath(options),
+        (current) => applyToPrompts(current, commands, seed.value, warnings),
+        warnings,
+      ))
+    ) {
+      written = false
+    }
   }
   if (plan.bindings) {
     const seed = await loadBindings(options)
-    await transact(
-      workspacesPath(options),
-      (current) => applyToBindings(current, commands, seed.bindings, warnings),
-      warnings,
-    )
+    if (
+      !(await transact(
+        workspacesPath(options),
+        (current) => applyToBindings(current, commands, seed.bindings, warnings),
+        warnings,
+      ))
+    ) {
+      written = false
+    }
   }
 
   const state = await loadState(cwd, options)
-  return { ...state, warnings: [...state.warnings, ...warnings] }
+  return { ...state, written, warnings: [...state.warnings, ...warnings] }
 }
 
 /**
@@ -924,6 +962,12 @@ function computeText(
   warnings: string[],
   mutate: (current: string | undefined) => string | null,
 ): string | undefined {
+  // 与 transact 同一条前置判定：坏 JSON 上真写会跳过，试算也必须跳过，
+  // 否则面板预览显示一个永远不会发生的状态。
+  if (current !== undefined && !isOverwritable(current)) {
+    warnings.push(`${label} 不是合法 JSON，试算已跳过`)
+    return current
+  }
   try {
     const next = mutate(current)
     return next === null ? current : next

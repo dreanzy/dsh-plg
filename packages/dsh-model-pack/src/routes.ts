@@ -92,6 +92,14 @@ const OPS: ReadonlySet<string> = new Set([
   'resetPrompts',
 ])
 
+/**
+ * 提示词覆盖字段的字符上限。
+ *
+ * 这份文本进系统提示词，每次模型请求都完整发送。内置文本的预算断言只测内置值，
+ * 用户覆盖必须单独设限，否则一次误粘贴就是 MB 级提示词。
+ */
+const MAX_PROMPT_CHARS = 8000
+
 /** 与 pack.ts 的 `TIER_IDS` / `PROMPT_KEYS` 逐字一致；本层刻意不 import 那份类型。 */
 const TIER_IDS: readonly string[] = ['tier1', 'tier2', 'tier3', 'tier4']
 const PROMPT_TIER_IDS: readonly string[] = [...TIER_IDS]
@@ -107,6 +115,11 @@ function readPromptField(
   if (typeof value !== 'string') return { ok: false, message: at + ' 必须是非空字符串或 null' }
   if (value.trim() === '') {
     return { ok: false, message: at + ' 不能为空串：恢复内置请用 null 或 resetPrompts' }
+  }
+  // 长度上限：这份文本进系统提示词，每次模型请求都完整发送。没有上限时一次误粘贴
+  // 就能让之后每个会话的每次请求都带上 MB 级提示词，token 成本与延迟同时爆炸。
+  if (value.length > MAX_PROMPT_CHARS) {
+    return { ok: false, message: at + ' 超过 ' + String(MAX_PROMPT_CHARS) + ' 字符' }
   }
   return { ok: true, value }
 }
@@ -424,6 +437,15 @@ export async function handleApply(deps: RouteDeps, body: Record<string, unknown>
     const state = dryRun
       ? await deps.previewCommands(cwd, parsed.commands)
       : await deps.applyCommands(cwd, parsed.commands)
+    // 写盘失败必须回错误信封：客户端不读 warnings，回 ok 等于告诉用户「保存成功」。
+    const written = (state as { written?: boolean }).written
+    if (!dryRun && written === false) {
+      const detail = (state as { warnings?: readonly string[] }).warnings?.join('；') ?? ''
+      return {
+        ok: false,
+        error: { code: 'internal', message: '写入模型配置失败：' + (detail === '' ? '未知原因' : detail) },
+      }
+    }
     return await buildView(deps, cwd, state)
   } catch (error) {
     return internal(deps, '写入模型配置', error)
