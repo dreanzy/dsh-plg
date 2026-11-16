@@ -277,7 +277,14 @@ async function probeRoute(deps: TierToolDeps, route: Route): Promise<string | un
   }
 }
 
-/** 启动一个子智能体，返回 childId。宿主契约要求 `request.parent` 是活的父 agent。 */
+/**
+ * 启动一个子智能体，返回 childId。
+ *
+ * 宿主的 `SubagentActivationSpec` 把 `prompt` / `parent` / `agentOptions` / `cwd` /
+ * `maxDepth` 全部声明在 **spec 顶层**（它 `extends Omit<SubagentStartRequest, 'label'|'signal'>`），
+ * 没有 `request` 这一层。早期版本按嵌套的 `request` 构造，宿主读 `spec.parent.id` 时
+ * 直接崩在 undefined 上——探测通过、启动失败，正是这个形状差异造成的。
+ */
 async function startSubagent(
   deps: TierToolDeps,
   route: Route,
@@ -290,14 +297,23 @@ async function startSubagent(
   if (subagents === undefined || subagents === null) throw new Error('subagents service unavailable')
   const start = subagents['startActivation']
   if (typeof start !== 'function') throw new Error('subagents.startActivation is not a function')
+  // 宿主在 startActivation 里第一件事就是读 `spec.parent.id`。缺了它只会得到
+  // 「Cannot read properties of undefined」，定位不到是调用方没给 agent。
+  if (parent === undefined || parent === null) {
+    throw new Error('subagent_tier requires a live calling agent: exec.agent and the registered agent are both missing')
+  }
 
-  const request: Record<string, unknown> = {
+  const spec: Record<string, unknown> = {
+    provider: PROVIDER_NAME,
+    delivery: 'parent',
     prompt: [{ type: 'text', text: prompt }],
     agentOptions: selectionOf(route),
+    parent,
+    // 宿主把 signal 声明为必填；调用方没给就补一个永不中止的，语义等于「不取消」。
+    signal: signal ?? new AbortController().signal,
   }
-  if (parent !== undefined && parent !== null) request['parent'] = parent
   const cwd = args['cwd']
-  if (typeof cwd === 'string' && cwd.trim() !== '') request['cwd'] = cwd
+  if (typeof cwd === 'string' && cwd.trim() !== '') spec['cwd'] = cwd
 
   // 宿主默认的递归预算（maxDepth，缺省 1）必须由调用方带上：官方 subagent 工具传
   // resolveMaxDepth 的结果，本工具不传就会绕过它——用户把 maxDepth 设成 0 时，
@@ -305,16 +321,13 @@ async function startSubagent(
   const resolveMaxDepth = subagents['resolveMaxDepth']
   if (typeof resolveMaxDepth === 'function') {
     const maxDepth = (resolveMaxDepth as (configured?: unknown) => unknown).call(subagents, undefined)
-    if (typeof maxDepth === 'number') request['maxDepth'] = maxDepth
+    if (typeof maxDepth === 'number') spec['maxDepth'] = maxDepth
   }
-
-  const spec: Record<string, unknown> = { provider: PROVIDER_NAME, delivery: 'parent', request }
   // 标签前缀 `t1`…`t4`：委派一多，光看名字分不出哪条是深算、哪条是侦察。
   // 用户给的 label 接在后面，没有 label 就只留前缀。
   const given = typeof args['label'] === 'string' ? args['label'].trim() : ''
   const prefix = TIER_SHORT[args['tier'] as TierId] ?? ''
   if (prefix !== '') spec['label'] = given === '' ? prefix : prefix + ' ' + given
-  if (signal !== undefined) spec['signal'] = signal
 
   const activation = await (start as (value: unknown) => Promise<unknown>).call(subagents, spec)
   const childId = (activation as { childId?: unknown } | null | undefined)?.childId

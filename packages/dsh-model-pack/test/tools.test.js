@@ -114,12 +114,15 @@ test('正常路径：按首选路由启动，参数逐字段相等', async () =>
   assert.equal(spec.delivery, 'parent')
   // 标签带档位前缀：委派一多，光看名字分不出哪条是深算、哪条是侦察。
   assert.equal(spec.label, 't1 改 X')
-  assert.deepEqual(spec.request.prompt, [{ type: 'text', text: '把 X 改掉' }])
-  assert.deepEqual(spec.request.agentOptions, PRIMARY)
-  assert.equal(spec.request.cwd, 'D:/work/beta')
-  assert.equal(spec.request.parent, agent)
-  assert.equal('signal' in spec, false, '没有 signal 时不该塞一个 undefined 进去')
-  assert.equal('maxDepth' in spec.request, false, '宿主没给 resolveMaxDepth 时不塞一个 undefined 进去')
+  // 宿主把 prompt / parent / agentOptions / cwd / maxDepth 全声明在 spec 顶层，
+  // 没有 request 这一层；嵌套构造会让宿主读 spec.parent.id 时崩在 undefined 上。
+  assert.deepEqual(spec.prompt, [{ type: 'text', text: '把 X 改掉' }])
+  assert.deepEqual(spec.agentOptions, PRIMARY)
+  assert.equal(spec.cwd, 'D:/work/beta')
+  assert.equal(spec.parent, agent)
+  assert.equal('request' in spec, false, '不得再塞嵌套的 request 层')
+  assert.ok(spec.signal instanceof AbortSignal, '宿主把 signal 声明为必填，缺省要补一个永不中止的')
+  assert.equal('maxDepth' in spec, false, '宿主没给 resolveMaxDepth 时不塞一个 undefined 进去')
   // pack 只按调用方会话目录解析：cwd 参数是子智能体的工作目录。
   assert.equal(harness.resolvedCalls.at(-1), 'D:\\work\\alpha')
 
@@ -141,7 +144,7 @@ test('正常路径：缺省 cwd 用调用方会话目录解析 pack', async () =
   const result = await executeOf(registered, 'tier1', {}, { agent })
   assert.equal(result.kind, 'activation')
   assert.equal(harness.resolvedCalls.at(-1), 'D:\\work\\alpha')
-  assert.equal('cwd' in harness.started[0].request, false, '没给 cwd 时不传，让宿主自己继承')
+  assert.equal('cwd' in harness.started[0], false, '没给 cwd 时不传，让宿主自己继承')
 })
 
 test('显式 cwd 只作用于子智能体，不换 pack', async () => {
@@ -155,7 +158,7 @@ test('显式 cwd 只作用于子智能体，不换 pack', async () => {
   const result = await executeOf(registered, 'tier1', { cwd: 'D:/work/beta' }, { agent })
   assert.equal(result.kind, 'activation')
   assert.deepEqual(harness.resolvedCalls, ['D:\\work\\alpha'], '解析 pack 只用调用方 cwd')
-  assert.equal(harness.started[0].request.cwd, 'D:/work/beta', '子智能体仍在显式 cwd 里工作')
+  assert.equal(harness.started[0].cwd, 'D:/work/beta', '子智能体仍在显式 cwd 里工作')
 })
 
 test('宿主解析出的 maxDepth 原样传给 startActivation', async () => {
@@ -166,7 +169,7 @@ test('宿主解析出的 maxDepth 原样传给 startActivation', async () => {
   await settle()
   await executeOf(registered, 'tier1', {}, { agent })
 
-  assert.equal(harness.started[0].request.maxDepth, 0, 'maxDepth 0 必须真的挡住委派')
+  assert.equal(harness.started[0].maxDepth, 0, 'maxDepth 0 必须真的挡住委派')
 })
 
 test('正常路径：tier 不在 pack 里时返回错误结果，不启动', async () => {
@@ -199,7 +202,7 @@ test('探测同步抛错：换下一条路由，用备选启动', async () => {
 
   assert.equal(result.kind, 'activation')
   assert.deepEqual(harness.probed.map((selection) => selection.model), ['deepseek-chat', 'deepseek-reasoner'])
-  assert.deepEqual(harness.started[0].request.agentOptions, FALLBACK)
+  assert.deepEqual(harness.started[0].agentOptions, FALLBACK)
   assert.ok(harness.warnings.some((message) => /额度耗尽/.test(message)), '失败要留一条 warn')
 })
 
@@ -213,7 +216,7 @@ test('探测异步 reject：同样算确定性失败并前进', async () => {
   const result = await executeOf(registered, 'tier1', {}, { agent })
 
   assert.equal(result.kind, 'activation')
-  assert.deepEqual(harness.started[0].request.agentOptions, FALLBACK)
+  assert.deepEqual(harness.started[0].agentOptions, FALLBACK)
 })
 
 test('全部探测失败：返回错误结果不抛，文本点名试过的每条路由', async () => {
