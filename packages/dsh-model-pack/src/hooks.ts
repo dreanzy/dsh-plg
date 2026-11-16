@@ -14,7 +14,14 @@
 import { cwdFromAgent } from '@dreanzy/dsh-pack-core'
 import { loadState, resolve, type ResolvedPack, type PackPathOptions } from './policy.js'
 import { selectionOf } from './pack.js'
-import { delegationSection, resolvePrompt, type PromptText } from './prompt.js'
+import {
+  delegationSection,
+  resolvePrompt,
+  TEAM_SECTION_NAME,
+  TEAM_SECTION_ORDER,
+  TEAM_SECTION_TEXT,
+  type PromptText,
+} from './prompt.js'
 import type { SupportView } from './routes.js'
 import { describeTiers, probeSupport, registerTierTool, type TierToolDeps } from './tools.js'
 
@@ -198,6 +205,27 @@ export function installHooks(ctx: PluginContext, options: HooksOptions = {}): Ho
   }
 
   /**
+   * 该 agent 所在的子智能体树是否开了团队模式。
+   *
+   * 团队开关挂在 root session 的 projection 上（`agentTeams.isEnabled`），不是工作区维度，
+   * 所以只能按 agent 现问，不能按 pack 求值。取不到服务或调用抛错一律当「没开」：
+   * 团队段只是纠偏，缺了不影响委派本身。
+   */
+  const teamEnabled = (agent: AgentLike): boolean => {
+    // `agentTeams` 是根级服务（TeamService.inject 里没有 scope 限定），不像 `subagents`
+    // 那样挂在 delegation 组上。先问 agent 作用域，取不到再回退根 ctx——两处都试，
+    // 免得宿主哪天把它挪进 preset 作用域时静默失效。
+    const teams = scopedService(agent, 'agentTeams') ?? serviceOf('agentTeams')
+    const isEnabled = teams?.['isEnabled']
+    if (typeof isEnabled !== 'function') return false
+    try {
+      return (isEnabled as (value: unknown) => unknown).call(teams, agent.raw) === true
+    } catch {
+      return false
+    }
+  }
+
+  /**
    * 三种依赖在这里现组，每次重新取、不缓存——宿主 HMR 换服务后旧引用会指向死对象。
    *
    * `subagents` **必须从 agent 作用域取**：它由 delegation 组挂载，属于 preset/agent
@@ -354,6 +382,19 @@ export function installHooks(ctx: PluginContext, options: HooksOptions = {}): Ho
       if (typeof disposeSection === 'function') state.disposers.push(disposeSection as () => void)
     } catch (error) {
       warnOnce('section', '注入委派段失败：' + String(error))
+    }
+
+    // 团队纠偏段：官方 team:policy（order 600）让模型用 subagent 派成员，而上面刚 deny 了它。
+    // 只在团队真的开启时非空；关闭时返回空串，宿主 renderPrompt 会把空段丢掉，不占 token。
+    try {
+      const disposeTeam = (addSection as (value: unknown) => unknown).call(promptService, {
+        name: TEAM_SECTION_NAME,
+        order: TEAM_SECTION_ORDER,
+        text: () => (teamEnabled(agent) ? TEAM_SECTION_TEXT : ''),
+      })
+      if (typeof disposeTeam === 'function') state.disposers.push(disposeTeam as () => void)
+    } catch (error) {
+      warnOnce('team-section', '注入团队纠偏段失败：' + String(error))
     }
   }
 

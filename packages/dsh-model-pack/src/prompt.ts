@@ -25,6 +25,35 @@ import type { ResolvedPack } from './policy.js'
 /** 段名。编排层按这个名字写入系统提示词。 */
 export const DELEGATION_SECTION_NAME = 'model-pack.delegation'
 
+/**
+ * 团队纠偏段的段名。
+ *
+ * 官方 `team:policy`（order 600）在团队开启时告诉模型「用 `subagent` 派成员」，
+ * 而本插件注册 `subagent_tier` 成功后会 deny 官方 `subagent`。两段并存时模型会
+ * 去找一个不存在的工具，所以这里补一段把措辞对齐到实际可用的工具。
+ */
+export const TEAM_SECTION_NAME = 'model-pack.team'
+
+/**
+ * 团队纠偏段的顺序值。
+ *
+ * 官方 `TEAM_POLICY` 是 600，本段取 700：紧跟其后，让模型读完官方那段立刻看到纠正。
+ * 委派段在 2850，两段不重叠。
+ */
+export const TEAM_SECTION_ORDER = 700
+
+/**
+ * 团队纠偏段的文本。
+ *
+ * 只在团队开启且 `subagent_tier` 注册成功时非空——关闭时返回空串，不占 token。
+ * 与编排段同一条硬约束：不含任何 provider / model 名，也不拼随会话变化的值。
+ */
+export const TEAM_SECTION_TEXT = [
+  'Agent Teams is enabled in this session, and the official `subagent` tool is not available: every teammate is started through `subagent_tier`.',
+  'Create teammates with `subagent_tier` and pick the tier by task difficulty. The name it returns is the teammate\'s name — use that name as `owner` on shared tasks and with `send_message`.',
+  'Use `subagent_fork` only when a teammate needs this conversation\'s context; independent tasks must not use it.',
+].join('\n')
+
 /** 段文本的 token 上限（spec §6.3：段 ≤500，实测占用见 spec 预算表）。 */
 export const DELEGATION_MAX_TOKENS = 500
 

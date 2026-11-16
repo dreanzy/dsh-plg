@@ -170,7 +170,7 @@ test('恢复出来的空白会话也按 pack 换模型，工具与段照样重�
   assert.equal(calls.select.length, 1, '恢复的空白会话应当跟随工作区绑定')
   assert.equal(calls.register.length, 1, '工具必须重新注册')
   assert.equal(calls.restrict.length, 1, '官方 subagent 要重新屏蔽')
-  assert.equal(calls.section.length, 1, '委派段要重新注入')
+  assert.equal(calls.section.length, 2, '委派段与团队纠偏段都要重新注入')
 })
 
 test('开过轮次（turn/start）：不换模型，工具与段照常', async (t) => {
@@ -256,7 +256,7 @@ test('已跑过请求：不再 select，但工具与段照常', async (t) => {
   assert.deepEqual(calls.select, [], '已经发过请求的会话不能被工作区绑定覆盖')
   assert.equal(calls.register.length, 1)
   assert.equal(calls.restrict.length, 1)
-  assert.equal(calls.section.length, 1)
+  assert.equal(calls.section.length, 2)
 })
 
 test('创建期写入的初始 model/selection 不阻止 select', async (t) => {
@@ -317,10 +317,76 @@ test('注册成功：restrict 与 section 各一次，deny 只含 subagent', asy
   assert.equal(calls.restrict.length, 1)
   assert.deepEqual(calls.restrict[0], { deny: ['subagent'] })
 
-  assert.equal(calls.section.length, 1)
+  assert.equal(calls.section.length, 2)
   assert.equal(calls.section[0].name, 'model-pack.delegation')
   assert.match(calls.section[0].text, /subagent_tier/)
   assert.equal(typeof calls.section[0].order, 'number')
+  // 团队纠偏段：团队没开时文本为空串，宿主 renderPrompt 会把空段丢掉。
+  assert.equal(calls.section[1].name, 'model-pack.team')
+  assert.equal(calls.section[1].order, 700)
+  assert.equal(typeof calls.section[1].text, 'function')
+  assert.equal(calls.section[1].text({}), '')
+})
+
+test('团队开启：纠偏段文本非空，且点名 subagent_tier 与 subagent_fork', async (t) => {
+  const ws = await makeWorkspace()
+  t.after(ws.cleanup)
+  const { ctx, listeners } = makeContext({ subagents: makeSubagents() })
+  const { agent, calls } = makeAgent({ cwd: ws.cwd })
+  // 团队开关挂在 root session 的 projection 上，只能按 agent 现问。
+  agent.ctx.get = ((original) => (name) =>
+    name === 'agentTeams' ? { isEnabled: () => true } : original(name))(agent.ctx.get)
+
+  install({ ctx, home: ws.home })
+  await fire(listeners, 'agent/created', { agent, source: 'startup' })
+  await settle()
+
+  const team = calls.section.find((section) => section.name === 'model-pack.team')
+  assert.ok(team, '团队纠偏段必须注册')
+  const text = team.text({})
+  assert.match(text, /subagent_tier/)
+  assert.match(text, /subagent_fork/)
+  // 官方 team:policy 让模型用裸名 subagent，而它已被 deny——纠偏段必须说清这一点。
+  assert.match(text, /\bsubagent\b(?!_)/)
+  assert.doesNotMatch(text, /deepseek|commandcode|spawn/, '段文本不含 provider / model 名')
+})
+
+test('agentTeams 只挂在根 ctx 上：纠偏段照样非空', async (t) => {
+  // 宿主把 agentTeams 注册在根 ctx（TeamService.inject 无 scope 限定），
+  // 不像 subagents 那样属于 delegation 组。只问 agent 作用域会静默拿到 undefined，
+  // 表现为「团队明明开着，纠偏段却永远为空」。
+  const ws = await makeWorkspace()
+  t.after(ws.cleanup)
+  const { ctx, listeners } = makeContext({ subagents: makeSubagents() })
+  ctx.get = ((original) => (name) =>
+    name === 'agentTeams' ? { isEnabled: () => true } : original(name))(ctx.get)
+  const { agent, calls } = makeAgent({ cwd: ws.cwd })
+
+  install({ ctx, home: ws.home })
+  await fire(listeners, 'agent/created', { agent, source: 'startup' })
+  await settle()
+
+  const team = calls.section.find((section) => section.name === 'model-pack.team')
+  assert.ok(team)
+  assert.match(team.text({}), /subagent_tier/)
+})
+
+test('agentTeams 取不到或 isEnabled 抛错：纠偏段为空串，不影响委派', async (t) => {
+  const ws = await makeWorkspace()
+  t.after(ws.cleanup)
+  const { ctx, listeners } = makeContext({ subagents: makeSubagents() })
+  const { agent, calls } = makeAgent({ cwd: ws.cwd })
+  agent.ctx.get = ((original) => (name) =>
+    name === 'agentTeams' ? { isEnabled: () => { throw new Error('no root') } } : original(name))(agent.ctx.get)
+
+  install({ ctx, home: ws.home })
+  await fire(listeners, 'agent/created', { agent, source: 'startup' })
+  await settle()
+
+  const team = calls.section.find((section) => section.name === 'model-pack.team')
+  assert.ok(team, '段照样注册，只是文本为空')
+  assert.equal(team.text({}), '')
+  assert.equal(calls.register.length, 1, '委派工具不受影响')
 })
 
 test('registerTierTool 返回 null：restrict 未调用、section 未注入', async (t) => {
@@ -385,7 +451,7 @@ test('同一 agent 重复 created：第二次不再施加', async (t) => {
 
   assert.equal(calls.register.length, 1, '第二次 created 不该再注册一遍')
   assert.equal(calls.restrict.length, 1)
-  assert.equal(calls.section.length, 1)
+  assert.equal(calls.section.length, 2)
 })
 
 /* ------------------------------------------------------------------ *
@@ -404,7 +470,7 @@ test('agent/disposed：工具、限制、段三个 disposer 全部调用', async
   assert.deepEqual(calls.disposed, [], '会话还在时不许释放')
 
   await fire(listeners, 'agent/disposed', { agent })
-  assert.deepEqual(calls.disposed, ['tool', 'restrict', 'section'])
+  assert.deepEqual(calls.disposed, ['tool', 'restrict', 'section', 'section'])
 })
 
 /* ------------------------------------------------------------------ *
@@ -438,7 +504,7 @@ test('bootstrap：已有会话补工具与段，但不碰会话路由', async (t
   assert.deepEqual(calls.select, [], '老会话的模型是用户的选择，插件无权改写')
   assert.equal(calls.register.length, 1)
   assert.equal(calls.restrict.length, 1)
-  assert.equal(calls.section.length, 1)
+  assert.equal(calls.section.length, 2)
 })
 
 test('bootstrap：没有 agents 服务时静默返回', async (t) => {
@@ -461,7 +527,7 @@ test('stopAll：退订事件并释放全部登记项，重复调用不抛', asyn
   await settle()
 
   hooks.stopAll()
-  assert.deepEqual(calls.disposed, ['tool', 'restrict', 'section'])
+  assert.deepEqual(calls.disposed, ['tool', 'restrict', 'section', 'section'])
   assert.equal(listeners.has('agent/created'), false)
   hooks.stopAll()
 })
