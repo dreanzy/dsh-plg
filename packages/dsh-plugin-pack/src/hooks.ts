@@ -136,10 +136,26 @@ const EMPTY_SNAPSHOT: Snapshot = { sections: new Set<string>() }
 
 function buildSnapshot(catalog: Catalog | null, resolver: Effective): Snapshot {
   if (catalog === null) return EMPTY_SNAPSHOT
+  // 与 denyFor 同一条规则：同名段被多个包注册时，只有所有归属包都已停用才剔除。
+  const owners = new Map<string, Set<string>>()
+  for (const plugin of catalog.plugins) {
+    for (const name of plugin.sections) {
+      let set = owners.get(name)
+      if (set === undefined) {
+        set = new Set()
+        owners.set(name, set)
+      }
+      set.add(plugin.pkg)
+    }
+  }
   const sections = new Set<string>()
   for (const plugin of catalog.plugins) {
     if (resolver.isOpen(plugin.pkg)) continue
-    for (const name of plugin.sections) sections.add(name)
+    for (const name of plugin.sections) {
+      const set = owners.get(name)
+      if (set !== undefined && [...set].some((pkg) => resolver.isOpen(pkg))) continue
+      sections.add(name)
+    }
   }
   return { sections }
 }
@@ -169,6 +185,21 @@ function denyFor(
   const known = new Set<string>(visible)
   for (const name of deniedBefore) known.add(name)
   const extras = candidateTools(catalog)
+  // 名字 → 归属包。同名工具被多个包注册时，只有**所有**归属包都已停用才关：
+  // 否则停用 A 会把还在开的 B 的工具一起摘掉，与「宁可放开，也不误删」相反。
+  const owners = new Map<string, Set<string>>()
+  for (const plugin of catalog.plugins) {
+    const candidates = extras.get(plugin.pkg)
+    const names = candidates === undefined ? plugin.tools : [...plugin.tools, ...candidates]
+    for (const name of names) {
+      let set = owners.get(name)
+      if (set === undefined) {
+        set = new Set()
+        owners.set(name, set)
+      }
+      set.add(plugin.pkg)
+    }
+  }
   const out = new Set<string>()
   for (const plugin of catalog.plugins) {
     if (resolver.isOpen(plugin.pkg)) continue
@@ -176,7 +207,11 @@ function denyFor(
     const names = candidates === undefined ? plugin.tools : [...plugin.tools, ...candidates]
     for (const name of names) {
       if (LOCKED_TOOLS.has(name)) continue
-      if (known.has(name)) out.add(name)
+      if (!known.has(name)) continue
+      const set = owners.get(name)
+      // 还有别的包开着并且也声明这个名字：不关。
+      if (set !== undefined && [...set].some((pkg) => resolver.isOpen(pkg))) continue
+      out.add(name)
     }
   }
   return [...out].sort()

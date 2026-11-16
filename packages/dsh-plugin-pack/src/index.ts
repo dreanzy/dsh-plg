@@ -81,18 +81,24 @@ export function apply(ctx: unknown): void {
   const context = ctx as PluginContext & { inject(names: readonly string[], callback: () => void): unknown }
   const hooks = installHooks(context)
 
-  // 重载后补一次施加：已有会话不会再收到 agent/created，不补的话它们会一直
-  // 没有限制，直到用户重开会话。失败只降级，不影响插件加载。
-  void hooks.bootstrap().catch((error: unknown) => {
-    context.logger.warn(name + ': 重载后补施加失败：' + String(error))
-  })
-
   // 预热插件目录：面板第一次打开时缓存已经在盘上，不用先空一轮「识别中」。
   // 它只影响速度与归属展示，失败绝不能影响插件装配。
+  //
+  // **bootstrap 必须排在预热之后**：`applyOne` 在 `feed.read()` 返回 null 时直接
+  // 返回，而冷启动那一刻缓存还没写出来。两者并行时 bootstrap 必然空跑，且预热完成后
+  // 没有任何东西再触发它——已有会话会一直按「全开」运行，直到用户改策略或新开会话。
   void defaultCatalogFeed
     .load({ warn: (message) => context.logger.warn(message) })
     .catch((error: unknown) => {
       context.logger.warn(name + ': 预热插件目录失败：' + String(error))
+    })
+    .then(() =>
+      // 重载后补一次施加：已有会话不会再收到 agent/created，不补的话它们会一直
+      // 没有限制，直到用户重开会话。失败只降级，不影响插件加载。
+      hooks.bootstrap(),
+    )
+    .catch((error: unknown) => {
+      context.logger.warn(name + ': 重载后补施加失败：' + String(error))
     })
 
   context.inject(['connection'], () => {

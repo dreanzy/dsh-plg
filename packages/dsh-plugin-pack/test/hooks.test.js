@@ -638,3 +638,48 @@ test('策略写入后 packs.json 落在新路径，工作区目录下不产生�
   )
   assert.equal(exists, false)
 })
+test('同名工具被两个包注册时，只停用一个不会误关另一个', async () => {
+  const { cwd } = await makeWorkspace()
+  // 只停用 plug-x；plug-y 保持开启，且两个包都声明 shared_tool。
+  await applyCommands(null, [{ op: 'packItem', packId: 'default', name: 'plug-x', value: false }])
+  const tools = fakeTools([{ name: 'shared_tool', description: 'd', parameters: { type: 'object' } }])
+  const make = (pkg) => ({
+    pkg,
+    tools: ['shared_tool'],
+    sections: [],
+    toolVolume: 0,
+    sectionChars: 0,
+    toolsKnown: true,
+    sectionsKnown: true,
+  })
+  const ctx = fakeCtx()
+  installHooks(ctx, { catalog: feedFor(catalogFor([make('plug-x'), make('plug-y')])) })
+
+  await ctx.emit('agent/created', { agent: agentFor(cwd, tools) })
+
+  assert.equal(tools.denied.has('shared_tool'), false, 'plug-y 还开着，它的工具不能被一起关掉')
+})
+
+test('同名工具的所有归属包都停用时才关', async () => {
+  const { cwd } = await makeWorkspace()
+  await applyCommands(null, [
+    { op: 'packItem', packId: 'default', name: 'plug-x', value: false },
+    { op: 'packItem', packId: 'default', name: 'plug-y', value: false },
+  ])
+  const tools = fakeTools([{ name: 'shared_tool', description: 'd', parameters: { type: 'object' } }])
+  const make = (pkg) => ({
+    pkg,
+    tools: ['shared_tool'],
+    sections: [],
+    toolVolume: 0,
+    sectionChars: 0,
+    toolsKnown: true,
+    sectionsKnown: true,
+  })
+  const ctx = fakeCtx()
+  installHooks(ctx, { catalog: feedFor(catalogFor([make('plug-x'), make('plug-y')])) })
+
+  await ctx.emit('agent/created', { agent: agentFor(cwd, tools) })
+
+  assert.equal(tools.denied.has('shared_tool'), true, '两个包都停了，工具必须关掉')
+})

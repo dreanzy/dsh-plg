@@ -20,6 +20,14 @@ import {
 /** 单个域的名字上限，只为防止文件被写成无界清单。写侧也按它拒绝，见 ops.ts。 */
 export const MAX_NAMES = 2000
 
+/**
+ * 一批命令的条数上限。
+ *
+ * `applyToPacks` 对每条命令复制一次整张 items 表，N 条命令是 O(N²)：实测 2 万条
+ * 要跑 70 秒并阻塞宿主主线程。正常 UI 操作最多几百条。
+ */
+export const MAX_COMMANDS = 1000
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
@@ -28,7 +36,10 @@ function sortMap(map: Readonly<Record<string, boolean>>): Record<string, boolean
   const out: Record<string, boolean> = {}
   for (const key of Object.keys(map).sort()) {
     const value = map[key]
-    if (value !== undefined) out[key] = value
+    // defineProperty：`out['__proto__'] = value` 改的是原型，键在序列化时消失。
+    if (value !== undefined) {
+      Object.defineProperty(out, key, { value, enumerable: true, writable: true, configurable: true })
+    }
   }
   return out
 }
@@ -57,7 +68,9 @@ function parseMap(raw: unknown, label: string, warnings: string[]): Record<strin
       warnings.push(`${label}.${name} 不是布尔值，已忽略`)
       continue
     }
-    out[name] = value
+    // defineProperty 而不是赋值：`out['__proto__'] = value` 改的是原型，
+    // 键被静默丢弃且没有 warning。
+    Object.defineProperty(out, name, { value, enumerable: true, writable: true, configurable: true })
   }
   return out
 }
@@ -286,7 +299,9 @@ export function serializeBindings(bindings: Bindings): string {
   const out: Record<string, string> = {}
   for (const key of Object.keys(bindings.bindings).sort()) {
     const packId = bindings.bindings[key]
-    if (packId !== undefined) out[key] = packId
+    if (packId !== undefined) {
+      Object.defineProperty(out, key, { value: packId, enumerable: true, writable: true, configurable: true })
+    }
   }
   return serializeRecord({ version: 1, bindings: out })
 }
@@ -296,7 +311,9 @@ export function serializeGroups(registry: GroupRegistry): string {
   const assignments: Record<string, string> = {}
   for (const name of Object.keys(registry.assignments).sort()) {
     const groupId = registry.assignments[name]
-    if (groupId !== undefined) assignments[name] = groupId
+    if (groupId !== undefined) {
+      Object.defineProperty(assignments, name, { value: groupId, enumerable: true, writable: true, configurable: true })
+    }
   }
   return serializeRecord({ version: 1, groups, assignments })
 }

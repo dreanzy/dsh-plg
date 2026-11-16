@@ -67,7 +67,41 @@ function brokenReason(text: string | undefined): string | null {
     return `内容不是合法 JSON（${String(error)}）`
   }
   if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return '顶层不是对象'
+  // 字段级形状：顶层是对象但内部形状坏掉时，解析会降级成空名册，写回就是拿空名册
+  // 覆盖用户的全部决定。这里逐字段拒绝，让面板把原因显示出来。
+  const record = raw as Record<string, unknown>
+  if (record['packs'] !== undefined && !isPlainRecord(record['packs'])) return 'packs 不是对象'
+  if (record['groups'] !== undefined && !Array.isArray(record['groups'])) return 'groups 不是数组'
+  if (record['assignments'] !== undefined && !isPlainRecord(record['assignments'])) return 'assignments 不是对象'
+  if (record['bindings'] !== undefined && !isPlainRecord(record['bindings'])) return 'bindings 不是对象'
+  if (record['ui'] !== undefined && !isPlainRecord(record['ui'])) return 'ui 不是对象'
+  const packs = record['packs']
+  if (isPlainRecord(packs)) {
+    for (const [id, pack] of Object.entries(packs)) {
+      if (!isPlainRecord(pack)) return `packs.${id} 不是对象`
+      const items = (pack as Record<string, unknown>)['items']
+      const groups = (pack as Record<string, unknown>)['groups']
+      if (items !== undefined && !isPlainRecord(items)) return `packs.${id}.items 不是对象`
+      if (groups !== undefined && !isPlainRecord(groups)) return `packs.${id}.groups 不是对象`
+      // 值类型也要查：解析会把非布尔值丢掉并降级，写回就是拿残缺表覆盖原文件。
+      if (isPlainRecord(items)) {
+        for (const [name, value] of Object.entries(items)) {
+          if (typeof value !== 'boolean') return `packs.${id}.items.${name} 不是布尔值`
+        }
+      }
+      if (isPlainRecord(groups)) {
+        for (const [name, value] of Object.entries(groups)) {
+          if (typeof value !== 'boolean') return `packs.${id}.groups.${name} 不是布尔值`
+        }
+      }
+    }
+  }
   return null
+}
+
+/** 普通对象判定：数组与 null 都不算。 */
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
 /**
@@ -271,12 +305,16 @@ export async function applyCommands(cwd: string | null, commands: readonly Comma
   const files = filesOf(commands)
   const warnings: string[] = []
 
-  if (files.has('packs')) {
-    const ok = await transact(packsPath(), 'packs.json', (current) => applyToPacks(current, commands), warnings)
-    if (!ok) return await settled(cwd, warnings)
-  }
+  // 顺序是硬要求：`deleteGroup` 同时命中两个文件，先写 groups 再写 packs。
+  // 反过来的话，groups.json 写失败时 packs.json 里该组的开关已被清空，组却还在——
+  // 组内成员从「关」变成「跟随 → 默认开」，是 fail-open 方向。
+  // 先删组定义则安全：残留的组开关不影响求值（`groupOf` 只认仍存在的组）。
   if (files.has('groups')) {
     const ok = await transact(groupsPath(), 'groups.json', (current) => applyToGroups(current, commands), warnings)
+    if (!ok) return await settled(cwd, warnings)
+  }
+  if (files.has('packs')) {
+    const ok = await transact(packsPath(), 'packs.json', (current) => applyToPacks(current, commands), warnings)
     if (!ok) return await settled(cwd, warnings)
   }
   if (files.has('bindings')) {

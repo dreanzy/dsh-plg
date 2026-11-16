@@ -460,3 +460,34 @@ test('renameGroup 撞上已有名字同样被拒', async () => {
   const state = await applyCommands(null, [{ op: 'renameGroup', groupId: b.id, name: 'A' }])
   assert.match(state.warnings.join('\n'), /分组名已存在/)
 })
+test('字段形状坏掉的文件拒绝覆盖，原文件保持', async () => {
+  await freshHome()
+  await mkdir(dirname(packsPath()), { recursive: true })
+  const cases = [
+    '{"version":1,"packs":[]}',
+    '{"version":1,"packs":{"default":{"name":"默认","items":[]}}}',
+    '{"version":1,"packs":{"default":{"name":"默认","items":{"a":"yes"}}}}',
+    '{"version":1,"groups":{}}',
+  ]
+  for (const broken of cases) {
+    await writeFile(packsPath(), broken, 'utf8')
+    const state = await applyCommands(null, [{ op: 'packItem', packId: 'default', name: 'plug-a', value: false }])
+    assert.ok(state.warnings.length > 0, broken + ' 必须留 warning')
+    assert.equal(await readFile(packsPath(), 'utf8'), broken, broken + ' 原文件必须逐字节不变')
+  }
+})
+
+test('__proto__ 作为 pack id 时被当成未知 pack，不静默成功', async () => {
+  await freshHome()
+  const state = await applyCommands(null, [{ op: 'packItem', packId: '__proto__', name: 'plug-a', value: false }])
+  assert.ok(state.warnings.some((w) => w.includes('未知 pack')), '必须报未知 pack')
+})
+
+test('__proto__ 作为工具名时决定被保留', async () => {
+  await freshHome()
+  await applyCommands(null, [{ op: 'packItem', packId: 'default', name: '__proto__', value: false }])
+  const state = await loadState(null)
+  const items = state.packs.packs['default'].items
+  assert.equal(Object.hasOwn(items, '__proto__'), true, '__proto__ 必须落成自有属性')
+  assert.equal(items['__proto__'], false)
+})
