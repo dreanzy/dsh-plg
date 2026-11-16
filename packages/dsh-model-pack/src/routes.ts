@@ -187,8 +187,8 @@ function parseCommands(raw: unknown): { ok: true; commands: ValidCommand[] } | {
   const readId = (record: Record<string, unknown>, key: string): string | null => {
     const value = record[key]
     // 返回 trim 后的值：putPack 自己 trim，其余命令直接用 packs[packId]，
-  // 不 trim 会让「保存 pack 内容成功、改会话路由报不存在」。
-  return typeof value === 'string' && value.trim() !== '' ? value.trim() : null
+    // 不 trim 会让「保存 pack 内容成功、改会话路由报不存在」。
+    return typeof value === 'string' && value.trim() !== '' ? value.trim() : null
   }
 
   for (const [index, entry] of raw.entries()) {
