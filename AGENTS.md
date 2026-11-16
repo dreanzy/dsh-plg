@@ -37,3 +37,21 @@ Single-context layout: one `GLOSSARY.md` at the repo root plus `docs/adr/`. See 
 ## 宿主插件红线
 
 `agent/created` 是 serial 派发，监听器抛错会让**会话创建失败**。所有 `applyOne` 路径包 `try/catch`，失败只 `logger.warn`；该回调里只做**有界**读盘（1–3 个小配置文件，结果按 cwd 缓存），不扫目录、不做无界遍历。
+
+## 验收
+
+改动插件后，**跑测试脚本不算验收完成**。测试只覆盖函数级行为，路由层、信封形状、跨包不一致都测不到——`mcp-pack` 的原型链 op 报 `internal` 就是这么漏掉的：其余三包已修，只有它没修，而单包测试全绿。
+
+验收分两步，缺一不可：
+
+1. **测试脚本**：`pnpm test`，或逐包 `node --test --test-isolation=none packages/<pkg>/test/`。
+2. **隔离 profile 端到端**：建独立 profile（`dsh <name> --from-default-profile web`），用 `link:` 装本仓库的包，启动 web 服务，走真实 HTTP 路由把面板的操作序列跑一遍。
+
+端到端判据：
+
+- 每包至少覆盖：读初始状态、新建、改名、绑定、试算不落盘、删除、名册回到初始。
+- 试算（`dryRun: true`）必须验证「响应变了但磁盘没变」，两条都要断言。
+- **四包对比同一操作的信封 `code`**：不一致就是缺陷。`bad-request` 与 `internal` 混用会让客户端把输入错误当成服务端故障。
+- 隔离 profile 用完即删，不留在 `~/.dsh/profiles/` 下。
+
+web 服务有浏览器认证栅栏：无 cookie 的 `/api/*` 请求一律 401。端到端脚本要先完成认证——用 `~/.dsh/.credentials.yaml` 里的签名 secret 自签 cookie，或从启动 URL 的 `?token=` 换。凭据只在本机用，不进提交、不进文档。
