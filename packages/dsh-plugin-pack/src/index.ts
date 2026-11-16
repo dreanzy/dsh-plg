@@ -1,4 +1,5 @@
 import { defaultCatalogFeed } from './catalog.js'
+import { readFetchFace, registerRoutes } from '@dreanzy/dsh-pack-core'
 import { installHooks, type PluginContext } from './hooks.js'
 import {
   handleApply,
@@ -27,55 +28,6 @@ const ROUTES = {
   workspace: '/api/plugin-pack/workspace',
   apply: '/api/plugin-pack/apply',
 } as const
-
-interface FetchRouteSpec {
-  readonly path: string
-  readonly methods: readonly string[]
-  readonly requestBody: 'buffered' | 'streaming'
-  fetch(request: Request): Promise<Response>
-}
-
-interface FetchFace {
-  register(spec: FetchRouteSpec): () => unknown
-}
-
-function toResponse(envelope: Envelope<unknown>): Response {
-  // HTTP 状态恒为 200：前端只认信封里的 code，非 2xx 会让它丢掉 body。
-  return Response.json(envelope, { headers: { 'cache-control': 'no-store' } })
-}
-
-function wrap(handler: (body: Record<string, unknown> | null) => Promise<Envelope<unknown>>) {
-  return async (request: Request): Promise<Response> => {
-    let body: Record<string, unknown> | null = null
-    try {
-      const parsed: unknown = await request.json()
-      body =
-        typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)
-          ? (parsed as Record<string, unknown>)
-          : null
-    } catch {
-      // 空体合法：全局读取不需要任何入参。
-    }
-    try {
-      return toResponse(await handler(body))
-    } catch (error) {
-      return toResponse({
-        ok: false,
-        error: { code: 'internal', message: '路由处理失败：' + String(error) },
-      })
-    }
-  }
-}
-
-function readFetchFace(ctx: PluginContext): FetchFace | null {
-  const connection = ctx.get('connection') as Record<string, unknown> | undefined
-  if (typeof connection !== 'object' || connection === null) return null
-  const fetchFace = connection['fetch'] as Record<string, unknown> | undefined
-  if (typeof fetchFace !== 'object' || fetchFace === null) return null
-  const register = fetchFace['register']
-  if (typeof register !== 'function') return null
-  return { register: (spec) => (register as (spec: FetchRouteSpec) => () => unknown).call(fetchFace, spec) }
-}
 
 export function apply(ctx: unknown): void {
   const context = ctx as PluginContext & { inject(names: readonly string[], callback: () => void): unknown }
@@ -110,41 +62,17 @@ export function apply(ctx: unknown): void {
     const routeCtx: RouteContext = { get: (key) => context.get(key), logger: context.logger, label: name }
     // 三条路由共用同一份 deps：reapply 让保存立即可见，stuck 与 support 供面板标红。
     const deps: RouteDeps = { reapply: hooks.reapply, stuck: hooks.stuck, support: hooks.support }
-    const disposers: Array<() => unknown> = []
-
-    const register = (
-      path: string,
-      handler: (body: Record<string, unknown> | null) => Promise<Envelope<unknown>>,
-    ): void => {
-      try {
-        disposers.push(face.register({ path, methods: ['POST'], requestBody: 'buffered', fetch: wrap(handler) }))
-      } catch (error) {
-        context.logger.warn(name + ': 注册路由失败（' + path + '）：' + String(error))
-      }
-    }
-
-    register(ROUTES.global, (body) =>
-      handleGlobal(routeCtx, body, deps).then((result) => result as Envelope<unknown>),
+    const dispose = registerRoutes(
+      face,
+      ROUTES,
+      {
+        global: (body) => handleGlobal(routeCtx, body, deps).then((result) => result as Envelope<unknown>),
+        workspace: (body) => handleWorkspace(routeCtx, body, deps).then((result) => result as Envelope<unknown>),
+        apply: (body) => handleApply(routeCtx, body, deps).then((result) => result as Envelope<unknown>),
+      },
+      (path, error) => context.logger.warn(name + ': 注册路由失败（' + path + '）：' + String(error)),
     )
-    register(ROUTES.workspace, (body) =>
-      handleWorkspace(routeCtx, body, deps).then((result) => result as Envelope<unknown>),
-    )
-    register(ROUTES.apply, (body) => handleApply(routeCtx, body, deps).then((result) => result as Envelope<unknown>))
-
-    context.effect(() => () => {
-      for (const dispose of disposers) {
-        try {
-          const result = dispose()
-          if (result !== null && typeof result === 'object' && 'catch' in result) {
-            void (result as Promise<unknown>).catch(() => {
-              // 释放失败只影响这次卸载，没有可回滚的状态。
-            })
-          }
-        } catch {
-          // 同上。
-        }
-      }
-    })
+    context.effect(() => dispose)
   })
 
   context.logger.info(name + ': applied')

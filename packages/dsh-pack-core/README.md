@@ -29,6 +29,7 @@
 | `session` | `resolveSession` · `RouteContext` · `SessionResolution` |
 | `reconcile` | `createReconciler` · `Dispose` · `Reconciler` |
 | `protocol` | `Envelope` · `ErrorCode` |
+| `routes` | `toResponse` · `wrap` · `readFetchFace` · `registerRoutes` · `FetchFace` · `FetchRouteSpec` · `RouteHandler` |
 | `store` | `storePaths` · `readText` · `transact` · `previewText` · `writableReason` · `TransactResult` |
 | `policy` | `createResolver` · `normalizeCwd` · `Decision` · `Resolver` |
 | `ops` | `parseCommands` · `filesOf` · `MAX_COMMANDS` · `OpSpec` · `OpTable` · `StoreFile` |

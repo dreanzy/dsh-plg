@@ -213,36 +213,3 @@ export async function handleApply(deps: RouteDeps, body: Record<string, unknown>
     return internal(deps, '写入模型配置', error)
   }
 }
-
-/** 把信封变成 Response。HTTP 恒 200 是这里的唯一职责。 */
-export function toResponse(envelope: Envelope): Response {
-  return Response.json(envelope, { headers: { 'cache-control': 'no-store' } })
-}
-
-/**
- * 把 `(body) => Promise<Envelope>` 包成 `fetch` 处理器。
- *
- * 取 body 失败（空体、非 JSON、顶层不是对象）一律当 `null`：`read` 不需要入参，
- * 空体必须合法。处理器自身的异常也在这里兜住，保证连接层永远只看到一个 200。
- */
-export function wrapHandler(
-  handler: (body: Record<string, unknown> | null) => Promise<Envelope>,
-): (request: Request) => Promise<Response> {
-  return async (request: Request): Promise<Response> => {
-    let body: Record<string, unknown> | null = null
-    try {
-      const parsed: unknown = await request.json()
-      body = isRecord(parsed) ? parsed : null
-    } catch {
-      // 空体合法，见上。
-    }
-    try {
-      return toResponse(await handler(body))
-    } catch (error) {
-      return toResponse({
-        ok: false,
-        error: { code: 'internal', message: '路由处理失败：' + String(error) },
-      })
-    }
-  }
-}

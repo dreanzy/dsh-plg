@@ -17,6 +17,16 @@ export { createReconciler, type Dispose, type Reconciler } from './reconcile.js'
 export type { Envelope, ErrorCode } from './protocol.js'
 
 export {
+  toResponse,
+  wrap,
+  readFetchFace,
+  registerRoutes,
+  type FetchFace,
+  type FetchRouteSpec,
+  type RouteHandler,
+} from './routes.js'
+
+export {
   storePaths,
   readText,
   transact,

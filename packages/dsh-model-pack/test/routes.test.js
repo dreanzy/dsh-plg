@@ -4,13 +4,8 @@ import { existsSync } from 'node:fs'
 import { mkdtemp } from 'node:fs/promises'
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
-import {
-  ROUTES,
-  handleApply,
-  handleRead,
-  toResponse,
-  wrapHandler,
-} from '../lib/routes.js'
+import { toResponse, wrap as wrapHandler } from '@dreanzy/dsh-pack-core'
+import { ROUTES, handleApply, handleRead } from '../lib/routes.js'
 import {
   applyCommands,
   loadState,
@@ -709,44 +704,6 @@ test('apply：applyCommands 抛错转成 internal 信封，不写坏文件', asy
 /* ------------------------------------------------------------------ *
  * HTTP 面：恒 200
  * ------------------------------------------------------------------ */
-
-test('wrapHandler：空体按 null 处理，状态码 200', async () => {
-  const home = await tempRoot()
-  const { deps } = depsFor(home)
-  const fetch = wrapHandler((body) => handleRead(deps, body))
-
-  const response = await fetch(new Request('http://127.0.0.1/api/model-pack/read', { method: 'POST' }))
-  assert.equal(response.status, 200)
-  assert.equal(response.headers.get('cache-control'), 'no-store')
-  const body = await response.json()
-  assert.equal(body.ok, true)
-  assert.equal(body.value.resolved.id, DEFAULT_PACK_ID)
-})
-
-test('wrapHandler：非 JSON body 与处理器异常都返回 200 + 信封', async () => {
-  const home = await tempRoot()
-  const { deps } = depsFor(home)
-
-  const badJson = wrapHandler((body) => handleRead(deps, body))
-  const first = await badJson(new Request('http://127.0.0.1/x', { method: 'POST', body: 'not json' }))
-  assert.equal(first.status, 200)
-  assert.equal((await first.json()).ok, true)
-
-  const throwing = wrapHandler(async () => {
-    throw new Error('handler boom')
-  })
-  const second = await throwing(new Request('http://127.0.0.1/x', { method: 'POST' }))
-  assert.equal(second.status, 200)
-  const envelope = await second.json()
-  assert.equal(envelope.ok, false)
-  assert.equal(envelope.error.code, 'internal')
-  assert.match(envelope.error.message, /handler boom/)
-})
-
-test('toResponse：错误信封同样是 200', () => {
-  const response = toResponse({ ok: false, error: { code: 'bad-request', message: 'x' } })
-  assert.equal(response.status, 200)
-})
 
 /* ------------------------------------------------------------------ *
  * 隔离

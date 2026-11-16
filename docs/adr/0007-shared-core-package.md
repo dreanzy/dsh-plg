@@ -34,6 +34,7 @@ ADR-0002 记的是"重复的基础设施约 150 行，对三包 13672 行约 1%"
 | `effective` 的 `{ complete, rows, isOpen }` 骨架 | 三个包已同形，mcp 刚补齐 complete |
 | `snapshot` 的缓存骨架（`read` / `refresh` / `invalidate` / `stats` 与键规则） | 两包形状一致，键规则各留参数 |
 | 协议类型（`Envelope` / `ErrorCode` / 宿主 ctx 最小面） | 四份定义已经漂移（model 的 `ErrorCode` 少了 `'unknown-session'`）。`RouteContext` 本身三份逐字相同，随 `session` 一起进 core |
+| `routes` 的注册骨架（`toResponse` / `wrap` / `readFetchFace` / `registerRoutes`） | 四份逐字相同，而「HTTP 恒 200、信封 code 一致」这条不变式原先只写在四份注释里，没有任何测试守护——mcp 的原型链 op 报 `internal` 就是这么漏掉的 |
 
 不抽：
 
@@ -74,6 +75,7 @@ ADR-0002 已否掉一次，理由不变：只想管 skill 的人不该被迫跟 
 - **客户端仍是复制品**：规则只有一份（core 的表），实现有四份。守护靠测试而不是生成：改 core 会让四包用例变红，改客户端那份同样。代价是每加一个 op 要动一次客户端；收益是不给手写单文件加构建链。
 - 五个 manager 的 `ops` 表（D5）：骨架在 core，四包各自提供 `parse` 与 `apply*` 的 adapter。`OpSpec.key` 已删——它全仓零消费点，队列键由 core 的 `pendingKeyOf` 直接查表；客户端的 `pendingKey` 以 `PENDING_KEY_RULES` 为单一真源，由测试守护。
 - **`apply*` 的批处理语义留在包里**：skill/plugin/mcp 的 `OpSpec.apply*` 是「一条命令一次」，model 的 `applyTo*` 是「一次遍历处理整批」。core 只收 `parse` 与 `files`，不强行统一批处理。
+- **`ROUTES` 常量留在包里**：路径是各包对外的 API 契约，写死比生成更清楚——`/api/skill-pack/global` 一眼能看出是哪个包的哪个路由。`registerRoutes` 只保证 `routes` 与 `handlers` 同键不错位。
 - **`resolveSession` 的 null 语义仍归各包**：mcp 的 `handleApply` 在解析不出会话时拒绝写入，skill 与 plugin 继续写入并降级为全局视图。这是行为差异，不是重复代码，core 只负责「sessionId → 结论」，null 之后怎么用由调用方决定。
 - **重新审视的条件**：若 core 的接口开始因为四包需求被迫长出开关参数（而不是收窄），说明边界切错了，应退回按包拆分。
 

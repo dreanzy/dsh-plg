@@ -1,6 +1,7 @@
 import { loadAdapters, loadMcpClientModule, probeAdapters, type AdapterProbe } from './adapter.js'
 import { createGate, suppressedServers } from './gate.js'
 import { mountMcpServer, type MountHandle } from './mount.js'
+import { readFetchFace, registerRoutes } from '@dreanzy/dsh-pack-core'
 import { installHooks } from './hooks.js'
 import { scanRows } from './inventory.js'
 import { writeFileAtomic } from '@deepseek-ai/dsh-atomic-write'
@@ -33,17 +34,6 @@ const ROUTES = {
   servers: '/api/mcp-pack/servers',
 } as const
 
-interface FetchRouteSpec {
-  readonly path: string
-  readonly methods: readonly string[]
-  readonly requestBody: 'buffered' | 'streaming'
-  fetch(request: Request): Promise<Response>
-}
-
-interface FetchFace {
-  register(spec: FetchRouteSpec): () => unknown
-}
-
 interface PluginContext {
   get(name: string): unknown
   plugin(plugin: unknown, config?: unknown): unknown
@@ -68,42 +58,6 @@ interface Diagnostics {
   owned: string[]
   /** 当前真的挂上去的托管 server。 */
   mounted: string[]
-}
-
-function toResponse(envelope: Envelope<unknown>): Response {
-  // HTTP 状态恒为 200：前端只认信封里的 code，非 2xx 会让它丢掉 body。
-  return Response.json(envelope, { headers: { 'cache-control': 'no-store' } })
-}
-
-type Handler = (body: Record<string, unknown> | null) => Promise<Envelope<unknown>>
-
-function wrap(handler: Handler) {
-  return async (request: Request): Promise<Response> => {
-    let body: Record<string, unknown> | null = null
-    try {
-      const parsed: unknown = await request.json()
-      if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
-        body = parsed as Record<string, unknown>
-      }
-    } catch {
-      // 空体合法：全局读取不需要任何入参。
-    }
-    try {
-      return toResponse(await handler(body))
-    } catch (error) {
-      return toResponse({ ok: false, error: { code: 'internal', message: `路由处理失败：${String(error)}` } })
-    }
-  }
-}
-
-function readFetchFace(ctx: PluginContext): FetchFace | null {
-  const connection = ctx.get('connection') as Record<string, unknown> | undefined
-  if (typeof connection !== 'object' || connection === null) return null
-  const fetchFace = connection['fetch'] as Record<string, unknown> | undefined
-  if (typeof fetchFace !== 'object' || fetchFace === null) return null
-  const register = fetchFace['register']
-  if (typeof register !== 'function') return null
-  return { register: (spec) => (register as (spec: FetchRouteSpec) => () => unknown).call(fetchFace, spec) }
 }
 
 function scanOf(context: PluginContext) {
@@ -384,79 +338,65 @@ export function apply(ctx: unknown): void {
     }
     const routeCtx: RouteContext = { get: (key) => context.get(key), logger: context.logger, label: name }
     const deps: RouteDeps = { snapshot }
-    const disposers: Array<() => unknown> = []
-
-    const register = (path: string, handler: Handler): void => {
-      try {
-        disposers.push(face.register({ path, methods: ['POST'], requestBody: 'buffered', fetch: wrap(handler) }))
-      } catch (error) {
-        context.logger.warn(`${name}: 注册路由失败（${path}）：${String(error)}`)
-      }
-    }
-
-register(ROUTES.diag, async () => {
-      // 实时重算：`noteRows` 只在启动与写入后跑，拿不到「现在」的闸门状态。
-      try {
-        await state.refresh()
-        diag.rowsSeen = snapshot.read(null)?.rows.length ?? 0
-        diag.suppressed = [...suppressedServers(context.get('loader'))]
-      } catch {
-        // 诊断失败不影响响应。
-      }
-      // 显式请求：无论内容是否变化都落一次盘（时间戳会刷新）。
-      flushDiag({ force: true })
-      return {
-        ok: true,
-        value: {
-          ...diag,
-          gate: gate.stats(),
-          lastApplied: lastAppliedCommands(),
-          poolSize: pool.size(),
-          poolKeys: [...pool.keys()],
-          baseUrl: baseUrl ?? null,
+    const dispose = registerRoutes(
+      face,
+      ROUTES,
+      {
+        diag: async () => {
+          // 实时重算：`noteRows` 只在启动与写入后跑，拿不到「现在」的闸门状态。
+          try {
+            await state.refresh()
+            diag.rowsSeen = snapshot.read(null)?.rows.length ?? 0
+            diag.suppressed = [...suppressedServers(context.get('loader'))]
+          } catch {
+            // 诊断失败不影响响应。
+          }
+          // 显式请求：无论内容是否变化都落一次盘（时间戳会刷新）。
+          flushDiag({ force: true })
+          return {
+            ok: true,
+            value: {
+              ...diag,
+              gate: gate.stats(),
+              lastApplied: lastAppliedCommands(),
+              poolSize: pool.size(),
+              poolKeys: [...pool.keys()],
+              baseUrl: baseUrl ?? null,
+            },
+          }
         },
-      }
-    })
-    register(ROUTES.global, () => handleGlobal(routeCtx, deps))
-    register(ROUTES.servers, (body) =>
-      handleServers(routeCtx, body, {
-        afterWrite: async () => {
-          // 托管定义变了：策略与视图都要重读。
-          snapshot.invalidate()
-          await state.refresh()
-          // 定义变了，已落地会话的视图与闸门都要重算：新增的 server 得能立刻
-          // 出现在名册里、并按其模式决定挂不挂。
-          await hooks.reconcileAll()
-          await gate.reconcile()
-          await syncMounts()
-          noteRows()
-        },
-      }),
+        global: () => handleGlobal(routeCtx, deps),
+        servers: (body) =>
+          handleServers(routeCtx, body, {
+            afterWrite: async () => {
+              // 托管定义变了：策略与视图都要重读。
+              snapshot.invalidate()
+              await state.refresh()
+              // 定义变了，已落地会话的视图与闸门都要重算：新增的 server 得能立刻
+              // 出现在名册里、并按其模式决定挂不挂。
+              await hooks.reconcileAll()
+              await gate.reconcile()
+              await syncMounts()
+              noteRows()
+            },
+          }),
+        workspace: (body) => handleWorkspace(routeCtx, body, deps),
+        apply: (body) =>
+          handleApply(routeCtx, body, {
+            snapshot,
+            afterWrite: async () => {
+              await state.refresh()
+              // per-agent 视图不会自己更新：保存后必须重算，否则会话里还是旧名册。
+              await hooks.reconcileAll()
+              await gate.reconcile()
+              await syncMounts()
+              noteRows()
+            },
+          }),
+      },
+      (path, error) => context.logger.warn(`${name}: 注册路由失败（${path}）：${String(error)}`),
     )
-    register(ROUTES.workspace, (body) => handleWorkspace(routeCtx, body, deps))
-    register(ROUTES.apply, (body) =>
-      handleApply(routeCtx, body, {
-        snapshot,
-        afterWrite: async () => {
-          await state.refresh()
-          // per-agent 视图不会自己更新：保存后必须重算，否则会话里还是旧名册。
-          await hooks.reconcileAll()
-          await gate.reconcile()
-          await syncMounts()
-          noteRows()
-        },
-      }),
-    )
-
-    context.effect(() => () => {
-      for (const dispose of disposers) {
-        try {
-          dispose()
-        } catch {
-          // 释放失败只影响这次卸载，没有可回滚的状态。
-        }
-      }
-    })
+    context.effect(() => dispose)
   })
 
   context.logger.info(`${name}: applied（行发现 + 策略 + 名册段 + 按需加载）`)
