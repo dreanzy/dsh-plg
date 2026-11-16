@@ -31,6 +31,7 @@
 | `protocol` | `Envelope` · `ErrorCode` |
 | `store` | `storePaths` · `readText` · `transact` · `previewText` · `writableReason` · `TransactResult` |
 | `policy` | `createResolver` · `normalizeCwd` · `Decision` · `Resolver` |
+| `ops` | `parseCommands` · `filesOf` · `MAX_COMMANDS` · `OpSpec` · `OpTable` · `StoreFile` |
 
 ## 版本
 

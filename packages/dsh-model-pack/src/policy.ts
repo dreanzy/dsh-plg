@@ -13,7 +13,8 @@
 
 import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { previewText, transact } from '@dreanzy/dsh-pack-core'
+import { filesOf, previewText, transact } from '@dreanzy/dsh-pack-core'
+import { OPS } from './ops.js'
 import { dshHomePath } from '@deepseek-ai/dsh-home-paths'
 import {
   DEFAULT_PACK,
@@ -359,29 +360,6 @@ export interface PromptTierPatch {
 }
 
 /**
- * 命令落到哪个文件。
- *
- * 用 `Record<PackCommand['op'], ...>` 声明：新增一个 op 时编译器会强制补齐这张表，
- * 不会出现「新命令被接受、却悄悄不落盘」。
- */
-type CommandTarget = 'packs' | 'prompts' | 'bindings'
-
-const COMMAND_TARGET: Readonly<Record<PackCommand['op'], CommandTarget>> = {
-  putPack: 'packs',
-  packSession: 'packs',
-  packTier: 'packs',
-  createPack: 'packs',
-  duplicatePack: 'packs',
-  renamePack: 'packs',
-  deletePack: 'packs',
-  bind: 'bindings',
-  showChip: 'packs',
-  defaultTab: 'packs',
-  putPrompts: 'prompts',
-  resetPrompts: 'prompts',
-}
-
-/**
  * 单个文件一次写事务。
  *
  * 骨架在 `@dreanzy/dsh-pack-core`：建父目录、拿锁、读、判、改、原子写。这里只决定
@@ -518,15 +496,12 @@ function applyToPacks(
         break
       }
       case 'renamePack': {
-        if (command.packId === DEFAULT_PACK_ID) {
-          warnings.push('默认 pack 不可改名，已忽略')
-          break
-        }
+        // 与另外三个 manager 同一口径：命令本身不合法就抛，由 transact 的 mutate
+        // 捕获成 { ok: false }，路由回错误信封。记 warning 后继续会让面板显示成功、
+        // 实际什么都没发生。
+        if (command.packId === DEFAULT_PACK_ID) throw new Error('默认 pack 不可改名')
         const pack = packs[command.packId]
-        if (pack === undefined) {
-          warnings.push(`pack「${command.packId}」不存在，改名已忽略`)
-          break
-        }
+        if (pack === undefined) throw new Error(`未知 pack：${command.packId}`)
         const name = command.name.trim()
         if (name === '') {
           warnings.push('pack 名不能为空，已忽略')
@@ -540,14 +515,8 @@ function applyToPacks(
         break
       }
       case 'deletePack': {
-        if (command.packId === DEFAULT_PACK_ID) {
-          warnings.push('默认 pack 不可删除，已忽略')
-          break
-        }
-        if (!Object.hasOwn(packs, command.packId)) {
-          warnings.push(`pack「${command.packId}」不存在，删除已忽略`)
-          break
-        }
+        if (command.packId === DEFAULT_PACK_ID) throw new Error('默认 pack 不可删除')
+        if (!Object.hasOwn(packs, command.packId)) throw new Error(`未知 pack：${command.packId}`)
         // 只删 pack 本身，绑定清理由 applyToBindings 负责（它也可能什么都不用清）。
         delete packs[command.packId]
         break
@@ -784,28 +753,15 @@ interface Targets {
   readonly bindings: boolean
 }
 
+/**
+ * 这批命令会碰到哪些文件。
+ *
+ * 落点表在 `ops.ts` 的 `OPS` 里（与另外三个 manager 同形），这里只把
+ * `ReadonlySet<StoreFile>` 摊成本包要的三个布尔。
+ */
 function targets(commands: readonly PackCommand[]): Targets {
-  let packs = false
-  let prompts = false
-  let bindings = false
-  for (const command of commands) {
-    switch (COMMAND_TARGET[command.op]) {
-      case 'packs':
-        packs = true
-        break
-      case 'prompts':
-        prompts = true
-        break
-      case 'bindings':
-        bindings = true
-        break
-      default:
-        break
-    }
-    // deletePack 还要清绑定，所以同时命中两个文件。
-    if (command.op === 'deletePack') bindings = true
-  }
-  return { packs, prompts, bindings }
+  const files = filesOf(commands, OPS)
+  return { packs: files.has('packs'), prompts: files.has('prompts'), bindings: files.has('bindings') }
 }
 
 /**

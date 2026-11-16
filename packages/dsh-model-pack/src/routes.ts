@@ -9,7 +9,9 @@
  * 前端只认信封；非 2xx 会让它丢掉 body，面板就只剩一句「请求失败」。
  */
 
-import type { PackCommand, PromptTierPatch } from './policy.js'
+import { parseCommands as parseCommandsTable } from '@dreanzy/dsh-pack-core'
+import type { PackCommand } from './policy.js'
+import { OPS } from './ops.js'
 
 /** 错误码与信封同其余三个包，定义在 `@dreanzy/dsh-pack-core`（见 ADR-0007）。 */
 export type { Envelope, ErrorCode }
@@ -74,53 +76,6 @@ export const ROUTES: { read: string; apply: string } = {
  */
 type ValidCommand = PackCommand
 
-const OPS: ReadonlySet<string> = new Set([
-  'putPack',
-  'packSession',
-  'packTier',
-  'createPack',
-  'duplicatePack',
-  'renamePack',
-  'deletePack',
-  'bind',
-  'showChip',
-  'defaultTab',
-  'putPrompts',
-  'resetPrompts',
-])
-
-/**
- * 提示词覆盖字段的字符上限。
- *
- * 这份文本进系统提示词，每次模型请求都完整发送。内置文本的预算断言只测内置值，
- * 用户覆盖必须单独设限，否则一次误粘贴就是 MB 级提示词。
- */
-const MAX_PROMPT_CHARS = 8000
-
-/** 与 pack.ts 的 `TIER_IDS` / `PROMPT_KEYS` 逐字一致；本层刻意不 import 那份类型。 */
-const TIER_IDS: readonly string[] = ['tier1', 'tier2', 'tier3', 'tier4']
-const PROMPT_TIER_IDS: readonly string[] = [...TIER_IDS]
-const PROMPT_KEYS: readonly string[] = ['delegation', ...PROMPT_TIER_IDS]
-const PROMPT_TIER_FIELDS: readonly ('label' | 'text')[] = ['label', 'text']
-
-/** 覆盖段的一个字段：`null` 删键（= 恢复内置），空串与纯空白一律拒绝。 */
-function readPromptField(
-  value: unknown,
-  at: string,
-): { ok: true; value: string | null } | { ok: false; message: string } {
-  if (value === null) return { ok: true, value: null }
-  if (typeof value !== 'string') return { ok: false, message: at + ' 必须是非空字符串或 null' }
-  if (value.trim() === '') {
-    return { ok: false, message: at + ' 不能为空串：恢复内置请用 null 或 resetPrompts' }
-  }
-  // 长度上限：这份文本进系统提示词，每次模型请求都完整发送。没有上限时一次误粘贴
-  // 就能让之后每个会话的每次请求都带上 MB 级提示词，token 成本与延迟同时爆炸。
-  if (value.length > MAX_PROMPT_CHARS) {
-    return { ok: false, message: at + ' 超过 ' + String(MAX_PROMPT_CHARS) + ' 字符' }
-  }
-  return { ok: true, value }
-}
-
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
@@ -159,199 +114,6 @@ function readCwd(body: Record<string, unknown> | null): { ok: true; cwd: string 
   // 空白串按缺省处理，但路径本身原样保留：目录名尾部的空白不归我们修剪。
   if (raw.trim() === '') return { ok: true, cwd: null }
   return { ok: true, cwd: raw }
-}
-
-/**
- * 校验命令数组。
- *
- * 只校验**形状**：op 是否已知、必填键的类型与取值域。pack 内容是否说得通交给
- * `parsePack` / `parseTier` 降级并留 warning——那里是宽容的，这里是严格的，
- * 因为这里拒绝的是「看不懂的指令」，那里降级的是「看得懂但不合理的配置」。
- *
- * 一条不合格就整批拒绝：部分写入会让 UI 显示半套配置，回滚又无从谈起。
- */
-function parseCommands(raw: unknown): { ok: true; commands: ValidCommand[] } | { ok: false; message: string } {
-  if (!Array.isArray(raw)) return { ok: false, message: 'commands 必须是数组' }
-  // 空批与其余三个 pack 包口径一致：拒绝。空批只会让前端误以为保存过一次。
-  if (raw.length === 0) return { ok: false, message: 'commands 不能为空' }
-
-  const commands: ValidCommand[] = []
-  /** 整条命令不合格：`commands[0] 不是对象`。 */
-  const bad = (index: number, message: string) => ({ ok: false as const, message: `commands[${index}] ${message}` })
-  /** 某个字段不合格：`commands[0].packId 必须是非空字符串`。 */
-  const badField = (index: number, field: string, message: string) => ({
-    ok: false as const,
-    message: `commands[${index}].${field} ${message}`,
-  })
-
-  const readId = (record: Record<string, unknown>, key: string): string | null => {
-    const value = record[key]
-    // 返回 trim 后的值：putPack 自己 trim，其余命令直接用 packs[packId]，
-    // 不 trim 会让「保存 pack 内容成功、改会话路由报不存在」。
-    return typeof value === 'string' && value.trim() !== '' ? value.trim() : null
-  }
-
-  for (const [index, entry] of raw.entries()) {
-    const record = isRecord(entry) ? entry : null
-    if (record === null) return bad(index, '不是对象')
-
-    const op = record['op']
-    if (typeof op !== 'string' || !OPS.has(op)) return bad(index, 'op 不是已知操作')
-
-    switch (op) {
-      case 'createPack': {
-        const name = record['name']
-        if (typeof name !== 'string' || name.trim() === '') return badField(index, 'name', '必须是非空字符串')
-        commands.push({ op: 'createPack', name })
-        break
-      }
-      case 'duplicatePack': {
-        const packId = readId(record, 'packId')
-        if (packId === null) return badField(index, 'packId', '必须是非空字符串')
-        // name 可省：省了由服务端按「原名 + 序号」生成，面板走的就是这条路。
-        const name = record['name']
-        if (name !== undefined && (typeof name !== 'string' || name.trim() === '')) {
-          return badField(index, 'name', '必须是非空字符串')
-        }
-        commands.push(name === undefined ? { op: 'duplicatePack', packId } : { op: 'duplicatePack', packId, name })
-        break
-      }
-      case 'renamePack': {
-        const packId = readId(record, 'packId')
-        if (packId === null) return badField(index, 'packId', '必须是非空字符串')
-        const name = record['name']
-        if (typeof name !== 'string' || name.trim() === '') return badField(index, 'name', '必须是非空字符串')
-        commands.push({ op: 'renamePack', packId, name })
-        break
-      }
-      case 'deletePack': {
-        const packId = readId(record, 'packId')
-        if (packId === null) return badField(index, 'packId', '必须是非空字符串')
-        commands.push({ op: 'deletePack', packId })
-        break
-      }
-      case 'putPack': {
-        const packId = readId(record, 'packId')
-        if (packId === null) return badField(index, 'packId', '必须是非空字符串')
-        const pack = record['pack']
-        if (!isRecord(pack)) return badField(index, 'pack', '必须是对象')
-        commands.push({ op: 'putPack', packId, pack })
-        break
-      }
-      case 'packSession': {
-        const packId = readId(record, 'packId')
-        if (packId === null) return badField(index, 'packId', '必须是非空字符串')
-        const session = record['session']
-        if (session !== null && !isRecord(session)) return badField(index, 'session', '必须是对象或 null')
-        commands.push({ op: 'packSession', packId, session })
-        break
-      }
-      case 'packTier': {
-        const packId = readId(record, 'packId')
-        if (packId === null) return badField(index, 'packId', '必须是非空字符串')
-        const tierId = record['tierId']
-        if (typeof tierId !== 'string' || !TIER_IDS.includes(tierId)) {
-          return badField(index, 'tierId', '必须是 ' + TIER_IDS.join(' / ') + ' 之一')
-        }
-        const tier = record['tier']
-        if (tier !== null && !isRecord(tier)) return badField(index, 'tier', '必须是对象或 null')
-        commands.push({ op: 'packTier', packId, tierId, tier })
-        break
-      }
-      case 'bind': {
-        const cwd = record['cwd']
-        if (typeof cwd !== 'string' || cwd.trim() === '') return badField(index, 'cwd', '必须是非空字符串')
-        const packId = record['packId']
-        // trim 后判空：纯空白会落成永久悬空绑定，面板显示一条无法解读的「绑定失效」。
-    if (packId !== null && (typeof packId !== 'string' || packId.trim() === '')) {
-          return badField(index, 'packId', '必须是 pack id 或 null')
-        }
-        commands.push({ op: 'bind', cwd, packId })
-        break
-      }
-      case 'showChip': {
-        const value = record['value']
-        if (typeof value !== 'boolean') return badField(index, 'value', '必须是布尔')
-        commands.push({ op: 'showChip', value })
-        break
-      }
-      case 'defaultTab': {
-        const value = record['value']
-        if (value !== 'packs' && value !== 'workspace' && value !== 'prompts') {
-          return badField(index, 'value', '必须是 packs、workspace 或 prompts')
-        }
-        commands.push({ op: 'defaultTab', value })
-        break
-      }
-      case 'putPrompts': {
-        const hasDelegation = Object.hasOwn(record, 'delegation')
-        const hasTiers = Object.hasOwn(record, 'tiers')
-        if (!hasDelegation && !hasTiers) {
-          return bad(index, '至少需要 delegation 或 tiers 之一')
-        }
-        const command: {
-          op: 'putPrompts'
-          delegation?: string | null
-          tiers?: Record<string, PromptTierPatch | null>
-        } = { op: 'putPrompts' }
-        if (hasDelegation) {
-          const field = readPromptField(record['delegation'], `commands[${index}].delegation`)
-          if (!field.ok) return field
-          command.delegation = field.value
-        }
-        if (hasTiers) {
-          const tiersRaw = record['tiers']
-          if (!isRecord(tiersRaw)) return badField(index, 'tiers', '必须是对象')
-          const tiers: Record<string, PromptTierPatch | null> = {}
-          for (const [key, value] of Object.entries(tiersRaw)) {
-            if (!PROMPT_TIER_IDS.includes(key)) {
-              return badField(index, 'tiers', '有不存在的档 id「' + key + '」')
-            }
-            if (value === null) {
-              tiers[key] = null
-              continue
-            }
-            if (!isRecord(value)) return badField(index, 'tiers.' + key, '必须是对象或 null')
-            const patch: { label?: string | null; text?: string | null } = {}
-            for (const field of PROMPT_TIER_FIELDS) {
-              if (!Object.hasOwn(value, field)) continue
-              const parsedField = readPromptField(value[field], `commands[${index}].tiers.${key}.${field}`)
-              if (!parsedField.ok) return parsedField
-              patch[field] = parsedField.value
-            }
-            tiers[key] = patch
-          }
-          command.tiers = tiers
-        }
-        commands.push(command)
-        break
-      }
-      case 'resetPrompts': {
-        const keysRaw = record['keys']
-        if (keysRaw === undefined || keysRaw === null) {
-          commands.push({ op: 'resetPrompts' })
-          break
-        }
-        if (!Array.isArray(keysRaw)) return badField(index, 'keys', '必须是字符串数组')
-        if (keysRaw.length === 0) return badField(index, 'keys', '不能为空数组：省略即全部恢复内置')
-        const keys: string[] = []
-        for (const [position, value] of keysRaw.entries()) {
-          if (typeof value !== 'string') return badField(index, 'keys[' + String(position) + ']', '必须是字符串')
-          const key = value.trim()
-          if (!PROMPT_KEYS.includes(key)) {
-            return badField(index, 'keys[' + String(position) + ']', '不是已知的键「' + value + '」')
-          }
-          keys.push(key)
-        }
-        commands.push({ op: 'resetPrompts', keys })
-        break
-      }
-      default:
-        return bad(index, 'op 不是已知操作')
-    }
-  }
-
-  return { ok: true, commands }
 }
 
 /**
@@ -424,7 +186,7 @@ export async function handleRead(deps: RouteDeps, body: Record<string, unknown> 
  */
 export async function handleApply(deps: RouteDeps, body: Record<string, unknown> | null): Promise<Envelope> {
   try {
-    const parsed = parseCommands(body?.['commands'])
+    const parsed = parseCommandsTable<PackCommand>(body?.['commands'], OPS)
     if (!parsed.ok) return badRequest(parsed.message)
     const dryRun = body?.['dryRun'] === true
 

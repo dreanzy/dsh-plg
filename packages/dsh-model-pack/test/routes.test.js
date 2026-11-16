@@ -265,10 +265,10 @@ test('apply：duplicatePack 的坏形状逐条拒绝', async () => {
   const { deps } = depsFor(home)
 
   for (const [command, match] of [
-    [{ op: 'duplicatePack' }, /commands\[0\]\.packId/],
-    [{ op: 'duplicatePack', packId: '' }, /commands\[0\]\.packId/],
-    [{ op: 'duplicatePack', packId: 'p1', name: '  ' }, /commands\[0\]\.name/],
-    [{ op: 'duplicatePack', packId: 'p1', name: 7 }, /commands\[0\]\.name/],
+    [{ op: 'duplicatePack' }, /commands\[0\] packId/],
+    [{ op: 'duplicatePack', packId: '' }, /commands\[0\] packId/],
+    [{ op: 'duplicatePack', packId: 'p1', name: '  ' }, /commands\[0\] name/],
+    [{ op: 'duplicatePack', packId: 'p1', name: 7 }, /commands\[0\] name/],
   ]) {
     const result = await handleApply(deps, { commands: [command] })
     assert.equal(result.ok, false, JSON.stringify(command))
@@ -276,7 +276,7 @@ test('apply：duplicatePack 的坏形状逐条拒绝', async () => {
   }
 })
 
-test('apply：default 不可删除、不可改名，走 warning 而不是错误信封', async () => {
+test('apply：default 不可删除、不可改名，回错误信封而不是假装成功', async () => {
   const home = await tempRoot()
   const { deps } = depsFor(home)
 
@@ -286,11 +286,11 @@ test('apply：default 不可删除、不可改名，走 warning 而不是错误�
       { op: 'renamePack', packId: DEFAULT_PACK_ID, name: '顶替' },
     ],
   })
-  // 形状合法、语义被 policy 拒绝：路由不把它当错误，面板靠 warnings 显示。
-  assert.equal(result.ok, true)
-  assert.ok(result.value.state.warnings.some((warning) => warning.includes('不可删除')))
-  assert.ok(result.value.state.warnings.some((warning) => warning.includes('不可改名')))
-  assert.equal(result.value.state.packs.packs.default.name, '默认')
+  // 形状合法、语义被 policy 拒绝：写盘失败必须回错误信封，回 ok 等于告诉用户
+  // 「保存成功」，重启后配置回退且界面上没有任何线索。
+  assert.equal(result.ok, false)
+  assert.equal(result.error.code, 'internal')
+  assert.match(result.error.message, /默认 pack 不可删除/)
 })
 
 test('apply：packSession 与 packTier 编辑 pack 内容', async () => {
@@ -398,14 +398,14 @@ test('apply：坏形状逐条指出下标', async () => {
   const { deps } = depsFor(home)
 
   const cases = [
-    { commands: [{ op: 'putPack', packId: 'standard' }], match: /commands\[0\]\.pack 必须是对象/ },
-    { commands: [{ op: 'putPack', packId: '', pack: STANDARD }], match: /commands\[0\]\.packId/ },
-    { commands: [{ op: 'deletePack' }], match: /commands\[0\]\.packId/ },
-    { commands: [{ op: 'createPack', name: '  ' }], match: /commands\[0\]\.name/ },
+    { commands: [{ op: 'putPack', packId: 'standard' }], match: /commands\[0\] pack 必须是对象/ },
+    { commands: [{ op: 'putPack', packId: '', pack: STANDARD }], match: /commands\[0\] packId/ },
+    { commands: [{ op: 'deletePack' }], match: /commands\[0\] packId/ },
+    { commands: [{ op: 'createPack', name: '  ' }], match: /commands\[0\] name/ },
     { commands: [{ op: 'packTier', packId: 'p1', tierId: 'tier9', tier: null }], match: /tierId/ },
     { commands: [{ op: 'packTier', packId: 'p1', tierId: 'tier1', tier: 'x' }], match: /tier 必须是对象或 null/ },
     { commands: [{ op: 'packSession', packId: 'p1', session: 'x' }], match: /session 必须是对象或 null/ },
-    { commands: [{ op: 'bind', cwd: '', packId: null }], match: /commands\[0\]\.cwd/ },
+    { commands: [{ op: 'bind', cwd: '', packId: null }], match: /commands\[0\] cwd/ },
     { commands: [{ op: 'bind', cwd: 'C:\\work', packId: 1 }], match: /packId/ },
     { commands: [{ op: 'showChip', value: 'yes' }], match: /value 必须是布尔/ },
     { commands: [{ op: 'defaultTab', value: 'groups' }], match: /packs、workspace 或 prompts/ },

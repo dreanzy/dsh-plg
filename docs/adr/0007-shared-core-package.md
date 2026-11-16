@@ -30,6 +30,7 @@ ADR-0002 记的是"重复的基础设施约 150 行，对三包 13672 行约 1%"
 | `store` 的落盘骨架（原子写、`<cwd>/.dsh/<包名>.json`、`$DSH_HOME/<包名>/`） | 路径规则是四包共有的外部契约 |
 | `store` 的写事务（`transact` / `previewText` / `writableReason`） | 四份骨架逐字相同，只有失败约定不同；试算与真写共用同一条前置判定，否则预览会显示一个永远不会发生的状态 |
 | `policy` 的层 / 覆盖 / 跟随求值链 | plugin↔skill 0.90；各包的条目 schema 仍留在自己包里 |
+| `ops` 的命令协议骨架（`OpSpec` / `OpTable` / `parseCommands` / `filesOf` / `MAX_COMMANDS`） | 四份 `parseCommands` 骨架逐字相同；`OpSpec` 的六个字段也各声明一次。加一个 op 要同步四个文件 |
 | `effective` 的 `{ complete, rows, isOpen }` 骨架 | 三个包已同形，mcp 刚补齐 complete |
 | `snapshot` 的缓存骨架（`read` / `refresh` / `invalidate` / `stats` 与键规则） | 两包形状一致，键规则各留参数 |
 | 协议类型（`Envelope` / `ErrorCode` / 宿主 ctx 最小面） | 四份定义已经漂移（model 的 `ErrorCode` 少了 `'unknown-session'`）。`RouteContext` 本身三份逐字相同，随 `session` 一起进 core |
@@ -71,7 +72,8 @@ ADR-0002 已否掉一次，理由不变：只想管 skill 的人不该被迫跟 
 - **源码安装仍然要求 core 先发版**：`github:<owner>/<repo>#<sha>&path:/packages/<pkg>` 会解析包的 `dependencies`，core 没发布就装不上。这是抽包的真实代价，不是可以绕过的细节。
 - **entry id 与包名都不能撞**：同 id 的 Loader 条目会被静默复用覆盖（`store[id] ??=`），两个 active 来源解析到同一包名会让客户端组合失败。
 - **客户端仍是复制品**：规则只有一份（core 的表），实现有四份。守护靠测试而不是生成：改 core 会让四包用例变红，改客户端那份同样。代价是每加一个 op 要动一次客户端；收益是不给手写单文件加构建链。
-- 五个 manager 的 `ops` 表（D5）：服务端的 union 与表已落地；客户端的 `pendingKey` 以 core 的 `PENDING_KEY_RULES` 为单一真源，由测试守护，不再各自演化。
+- 五个 manager 的 `ops` 表（D5）：骨架在 core，四包各自提供 `parse` 与 `apply*` 的 adapter。`OpSpec.key` 已删——它全仓零消费点，队列键由 core 的 `pendingKeyOf` 直接查表；客户端的 `pendingKey` 以 `PENDING_KEY_RULES` 为单一真源，由测试守护。
+- **`apply*` 的批处理语义留在包里**：skill/plugin/mcp 的 `OpSpec.apply*` 是「一条命令一次」，model 的 `applyTo*` 是「一次遍历处理整批」。core 只收 `parse` 与 `files`，不强行统一批处理。
 - **`resolveSession` 的 null 语义仍归各包**：mcp 的 `handleApply` 在解析不出会话时拒绝写入，skill 与 plugin 继续写入并降级为全局视图。这是行为差异，不是重复代码，core 只负责「sessionId → 结论」，null 之后怎么用由调用方决定。
 - **重新审视的条件**：若 core 的接口开始因为四包需求被迫长出开关参数（而不是收窄），说明边界切错了，应退回按包拆分。
 

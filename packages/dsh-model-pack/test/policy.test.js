@@ -457,19 +457,21 @@ test('写入：renamePack 改显示名，id 不动', async () => {
   assert.equal(packs.p1.name, '前端组')
 })
 
-test('写入：default 不可删除、不可改名', async () => {
+test('写入：default 不可删除、不可改名，抛错由 transact 收成 warning', async () => {
   const home = await tempRoot()
   await applyCommands(null, [{ op: 'createPack', name: '前端' }], { home })
   const before = await readFile(packsPath({ home }), 'utf8')
 
+  // 与另外三个 manager 同一口径：命令本身不合法就抛，由 transact 的 mutate 捕获。
+  // 记 warning 后继续会让面板显示成功、实际什么都没发生。
   const state = await applyCommands(null, [
     { op: 'deletePack', packId: DEFAULT_PACK_ID },
     { op: 'renamePack', packId: DEFAULT_PACK_ID, name: '顶替' },
   ], { home })
 
   assert.equal(await readFile(packsPath({ home }), 'utf8'), before)
-  assert.ok(state.warnings.some((warning) => warning.includes('不可删除')))
-  assert.ok(state.warnings.some((warning) => warning.includes('不可改名')))
+  assert.ok(state.warnings.some((warning) => warning.includes('默认 pack 不可删除')))
+  assert.equal(state.written, false, '写失败必须让路由回错误信封')
   assert.equal((await readPacks(home)).packs.default.name, '默认')
 })
 
@@ -612,7 +614,7 @@ test('试算：应用在内存里，返回同一份视图且不创建任何文�
   assert.equal(written.binding, preview.binding)
 })
 
-test('试算：非法命令只记 warning，合法命令仍然生效', async () => {
+test('试算：非法命令整批跳过，文件一个字节都不动', async () => {
   const home = await tempRoot()
   const cwd = await tempRoot()
   await applyCommands(null, [{ op: 'createPack', name: '前端' }], { home })
@@ -623,9 +625,9 @@ test('试算：非法命令只记 warning，合法命令仍然生效', async () 
     { op: 'packTier', packId: 'p1', tierId: 'tier2', tier: { name: '速办', primary: ROUTE, fallbacks: [] } },
   ], { home })
 
-  // 坏命令只留说明；同时的那条合法命令照样进视图。
+  // 与真写同一条口径：命令非法就整批不应用，而不是「部分生效」。
   assert.ok(preview.warnings.some((warning) => warning.includes('ghost')))
-  assert.equal(preview.packs.packs.p1.tiers.tier2.name, '速办')
+  assert.equal(preview.packs.packs.p1.tiers.tier2, undefined)
   // 文件一个字节都没动。
   assert.equal(await readFile(packsPath({ home }), 'utf8'), before)
 })
