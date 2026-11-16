@@ -547,7 +547,9 @@ export function parseCommands(raw: unknown): { ok: true; commands: Command[] } |
 export function filesOf(commands: readonly Command[]): ReadonlySet<StoreFile> {
   const files = new Set<StoreFile>()
   for (const command of commands) {
-    const spec = OPS[command.op]
+    // 命令已经过 parseCommands 校验，这里只防原型链键。
+    const spec = Object.hasOwn(OPS, command.op) ? OPS[command.op] : undefined
+    if (spec === undefined) continue
     for (const file of spec.files) files.add(file)
   }
   return files

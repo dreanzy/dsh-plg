@@ -565,7 +565,9 @@ export function parseCommands(
     if (record === null) return { ok: false, message: `commands[${String(index)}] 不是对象` }
     const op = record['op']
     if (typeof op !== 'string') return { ok: false, message: `commands[${String(index)}] op 不是已知操作` }
-    const spec = (OPS as Record<string, OpSpec | undefined>)[op]
+    // hasOwn：`OPS['toString']` 拿到的是 Object.prototype.toString，不是 undefined，
+    // 会让 spec.parse 抛 TypeError 并被报成 internal 而不是 bad-request。
+    const spec = Object.hasOwn(OPS, op) ? (OPS as Record<string, OpSpec | undefined>)[op] : undefined
     if (spec === undefined) return { ok: false, message: `commands[${String(index)}] op 不是已知操作` }
     const parsed = spec.parse(record)
     if (typeof parsed === 'string') return { ok: false, message: `commands[${String(index)}] ${parsed}` }
@@ -578,7 +580,10 @@ export function parseCommands(
 export function filesOf(commands: readonly Command[]): ReadonlySet<StoreFile> {
   const files = new Set<StoreFile>()
   for (const command of commands) {
-    for (const file of OPS[command.op].files) files.add(file)
+    // 命令已经过 parseCommands 校验，这里只防原型链键。
+    const spec = Object.hasOwn(OPS, command.op) ? OPS[command.op] : undefined
+    if (spec === undefined) continue
+    for (const file of spec.files) files.add(file)
   }
   return files
 }

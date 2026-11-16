@@ -536,3 +536,10 @@ test('同一个 dryRun 请求连发两次结果一致：命令是绝对状态，
   assert.deepEqual(second.value.warnings, first.value.warnings)
   assert.equal(first.value.packs.length, 2)
 })
+test('原型链上的 op 被当成未知操作，不是 internal', () => {
+  for (const op of ['toString', 'constructor', '__proto__', 'hasOwnProperty']) {
+    const parsed = parseCommands([{ op }])
+    assert.equal(parsed.ok, false, op)
+    assert.match(parsed.message, /不是已知操作/u)
+  }
+})
