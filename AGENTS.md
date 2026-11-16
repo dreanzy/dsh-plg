@@ -74,5 +74,12 @@ web 服务有浏览器认证栅栏：无 cookie 的 `/api/*` 请求一律 401。
 
 - `git checkout -- <path>` 可用。`git show <ref>:<path> > file` 与 `| Out-File` 都不可用（管道/重定向）。批量裁剪脚本改坏文件时，先 `git checkout` 恢复再重做，不要试图从管道拼回原文。
 
+**后台任务与端口**：
+
+- 端到端要起 web 服务，用 `run_in_background` 起，**不要用 `cmd /c "dsh ... > log 2>&1"`**：外层 `cmd` 会一直等 dsh 退出，dsh 又因为端口被占一直重试，两者互相卡死，日志文件也被占着删不掉。
+- **端口被占时 dsh 的报错藏在 stderr**：`listen EADDRINUSE` 会让 `webserver` 插件判成 failed，但前台跑时这条被管道限制吞掉，表现是「进程起来了但端口不通」。换端口（3199 → 3201 → 3202）比重试快。
+- **`job_kill` 只杀 job 本身，不保证杀掉它派生的子进程**。清理要两边都查：`job_list` 里没有 `running`，且 `Get-Process | Where-Object { $_.ProcessName -match 'dsh|node' }` 为空。只查一边会留下占着端口的孤儿进程，下一次启动就撞 `EADDRINUSE`。
+- 清理 `.tmp/e2e` 前先确认进程已退：文件被占着时 `Remove-Item -Force` 会静默失败，`Test-Path` 仍返回 `True`。
+
 **判据**：报错文本里出现 `\\.\pipe\LOCAL\dotnet_` 或 `EPERM` 且路径在 `~` 下，就是沙箱，不是代码问题。不要重试同一条命令，换上面任一条绕开路径。
 
