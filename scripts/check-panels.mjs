@@ -84,6 +84,58 @@ const RULES = {
   },
 }
 
+/**
+ * 界面基调红线里能用字符串表达的那几条（见 docs/ui-baseline.md）。
+ *
+ * 只收「当前已满足、且回潮会静默坏掉」的：不测渲染，测的是「这条纪律还在不在」。
+ * 真正的样式正确性要真渲染才看得见，这里挡的是回潮。
+ */
+const BASELINE = [
+  {
+    // 红线 12：宿主的设置弹层把 Esc 当「关闭面板」。不拦的话，改名改到一半按 Esc
+    // 以为在反悔，结果整个面板连带未保存的改动一起没了。
+    name: '每个 onKeyDown 都拦 Esc',
+    check(source) {
+      const handlers = source.match(/onKeyDown:s*(event)s*=>s*{/g) ?? []
+      const stopEscape = (source.match(/stopEscape(event)/g) ?? []).length
+      const inline = (source.match(/event.key === 'Escape'/g) ?? []).length
+      // 每个内联 handler 要么自己判 Escape，要么调 stopEscape；两者加起来要够。
+      return handlers.length === 0 || stopEscape + inline >= handlers.length
+    },
+    detail: '有 onKeyDown 没拦 Esc：宿主的设置弹层会把它当「关闭面板」',
+  },
+  {
+    // 红线 13：设置页在 settings.section，chip 弹层在 shell.overlay，是两棵没有父子
+    // 关系的 DOM。样式表只在一处渲染，另一处的按钮就只剩内联尺寸。
+    name: '样式表在两个挂载点各注入一次',
+    check(source) {
+      return (source.match(/CHIP_CSS/g) ?? []).length >= 2 && (source.match(/PANEL_CSS/g) ?? []).length >= 2
+    },
+    detail: 'CHIP_CSS / PANEL_CSS 只被引用一次：另一个挂载点的按钮会落回浏览器默认样式',
+  },
+  {
+    // 红线 14：行同时有「当前」「待保存」和 hover 三种底色，内联写其中一种就把
+    // :hover 压死。统一用 data-state 让 CSS 决定叠加顺序。
+    name: '可点行的状态底色走 data-state',
+    check(source) {
+      return (source.match(/data-state/g) ?? []).length >= 2
+    },
+    detail: '没有 data-state：行状态底色只能内联，会把 :hover 压死',
+  },
+  {
+    // 红线 2：--dsw-alias-state-idle-primary 在暗色主题下解析成接近白色，与白色圆点
+    // 叠成一条纯白胶囊，开与关完全看不出。开关必须用反色。
+    name: '开关不用 state-idle-primary',
+    check(source) {
+      // 注释里提到它是允许的——`T` 的注释正是在解释「为什么不用它」。
+      // 只查代码：剥掉块注释与行注释再判。
+      const code = source.replace(/\/\*[\s\S]*?\*\//gu, '').replace(/^\s*\/\/.*$/gmu, '')
+      return !code.includes('--dsw-alias-state-idle-primary')
+    },
+    detail: '开关用了 --dsw-alias-state-idle-primary：暗色主题下会变成一条白条',
+  },
+]
+
 function loadFactory(path) {
   const captured = []
   // `process.platform` 必须给：沙箱里没有它时 `isWindows()` 恒为 false，而
@@ -161,6 +213,29 @@ for (const dir of dirs) {
         failures += 1
         console.error(label + ': 不应再出现 `' + needle + '`（派生已被预计算取代）')
       }
+    }
+  }
+}
+
+// 界面基调红线：对每个面板文件跑一遍。
+for (const dir of dirs) {
+  if (!dir.isDirectory()) continue
+  const clientDir = join(packagesDir, dir.name, 'client')
+  let files
+  try {
+    files = await readdir(clientDir)
+  } catch {
+    continue
+  }
+  for (const file of files) {
+    if (!file.endsWith('.js')) continue
+    const path = join(clientDir, file)
+    const label = dir.name + '/client/' + file
+    const source = readFileSync(path, 'utf8')
+    for (const rule of BASELINE) {
+      if (rule.check(source)) continue
+      failures += 1
+      console.error(label + ': ' + rule.name + ' —— ' + rule.detail)
     }
   }
 }
