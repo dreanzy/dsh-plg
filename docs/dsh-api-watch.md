@@ -55,6 +55,26 @@
 - 判据：比对 `packages/core/tools/src/schema.ts` 中 `defineTool` 返回对象的字段与 JSON Schema 形态
 - 退役：把 dsh-tools 加进依赖并改用 `defineTool`，或宿主导出构造器
 
+### subagent-activation-spec-shape
+
+- 包：`@deepseek-ai/dsh-subagent`
+- 复刻对象：`SubagentActivationSpec` 的形状 —— `provider` / `delivery` / `prompt` / `parent` / `agentOptions` / `cwd` / `maxDepth` / `signal` 全部在 **spec 顶层**，没有 `request` 这一层；`signal` 必填
+- 位置：`packages/dsh-model-pack/src/tools.ts:294`
+- 起始版本：0.2.2-rc.1
+- 为什么：`@deepseek-ai/dsh-subagent` 不在 dsh-model-pack 的依赖里，spec 只能以 `Record<string, unknown>` 手工构造，没有 import 宿主类型，签名比对抓不到。形状写错时 `startActivation` 在 `spec.parent.id` 处抛 `TypeError`，探测通过、启动失败，只在真正调用工具时暴露
+- 判据：比对 `dsh-subagent/src/types.ts` 的 `SubagentActivationSpec` 字段集与嵌套层级，并确认 `signal` 是否仍必填
+- 退役：把 `@deepseek-ai/dsh-subagent` 加进依赖并直接 import `SubagentActivationSpec` 类型，让编译器而不是测试来守这个形状
+
+### agent-teams-is-enabled
+
+- 包：`@deepseek-ai/dsh-agent-team`
+- 复刻对象：团队开关的读取方式 —— `agentTeams.isEnabled(agent)` 读根会话投影里的 `team/mode` 事件；开关是**会话级**，不是工作区级
+- 位置：`packages/dsh-model-pack/src/hooks.ts:200`
+- 起始版本：0.2.2-rc.3
+- 为什么：`@deepseek-ai/dsh-agent-team` 不在 dsh-model-pack 的依赖里，只能按服务名现取、按方法名现调。官方 `team:policy` 段（order 600）在团队开启时让模型用裸名 `subagent` 派成员，而本插件注册 `subagent_tier` 后会 deny 它——不读这个开关就无法只在团队开启时纠偏
+- 判据：`packages/dsh-model-pack/test/hooks.test.js` 断言 `agentTeams.isEnabled` 返回 true 时 `model-pack.team` 段文本非空、返回 false 或抛错时为空串
+- 退役：官方给 `systemPrompt` 段提供「按团队模式条件注入」的声明式入口，或 `team:policy` 段本身改为引用实际可用的委派工具
+
 ## blocked
 
 当前无条目。
