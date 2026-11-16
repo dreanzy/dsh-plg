@@ -31,14 +31,14 @@
 - 位置：`packages/dsh-mcp-pack/src/servers.ts:7`
 - 起始版本：0.2.2-rc.1
 - 为什么：宿主对 `serverName` 的约束，超出即无法挂载；本地逐字复刻
-- 判据：比对 dsh-mcp-client 的 `SERVER_NAME_PATTERN` 字符集与长度
-- 退役：升到 0.2.2-rc.2 后改为引用宿主导出的 `SERVER_NAME_PATTERN`
-- 备注：0.2.2-rc.2 已导出该常量，升版即可退役；本机仍在 rc.1
+- 判据：比对 dsh-mcp-client 的 `SERVER_NAME_PATTERN` 字符集与长度，并确认入口仍导出该常量
+- 退役：上游把该常量移出入口后，本地复刻成为唯一来源，条目转 `fragile`；或上游提供公开名校验入口
+- 备注：0.2.2-rc.3 入口已导出，但该导出登记在 `scripts/plugin-entry-existing-exports.ts` 的债务清单里（原文 "existing debt, not an approved exception"），随时可能被清理，不能当稳定 API 依赖
 
 ### mcp-server-config-shape
 
 - 包：`@deepseek-ai/dsh-mcp-client`
-- 复刻对象：`ServerDef` 形状对齐宿主 `Config` —— stdio 的 `command`/`args`/`env`/`cwd`，streamable-http 的 `url`/`headers`
+- 复刻对象：`ServerDef` 形状对齐宿主 `Config` —— stdio 的 `command`/`args`/`env`/`cwd`，streamable-http 的 `url`/`headers`；0.2.2-rc.3 起宿主另有 `startupTimeoutMs`/`closeTimeoutMs`/`expandTemplates`，本地未复刻
 - 位置：`packages/dsh-mcp-pack/src/servers.ts:10`
 - 起始版本：0.2.2-rc.1
 - 为什么：托管定义直接写进宿主的配置结构，字段增减不会编译报错，只会在运行时被忽略或拒绝
@@ -57,13 +57,4 @@
 
 ## blocked
 
-### model-pack-team-steering
-
-- 包：`@deepseek-ai/dsh-agent-team`
-- 想要：编排层引导 AgentTeam —— 按档位指定团队成员模型，共享成员与任务面板
-- 卡在：rc.1 无 `dsh-agent-team` 包，宿主不提供 `agentTeams` 服务
-- 起始版本：0.2.2-rc.1
-- 探测上游：查 `dsh-v*` tag 的 `packages/team/agent-team` 是否存在，导出是否含 `TeamService`，以及 `tool-agent-team` 的 inject 是否含 `agentTeams`
-- 探测本机：读 asar 的 `node_modules/@deepseek-ai` 下是否有 `dsh-agent-team` 与 `dsh-tool-agent-team`
-- 解除：上游提供 `agentTeams` 服务，且本机已具备该包
-- 备注：0.2.2-rc.2 上游已提供（`packages/team/agent-team` 导出 `TeamService`，`tool-agent-team` inject 含 `agentTeams`、`subagents`）；本机 rc.1 尚无，属「可升级」而非「可动手」
+当前无条目。
