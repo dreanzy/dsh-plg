@@ -65,6 +65,21 @@ ADR-0002 记的是"重复的基础设施约 150 行，对三包 13672 行约 1%"
 
 ADR-0002 已否掉一次，理由不变：只想管 skill 的人不该被迫跟 MCP 的版本走。本次决定不改变各包的发版粒度。
 
+### 抽 `dsh-ui-kit` 共享面板样式
+
+`docs/ui-baseline.md` 说「两个面板各有一份 `T` / `S`，约 200–290 行，几乎逐行相同」，并留了触发条件：等界面基调连续两次改动不再变动再抽。
+
+实测（2026-11-17）：四份 `T` 的键交集只有 7 个（并集 16），`S` 的键交集 73 个（并集 113）。**不是「几乎逐行相同」，是「骨架相同、细节各自演化」**。抽 `T` 的 7 个键收益太小；抽 `S` 的 73 个键会把「哪些键该共享」这个还没定的事固化下来。触发条件未满足，暂缓。
+
+### 删掉 `mcp/state.ts` 与 `plugin/capabilities.ts`
+
+两个模块的 interface 与 implementation 几乎等高，删除测试说它们是 pass-through。但：
+
+- `state.ts` 的 `target()` 有 6 行大小写兜底（「模型会把名字写成小写，而 serverName 是大小写敏感的」）。并进 `snapshot` 会让它的 interface 从「读缓存」变成「读缓存 + 名字匹配」，那是把 seam 画错。
+- `capabilities.ts` 的 66 行虽然浅，但注释解释了「一旦确认支持就不再回退」这条纪律，删了要重新找地方放。
+
+收益小、风险中等，不做。
+
 ## 后果
 
 - 四包各加一条依赖。**普通安装写 `dependencies` 就够**：解析锚点是 profile 根，core 会落到 `~/.dsh/profiles/<name>/node_modules` 顶层，四包都能原生解析，用户无需额外操作。
@@ -77,6 +92,8 @@ ADR-0002 已否掉一次，理由不变：只想管 skill 的人不该被迫跟 
 - **`apply*` 的批处理语义留在包里**：skill/plugin/mcp 的 `OpSpec.apply*` 是「一条命令一次」，model 的 `applyTo*` 是「一次遍历处理整批」。core 只收 `parse` 与 `files`，不强行统一批处理。
 - **`ROUTES` 常量留在包里**：路径是各包对外的 API 契约，写死比生成更清楚——`/api/skill-pack/global` 一眼能看出是哪个包的哪个路由。`registerRoutes` 只保证 `routes` 与 `handlers` 同键不错位。
 - **`resolveSession` 的 null 语义仍归各包**：mcp 的 `handleApply` 在解析不出会话时拒绝写入，skill 与 plugin 继续写入并降级为全局视图。这是行为差异，不是重复代码，core 只负责「sessionId → 结论」，null 之后怎么用由调用方决定。
+- **求值链的显示态归服务端**：`rank` / `landing` / `groupGlobal` / `groupWorkspace` / `diff` / `groupRanks` 由 `effective` 算好，客户端只渲染。`rank` 的取值是 `'explicit-on' | 'explicit-off' | 'follow-on' | 'follow-off'`，不是数字——数字在代码里没有注释，读的人要靠注释才知道 `2` 是「跟随且落到开」。`check-panels.mjs` 的 `mustNot` 守着客户端不再写一遍 `rankOf` / `diffOf` / `itemValue` / `groupValue` / `rowOpen`。
+- **`bind` 的队列键两边语义不同**：客户端按归一化后的 cwd 算（渲染处也按它查），服务端 `pendingKeyOf` 按原值算（归一化发生在落盘时）。其余 op 两边必须逐字相同，由四份 `test/client.test.js` 逐 op 比对。
 - **重新审视的条件**：若 core 的接口开始因为四包需求被迫长出开关参数（而不是收窄），说明边界切错了，应退回按包拆分。
 
 ## 参考

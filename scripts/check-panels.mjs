@@ -86,11 +86,15 @@ const RULES = {
 
 function loadFactory(path) {
   const captured = []
+  // `process.platform` 必须给：沙箱里没有它时 `isWindows()` 恒为 false，而
+  // `normalizeCwd` 在 Windows 下要转小写——那条分支在检查里永远走不到。
+  // 与各包 `test/client.test.js` 的 `loadClient` 保持同一份沙箱形状。
   const sandbox = {
     window: { __ModuleLoader__: { load: (entry) => captured.push(entry) } },
     console,
     setTimeout,
     clearTimeout,
+    process: { platform: 'win32' },
   }
   vm.runInNewContext(readFileSync(path, 'utf8'), sandbox, { filename: path })
   if (captured.length !== 1) throw new Error('模块没有通过 __ModuleLoader__.load 注册一次')

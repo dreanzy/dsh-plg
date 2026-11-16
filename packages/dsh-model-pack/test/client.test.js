@@ -27,13 +27,21 @@ const fakeReact = {
   useSyncExternalStore: (_subscribe, read) => read(),
 }
 
-function loadClient() {
+/**
+ * 把 client.js 装进一个假宿主。
+ *
+ * `platform` 必须显式给：沙箱里没有 `process` 时 `isWindows()` 恒为 false，
+ * 而 `normalizeCwd` 在 Windows 下要转小写——那条分支在测试里永远走不到，
+ * 生产上「bind 键两边算出来不等、待保存标记永不出现」就是这么漏的。
+ */
+function loadClient(platform = 'win32') {
   const captured = []
   const sandbox = {
     window: { __ModuleLoader__: { load: (entry) => captured.push(entry) } },
     console,
     setTimeout,
     clearTimeout,
+    process: { platform },
   }
   vm.runInNewContext(readFileSync(CLIENT, 'utf8'), sandbox, { filename: 'client.js' })
   assert.equal(captured.length, 1, '模块必须通过 __ModuleLoader__.load 注册一次')
@@ -86,7 +94,8 @@ test('待保存键覆盖每一类可覆盖命令', () => {
     [{ op: 'packTier', packId: 'p1', tierId: 'fast' }, 'packTier:p1:fast'],
     [{ op: 'putPack', packId: 'p1' }, 'pack:p1'],
     [{ op: 'renamePack', packId: 'p1' }, 'renamePack:p1'],
-    [{ op: 'bind', cwd: 'C:/w' }, 'bind:C:/w'],
+    // Windows 下 normalizeCwd 转小写：这条分支以前在沙箱里永远走不到。
+    [{ op: 'bind', cwd: 'C:/w' }, 'bind:c:/w'],
     // ADR-0006 记的差异：提示词补丁每条只带自己那几个键，按单键去重会丢键。
     [{ op: 'putPrompts' }, null],
     // 复制与新建同类：每条都是独立一次决定，没有可覆盖的目标。
@@ -94,10 +103,19 @@ test('待保存键覆盖每一类可覆盖命令', () => {
   ]
   for (const [command, expected] of CASES) {
     assert.equal(pendingKey(command), expected)
-    // 服务端与客户端算出来的键必须逐字相同，否则同一格改动不会被去重。
+    // bind 是唯一例外：客户端按归一化后的 cwd 算键（渲染处也按它查），服务端按原值
+    // 算（归一化发生在落盘时）。其余 op 两边必须逐字相同，否则同一格改动不会被去重。
+    if (command.op === 'bind') continue
     assert.equal(pendingKeyOf(command), expected, '服务端规则与客户端漂移了：' + String(command.op))
   }
   assert.equal(pendingKey({ op: 'unknown-op' }), null, '可覆盖之外的命令不落格')
+})
+
+test('待保存键在非 Windows 平台不转小写', () => {
+  // 同一份用例跑两遍：win32 转小写、linux 不转。两边算出来的键必须与服务端一致，
+  // 否则「这一行有没有未保存改动」在某个平台上永远为假。
+  const { pendingKey } = loadClient('linux').__internals
+  assert.equal(pendingKey({ op: 'bind', cwd: 'C:/w' }), 'bind:C:/w')
 })
 
 test('待保存队列：同键后写覆盖，键为 null 的命令各占一条', () => {
