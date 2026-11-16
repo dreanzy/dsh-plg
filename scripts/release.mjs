@@ -25,14 +25,26 @@ import { fileURLToPath } from 'node:url'
 
 const root = fileURLToPath(new URL('..', import.meta.url))
 const PLACEHOLDER = '0.0.0-stage'
-const REGISTRY = 'https://registry.npmjs.org'
+/**
+ * registry 地址。
+ *
+ * 必须跟随 `.npmrc`：`npm publish` 发到配置的 registry，而这里若写死 npmjs.org，
+ * 私有 registry 用户每次发布都会「查不到版本 → 等满 5 分钟 → 报未上线」，
+ * 实际已经发出去了。
+ */
+const REGISTRY = (process.env['npm_config_registry'] ?? 'https://registry.npmjs.org').replace(/\/+$/u, '')
 const POLL_INTERVAL_MS = 5000
 /**
  * 等待上线的时间上限。staged publishing 的审核不是毫秒级的事：实测
  * mcp-pack 与 skill-pack 都在 60 秒后才出现在 registry 上，npm 侧的
  * staged 队列偶尔要十几分钟。默认给 5 分钟，够用又不至于让人干等。
  */
-const POLL_TIMEOUT_MS = Number(process.env.DSH_PUBLISH_TIMEOUT_MS ?? 300000)
+const POLL_TIMEOUT_MS = (() => {
+  const raw = Number(process.env['DSH_PUBLISH_TIMEOUT_MS'] ?? 300000)
+  // 非法值（`5m`、空串）会变成 NaN 或 0，让 `while (Date.now() < deadline)` 立刻
+  // 为假，表现为「发布失败」而实际只是配置写错。
+  return Number.isFinite(raw) && raw > 0 ? raw : 300000
+})()
 /**
  * npm 的调用方式。Windows 上直接 spawn `npm.cmd` 会 EINVAL（Node 20+ 禁止
  * 不经 shell 执行 .cmd），所以统一走 node + npm-cli.js，跨平台且不依赖 shell。
@@ -73,7 +85,9 @@ function readManifest(dir) {
 /** registry 上这个包的全部版本，取不到时返回空数组。 */
 async function publishedVersions(name) {
   const url = `${REGISTRY}/${name.replace('/', '%2F')}`
-  const response = await fetch(url)
+  // 显式超时：没有 signal 时 fetch 依赖 undici 的 300 秒默认值，网络抖动会让
+  // 整个脚本卡住五分钟再抛一个无头无尾的堆栈。
+  const response = await fetch(url, { signal: AbortSignal.timeout(15000) })
   if (response.status === 404) return []
   if (!response.ok) throw new Error(`registry 返回 ${response.status}：${url}`)
   const body = await response.json()
@@ -84,7 +98,11 @@ async function publishedVersions(name) {
 async function waitForVersion(name, version) {
   const deadline = Date.now() + POLL_TIMEOUT_MS
   while (Date.now() < deadline) {
-    if ((await publishedVersions(name)).includes(version)) return true
+    try {
+      if ((await publishedVersions(name)).includes(version)) return true
+    } catch {
+      // 单次网络失败算一次轮询失败，继续下一轮；不要让它冒到 publishOne 崩掉脚本。
+    }
     await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS))
   }
   return false
@@ -184,6 +202,35 @@ async function ensureLogin() {
  * 只有发布这一小段窗口里改清单：工作区里的源码始终是 workspace:^，这样 pnpm 才会把
  * core link 成目录，而不是从 registry 装一份——后者会让改源码不再生效，且不报错。
  */
+/** 正在被临时改写的清单：中断时用它恢复。 */
+const pendingRestores = new Map()
+
+/**
+ * 中断时把清单恢复原样。
+ *
+ * `finally` 不覆盖 SIGINT/SIGTERM：发布中途 Ctrl+C 会把 `workspace:^` 永久改成
+ * `^0.1.0`，下次 `pnpm install` 从 registry 装 core 而不是 link 源码——改源码
+ * 不再生效，且不报错。
+ */
+function restoreAll() {
+  for (const [path, original] of pendingRestores) {
+    try {
+      writeFileSync(path, original, 'utf8')
+    } catch {
+      // 恢复失败只能靠 git checkout 兜底，这里不再抛。
+    }
+  }
+  pendingRestores.clear()
+}
+
+for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
+  process.on(signal, () => {
+    restoreAll()
+    process.exit(130)
+  })
+}
+process.on('exit', restoreAll)
+
 async function withRealCoreVersion(dir, run) {
   const path = join(root, 'packages', dir, 'package.json')
   const original = readFileSync(path, 'utf8')
@@ -192,10 +239,12 @@ async function withRealCoreVersion(dir, run) {
   const core = JSON.parse(readFileSync(join(root, 'packages', 'dsh-pack-core', 'package.json'), 'utf8'))
   const patched = original.replace(marker, '"@dreanzy/dsh-pack-core": "^' + core.version + '"')
   writeFileSync(path, patched, 'utf8')
+  pendingRestores.set(path, original)
   try {
     return await run()
   } finally {
     writeFileSync(path, original, 'utf8')
+    pendingRestores.delete(path)
   }
 }
 
@@ -214,7 +263,10 @@ async function publishOne(dir) {
   // 已提交但还在审核中的，绝不重发——npm 会报 403 且覆盖不了。
   let submitted = (await publishedVersions(name)).includes(version)
   if (submitted) {
-    console.log(`  ${version} 已在 registry 上，跳过发布`)
+    // 版本已在 registry 上：本地改动没发出去。以前这里打印「跳过发布」并返回
+    // ok: true，开发者以为发了新代码，下游装到的仍是旧版本。
+    console.error(`  ${version} 已在 registry 上：本地改动未发布。先改 package.json 的 version`)
+    return { name, version, ok: false }
   }
 
   while (!submitted) {

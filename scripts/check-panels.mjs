@@ -115,10 +115,13 @@ for (const dir of dirs) {
       continue
     }
     const source = readFileSync(path, 'utf8')
+    // 计数前先剥注释：`dryRun` 这类词在注释里出现 3-6 次，把代码里的用法删掉
+    // 计数仍然达标，断言形同虚设。
+    const code = source.replace(/\/\*[\s\S]*?\*\//gu, '').replace(/^\s*\/\/.*$/gmu, '')
     const rules = RULES[dir.name]
     if (rules === undefined) continue
     for (const [needle, count] of Object.entries(rules.must ?? {})) {
-      const actual = source.split(needle).length - 1
+      const actual = code.split(needle).length - 1
       if (actual < count) {
         failures += 1
         console.error(label + ': 缺少 `' + needle + '`（期望至少 ' + count + ' 处，实际 ' + actual + '）')
@@ -131,6 +134,11 @@ for (const dir of dirs) {
       }
     }
   }
+}
+
+if (checked === 0) {
+  console.error('panels: 没有加载到任何面板文件——目录改名或权限问题会让这条检查静默失效')
+  process.exit(1)
 }
 
 if (failures > 0) {

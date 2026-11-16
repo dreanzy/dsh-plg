@@ -15,7 +15,21 @@ import { join } from 'node:path'
 
 const root = fileURLToPath(new URL('..', import.meta.url))
 const packagesDir = join(root, 'packages')
-const FORBIDDEN = /(['"])s*--dsh-/g
+/**
+ * 判据：引号（单、双、反引号）之后、到下一个同类引号之前，出现 `--dsh-`。
+ *
+ * 覆盖 `'var(--dsh-x)'`、`" --dsh-x"`、`\`var(--dsh-x)\`` 三种写法。
+ * 旧版写成 `/(['"])s*--dsh-/`——`\s` 漏了反斜杠，实际匹配「引号后跟零个或多个
+ * 字母 s」，`var(--dsh-x)` 全部漏检，检查形同虚设。
+ */
+const FORBIDDEN = /(['"`])[^'"`]*--dsh-/g
+
+// 自测：判据本身失效时立刻红，而不是安静地放行一切。
+if (!FORBIDDEN.test("'var(--dsh-x)'")) {
+  console.error('ui-baseline: 自测失败——判据匹配不到 var(--dsh-x)')
+  process.exit(1)
+}
+FORBIDDEN.lastIndex = 0
 
 let violations = 0
 let scanned = 0
@@ -43,6 +57,11 @@ for (const entry of packages) {
     const lines = (await readFile(path, 'utf8')).split('\n')
     scanned += 1
     lines.forEach((line, index) => {
+      // 整行注释跳过：文档与注释本来就要解释「哪条不能用」。
+      // 只跳整行，不剥行内注释——字符串里的 `//`（URL 一类）会被误剥，
+      // 那会变成漏检。
+      const trimmed = line.trim()
+      if (trimmed.startsWith('//') || trimmed.startsWith('*') || trimmed.startsWith('/*')) return
       if (!FORBIDDEN.test(line)) return
       FORBIDDEN.lastIndex = 0
       violations += 1
@@ -50,6 +69,11 @@ for (const entry of packages) {
     })
     FORBIDDEN.lastIndex = 0
   }
+}
+
+if (scanned === 0) {
+  console.error('ui-baseline: 没有扫描到任何面板文件——目录改名或权限问题会让这条检查静默失效')
+  process.exit(1)
 }
 
 if (violations > 0) {
