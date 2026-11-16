@@ -41,16 +41,41 @@ const RULES = {
   'dsh-skill-pack': {
     must: { 'pack.id !== DEFAULT_PACK_ID': 1, 'dryRun': 1 },
     // 侧栏入口与单机开关已废弃：一旦回潮，就是又有人把面板挂回侧栏。
-    mustNot: ['sidebar.panellist', 'showSidebarEntry'],
+    // 求值链已收进服务端：客户端再写一遍 rankOf / diffOf / itemValue / groupValue
+    // 就是把链复制回来，显示态会与服务端静默漂移。
+    mustNot: [
+      'sidebar.panellist',
+      'showSidebarEntry',
+      'function rankOf(',
+      'function diffOf(',
+      'function itemValue(',
+      'function groupValue(',
+    ],
   },
   'dsh-plugin-pack': {
     must: { 'pack.id !== DEFAULT_PACK_ID': 1, 'dryRun': 1 },
-    mustNot: ['sidebar.panellist', 'showSidebarEntry'],
+    mustNot: [
+      'sidebar.panellist',
+      'showSidebarEntry',
+      'function rankOf(',
+      'function diffOf(',
+      'function itemValue(',
+      'function groupValue(',
+      'function rowOpen(',
+    ],
   },
   'dsh-mcp-pack': {
     must: { 'diagText': 2, 'pack.id !== DEFAULT_PACK_ID': 1, 'dryRun': 1 },
     // diag 的渲染表达式不再就地序列化：回潮就是把预计算改回每次渲染重做。
-    mustNot: ['sidebar.panellist', 'showSidebarEntry', '}, JSON.stringify(diag'],
+    // 求值链已收进服务端，理由同 skill。
+    mustNot: [
+      'sidebar.panellist',
+      'showSidebarEntry',
+      '}, JSON.stringify(diag',
+      'function rankOf(',
+      'function diffOf(',
+      'function groupValueOf(',
+    ],
   },
   'dsh-model-pack': {
     must: { '!pack.isDefault': 1, 'labelView': 2, 'dryRun': 1 },

@@ -1,7 +1,7 @@
 import type { Envelope, ErrorCode } from '@dreanzy/dsh-pack-core'
-import { cwdFromAgent, resolveSession, type RouteContext, type SessionResolution } from '@dreanzy/dsh-pack-core'
+import { cwdFromAgent, resolveSession, type Rank, type RouteContext, type SessionResolution } from '@dreanzy/dsh-pack-core'
 import { defaultPackOf } from './policy.js'
-import { effective } from './effective.js'
+import { effective, type EffectiveDiff } from './effective.js'
 import { isOfficialSkill, type SkillSummaryLike, type SkillsFace } from './inventory.js'
 import { applyCommands, previewCommands, type PolicyState } from './store.js'
 import type { ScopeSnapshot, SnapshotValue } from './snapshot.js'
@@ -73,6 +73,10 @@ export interface GlobalView {
   readonly bindings: Bindings
   readonly skills: readonly SkillRow[]
   readonly complete: boolean
+  /** 选中 pack 相对 default 的差异。浏览器只渲染，不再自己算。 */
+  readonly diff: readonly EffectiveDiff[]
+  /** 每个分组的排序档位。 */
+  readonly groupRanks: Readonly<Record<string, Rank>>
   readonly warnings: readonly string[]
   /** 已注册遮蔽但复验仍可见的名字。全局面板也要能提示「关不掉」。 */
   readonly stuck: readonly string[]
@@ -166,7 +170,7 @@ function buildRows(
   state: PolicyState,
   scope: 'global' | 'workspace',
   complete: boolean,
-): SkillRow[] {
+): { rows: SkillRow[]; diff: readonly EffectiveDiff[]; groupRanks: Readonly<Record<string, Rank>> } {
   const answer = effective({ policy: state, names: rows.map((row) => row.name), scope, complete })
   const answers = new Map(answer.rows.map((row) => [row.name, row]))
   const showOfficial = state.ui.showOfficialSkills
@@ -187,7 +191,7 @@ function buildRows(
       origin: originOf(row),
     })
   }
-  return out
+  return { rows: out, diff: answer.diff, groupRanks: answer.groupRanks }
 }
 
 function rootSkills(ctx: RouteContext): SkillsFace | null {
@@ -250,6 +254,7 @@ export async function handleGlobal(
     if (skills === null) return { ok: false, error: { code: 'internal', message: 'skills 服务不可用' } }
     const view = await readAnyView(ctx, deps, sessionId)
     const state = policy ?? view.policy
+    const built = buildRows(view.rows, state, 'global', view.complete)
     return {
       ok: true,
       value: {
@@ -257,8 +262,10 @@ export async function handleGlobal(
         ui: state.ui,
         groups: state.groups,
         bindings: state.bindings,
-        skills: buildRows(view.rows, state, 'global', view.complete),
+        skills: built.rows,
         complete: view.complete,
+        diff: built.diff,
+        groupRanks: built.groupRanks,
         warnings: view.warnings,
         stuck: deps.stuck(),
       },
@@ -288,6 +295,7 @@ async function buildWorkspaceView(
   const view = await deps.snapshot.refresh(cwd, agent)
   const state = policy ?? view.policy
   const defaultPack = defaultPackOf(state.packs)
+  const built = buildRows(view.rows, state, 'workspace', view.complete)
   return {
     ok: true,
     value: {
@@ -295,8 +303,10 @@ async function buildWorkspaceView(
       ui: state.ui,
       groups: state.groups,
       bindings: state.bindings,
-      skills: buildRows(view.rows, state, 'workspace', view.complete),
+      skills: built.rows,
       complete: view.complete,
+      diff: built.diff,
+      groupRanks: built.groupRanks,
       warnings: view.warnings,
       cwd,
       binding: state.binding,

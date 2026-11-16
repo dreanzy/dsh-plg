@@ -36,7 +36,18 @@ export {
   type TransactResult,
 } from './store.js'
 
-export { createResolver, normalizeCwd, type Decision, type GroupRegistryLike, type PackLike, type Resolver, type ResolverInput } from './policy.js'
+export {
+  createResolver,
+  normalizeCwd,
+  rankOf,
+  RANK_ORDER,
+  type Decision,
+  type GroupRegistryLike,
+  type PackLike,
+  type Rank,
+  type Resolver,
+  type ResolverInput,
+} from './policy.js'
 
 export { pendingKeyOf, PENDING_KEY_RULES, type PendingKeyCommand } from './pendingKeys.js'
 

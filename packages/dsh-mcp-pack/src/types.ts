@@ -159,6 +159,8 @@ export const EMPTY_BINDINGS: Bindings = { bindings: {} }
 export const EMPTY_UI: UiState = { showChip: true, defaultTab: 'groups' }
 export const EMPTY_GROUPS: GroupRegistry = { groups: [], assignments: {} }
 
+import type { Rank } from '@dreanzy/dsh-pack-core'
+
 /** 生效值来自 pack 的哪一级：行级记录、组级记录，还是两层都没有记录。 */
 export type DecisionVia = 'item' | 'group' | 'builtin'
 
@@ -178,6 +180,14 @@ export interface ResolvedRow {
   readonly itemWorkspace: boolean | null
   /** default pack 里这一行的项级记录；没有记录为 null（跟随到内置缺省）。 */
   readonly itemGlobal: boolean | null
+  /** default pack 里这一行所属组的组级记录；没有记录为 null。 */
+  readonly groupGlobal: boolean | null
+  /** 绑定 pack 里这一行所属组的组级记录；未绑定或没有记录为 null。 */
+  readonly groupWorkspace: boolean | null
+  /** 跟随时会落到的值：绑定 pack 的组级记录优先，否则 `openGlobal`。 */
+  readonly landing: boolean
+  /** 排序档位。四档的规则见 core 的 `rankOf`。 */
+  readonly rank: Rank
   /** 做出决定的 pack id；落到内置缺省时是 `default`。 */
   readonly decidedBy: string
   /** 生效值来自 pack 的哪一级。 */

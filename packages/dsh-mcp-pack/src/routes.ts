@@ -1,7 +1,7 @@
 import type { Envelope, ErrorCode } from '@dreanzy/dsh-pack-core'
-import { resolveSession, type RouteContext, type SessionResolution } from '@dreanzy/dsh-pack-core'
+import { resolveSession, type Rank, type RouteContext, type SessionResolution } from '@dreanzy/dsh-pack-core'
 import { scanRows } from './inventory.js'
-import { effective } from './effective.js'
+import { effective, type EffectiveDiff } from './effective.js'
 import { defaultPackOf, rowEntryOf } from './policy.js'
 import { parseServerDef, readOwned, removeServer, serversPath, updateOwned, upsertServer, type OwnedServers } from './servers.js'
 import { type ScopeSnapshot } from './snapshot.js'
@@ -77,6 +77,10 @@ export interface RowsView {
   readonly ui: UiState
   readonly groups: GroupRegistry
   readonly bindings: Bindings
+  /** 选中 pack 相对 default 的差异。浏览器只渲染，不再自己算。 */
+  readonly diff: readonly EffectiveDiff[]
+  /** 每个分组的排序档位。 */
+  readonly groupRanks: Readonly<Record<string, Rank>>
   /** 三份策略文件 + 托管定义的落盘位置，供面板显示「这些设置存在哪」。 */
   readonly paths: {
     readonly packs: string
@@ -161,6 +165,8 @@ async function buildView(
       ui: state.ui,
       groups: state.groups,
       bindings: state.bindings,
+      diff: evaluated.diff,
+      groupRanks: evaluated.groupRanks,
       paths: {
         packs: packsPath(),
         groups: groupsPath(),

@@ -29,6 +29,17 @@ window.__ModuleLoader__.load({
     const TITLE = 'Plugin Pack'
     /** 内置 pack 的 id。未绑定的工作区按它求值。 */
     const DEFAULT_PACK_ID = 'default'
+
+/**
+ * 排序档位的序。与 core 的 `RANK_ORDER` 逐字一致——浏览器半边走不了服务端模块，
+ * 只能复制；`test/client.test.js` 逐档比对两边，漂移立刻红。
+ */
+const RANK_ORDER = {
+  'explicit-on': 0,
+  'explicit-off': 1,
+  'follow-on': 2,
+  'follow-off': 3,
+}
     /** 工作区清单上限：会话一多，绑定表会变成一堵墙。 */
     const MAX_WORKSPACES = 30
 
@@ -1409,17 +1420,7 @@ window.__ModuleLoader__.load({
       return null
     }
 
-    /** pack 里的项级显式值；没有键返回 null（跟随）。 */
-    function itemValue(pack, name) {
-      const value = pack && pack.items ? pack.items[name] : undefined
-      return typeof value === 'boolean' ? value : null
-    }
 
-    /** pack 里的组级显式值；没有键返回 null（跟随）。 */
-    function groupValue(pack, groupId) {
-      const value = pack && pack.groups ? pack.groups[groupId] : undefined
-      return typeof value === 'boolean' ? value : null
-    }
 
     /** 一行的开关键：插件包名。服务端把它放在 `pkg` 上，命令里用的也是它。 */
     function itemKey(row) {
@@ -1451,23 +1452,6 @@ window.__ModuleLoader__.load({
       return null
     }
 
-    /**
-     * 排序档位：显式开 0、显式关 1、跟随且落到开 2、跟随且落到关 3。
-     *
-     * 两种跟随在界面上长得一样，但一个等于开、一个等于关，混在同一档里
-     * 用户没法按状态扫读。
-     *
-     * `default` 没有上一层，它的「未记录」就等于开，所以直接归 0——否则同一屏会
-     * 出现「排在跟随档、按钮却亮在开上」的错位。
-     */
-    function rankOf(value, isDefault, inherited) {
-      if (value === true) return 0
-      if (value === false) return 1
-      if (isDefault) return 0
-      // 落点未知（目录没扫全）按跟随档排：档位只是视觉分段，不拿它表达不确定性。
-      if (inherited !== true && inherited !== false) return 2
-      return inherited ? 2 : 3
-    }
 
     /**
      * 求值用的组 id：优先取宿主下发的 `groupId`，它不校验组是否还在注册表里——
@@ -1478,23 +1462,6 @@ window.__ModuleLoader__.load({
       return gid !== '' ? gid : groupOfRow(groups, row)
     }
 
-    /**
-     * 这一行在某张 pack 下的显示态：项级记录 → 组级记录 → 宿主下发的答案。
-     *
-     * 链的尾部（default pack → 内置缺省）由服务端算好放在行的 `open` 上；这里只
-     * 拼各层原始记录，不重算链——求值链只有 `src/effective.ts` 一份。答案缺失
-     * （目录残缺）时返回 null。
-     */
-    function rowOpen(pack, groups, row, inherited) {
-      const own = itemValue(pack, itemKey(row))
-      if (own !== null) return own
-      const gid = rowGroupOf(groups, row)
-      if (gid !== null) {
-        const byGroup = groupValue(pack, gid)
-        if (byGroup !== null) return byGroup
-      }
-      return inherited === true || inherited === false ? inherited : null
-    }
 
     function groupNameOf(groups, groupId) {
       for (const group of groups || []) {
@@ -1689,38 +1656,6 @@ window.__ModuleLoader__.load({
 
     // ---------- 弹层 ----------
 
-    /**
-     * 当前 pack 相对 default 的差异：分组在上，插件在下。
-     *
-     * 只列「记录过、且与 default 取值不同」的键。没有键是「不表态」，与 default
-     * 同值的记录不改变任何结果——两者都不算「差在哪」。
-     */
-    function diffOf(data) {
-      const packs = Array.isArray(data.packs) ? data.packs : []
-      const pack = packById(packs, data.packId)
-      const fallback = defaultPackOf(packs)
-      const groups = data.groups || { groups: [], assignments: {} }
-      const rows = []
-      // 组已从注册表删掉时没有名字可显示：那是悬空引用，不是差异。
-      for (const group of groups.groups || []) {
-        const own = groupValue(pack, group.id)
-        if (own === null) continue
-        const base = groupValue(fallback, group.id)
-        if (own === (base === null ? true : base)) continue
-        rows.push({ key: 'group:' + group.id, isGroup: true, name: group.name, on: own })
-      }
-      for (const row of Array.isArray(data.plugins) ? data.plugins : []) {
-        const name = itemKey(row)
-        if (name === '') continue
-        const own = itemValue(pack, name)
-        if (own === null) continue
-        const gid = groupOfRow(groups, row)
-        const base = itemValue(fallback, name) ?? (gid === null ? null : groupValue(fallback, gid))
-        if (own === (base === null ? true : base)) continue
-        rows.push({ key: 'item:' + name, isGroup: false, name: name, on: own })
-      }
-      return rows
-    }
 
     /**
      * chip 的弹层：这张 pack 与默认差在哪，就地切换。
@@ -1789,7 +1724,8 @@ window.__ModuleLoader__.load({
 
       // 生效的 pack 就是 default 时没有差异可言：整块只留一句说明。
       const usingDefault = data !== null && (data.binding === null || data.packId === DEFAULT_PACK_ID)
-      const rows = data !== null && !usingDefault ? diffOf(data) : []
+      // 差异由服务端算好：浏览器不再自己走一遍求值链。
+      const rows = data !== null && !usingDefault && Array.isArray(data.diff) ? data.diff : []
       /*
        * 平铺全部 pack 而不是「当前值 + 下拉」：下拉要先展开才看得全，
        * 而这里的选择本来就是「挨个看看别人是什么样」。
@@ -2611,21 +2547,23 @@ window.__ModuleLoader__.load({
         // 顺序是「开 > 关 > 跟随(开) > 跟随(关)」：显式决定过的排在前面，
         // 跟随项再按它实际会落到开还是关分档。同档按包名排。
         //
-        // 待保存期间排序键取自改动前的那份视图（`sortPack`）：否则拨一个开关就把行
-        // 挪到另一档，下一次点击会落在别的行上。
+        // 档位由服务端算好（core 的 rankOf）：浏览器只按它排，不再自己走求值链。
+        const rankOfRow = (row) => RANK_ORDER[row.rank] ?? RANK_ORDER['follow-on']
         return visible.sort((a, b) => {
-          const left = rankOf(itemValue(sortPack, itemKey(a)), isDefault, rowOpen(sortPack, groups, a, a.open))
-          const right = rankOf(itemValue(sortPack, itemKey(b)), isDefault, rowOpen(sortPack, groups, b, b.open))
+          const left = rankOfRow(a)
+          const right = rankOfRow(b)
           if (left !== right) return left - right
           return itemKey(a).localeCompare(itemKey(b), 'zh')
         })
       }, [plugins, groups, query, sortPack, isDefault])
 
       /** 分组同样「开 > 关 > 跟随(开) > 跟随(关)」。 */
+      const groupRanks = data.groupRanks || {}
       const orderedGroups = useMemo(() => {
         return [...groups.groups].sort((a, b) => {
-          const left = rankOf(groupValue(sortPack, a.id), isDefault, groupValue(sortDefault, a.id) ?? true)
-          const right = rankOf(groupValue(sortPack, b.id), isDefault, groupValue(sortDefault, b.id) ?? true)
+          // 组级档位同样由服务端算：groupRanks 与行的 rank 用同一条规则。
+          const left = RANK_ORDER[groupRanks[a.id]] ?? RANK_ORDER['follow-on']
+          const right = RANK_ORDER[groupRanks[b.id]] ?? RANK_ORDER['follow-on']
           if (left !== right) return left - right
           // 兜底按「改动前」的名字：否则改个组名，这一组就跳到新位置。
           const leftName = frozen && baseGroupName.has(a.id) ? baseGroupName.get(a.id) : a.name
@@ -2656,10 +2594,9 @@ window.__ModuleLoader__.load({
         for (const row of plugins) {
           const gid = groupOfRow(groups, row)
           if (gid === null) continue
-          const byGroup = groupValue(pack, gid)
-          const groupEffective = byGroup !== null ? byGroup : groupValue(defaultPack, gid)
+          const groupEffective = row.groupWorkspace ?? row.groupGlobal
           if (groupEffective === null) continue
-          if (rowOpen(pack, groups, row, row.open) !== groupEffective) {
+          if (row.open !== groupEffective) {
             counts[gid] = (counts[gid] || 0) + 1
           }
         }
@@ -2679,7 +2616,7 @@ window.__ModuleLoader__.load({
         for (const row of plugins) {
           if (itemKey(row) === '') continue
           // 只数「确定关掉」的行：落点未知时按开算，宁可少报省下的量。
-          if (rowOpen(pack, groups, row, row.open) !== false) continue
+          if (row.open !== false) continue
           count += 1
           volume += weightOf(row)
         }
@@ -2904,9 +2841,11 @@ window.__ModuleLoader__.load({
           groups.groups.length === 0
             ? h('div', { style: S.hint }, '还没有分组。到「分组」页新建，或直接在下面逐项设置。')
             : orderedGroups.map((group) => {
-                const value = groupValue(pack, group.id)
+                const rank = groupRanks[group.id]
+                const value =
+                  rank === 'explicit-on' ? true : rank === 'explicit-off' ? false : null
                 // 组的落点：这张 pack 没记录时看 default 的组记录，再退到内置缺省（开）。
-                const inherited = groupValue(defaultPack, group.id) ?? true
+                const inherited = rank === 'follow-off' ? false : true
                 return h(
                   'div',
                   {
@@ -2965,11 +2904,10 @@ window.__ModuleLoader__.load({
             ? h('div', { style: S.empty }, plugins.length === 0 ? '还没有识别到任何插件。' : '没有匹配的插件')
             : items.map((row) => {
                 const name = itemKey(row)
-                const value = itemValue(pack, name)
+                const value = row.itemWorkspace
                 const gid = groupOfRow(groups, row)
-                const inherited = rowOpen(pack, groups, row, row.open)
-                // 落点未知时只写「跟随」：写成开或关都是替宿主编答案。
-                const followLabel = inherited === null ? '跟随' : inherited ? '跟随（开）' : '跟随（关）'
+                const inherited = row.landing
+                const followLabel = inherited ? '跟随（开）' : '跟随（关）'
                 return h(
                   'div',
                   {

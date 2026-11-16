@@ -55,3 +55,24 @@ Single-context layout: one `GLOSSARY.md` at the repo root plus `docs/adr/`. See 
 - 隔离 profile 用完即删，不留在 `~/.dsh/profiles/` 下。
 
 web 服务有浏览器认证栅栏：无 cookie 的 `/api/*` 请求一律 401。端到端脚本要先完成认证——用 `~/.dsh/.credentials.yaml` 里的签名 secret 自签 cookie，或从启动 URL 的 `?token=` 换。凭据只在本机用，不进提交、不进文档。
+
+### 沙箱限制与绕开
+
+本机 DSH 文件沙箱是 `workspace-write`，且**强制不完整**（`File sandbox enforcement is partial`）。下面几条是实测踩到的，不是猜测。
+
+**写不出去的位置**：
+
+- `~/.dsh/profiles/` —— `dsh <name> --from-default-profile web` 默认写这里，报 `EPERM: mkdtemp` 或 `EPERM: open ... cordis.yml`。**绕开**：先 `$env:DSH_HOME = (Resolve-Path .tmp/e2e/home).Path`，再跑 `dsh`。profile 落在工作区内，用完连 `.tmp/e2e` 一起删。
+- `~/AppData/Local/pnpm-store-operation-locks/` —— `pnpm --filter <pkg> test` 报 `ERR_PNPM_STORE_DIR_OPEN_OPERATION_LOCK`。**绕开**：不进 pnpm，直接 `node --test --test-isolation=none test/`（在包目录下），或 `node node_modules/.pnpm/typescript@5.9.3/node_modules/typescript/bin/tsc -p tsconfig.json`（在仓库根下）。
+
+**管道被拦**：
+
+- `<program> | <cmdlet>` 会报 `Access to the path '\\.\pipe\LOCAL\dotnet_...' is denied`。这是沙箱禁止程序打开命名管道，不是命令写错。**绕开**：不用管道，改用程序自己的输出参数（`git show <ref>:<path> --output=<file>`）或先落盘再读。注意 `--output=` 在部分 git 版本上同样静默失败（文件 0 字节），落盘后要 `Test-Path` + 查大小。
+- `npx <tool>` 会先跑 `npx.ps1` 里的 `$NPM_PREFIX=(& $NODE_EXE ...)`，同样撞管道限制，报错但 `exit code` 仍是 0 —— **看起来成功，实际没跑**。**绕开**：直接 `node <path-to-bin>`。
+
+**恢复被误改的文件**：
+
+- `git checkout -- <path>` 可用。`git show <ref>:<path> > file` 与 `| Out-File` 都不可用（管道/重定向）。批量裁剪脚本改坏文件时，先 `git checkout` 恢复再重做，不要试图从管道拼回原文。
+
+**判据**：报错文本里出现 `\\.\pipe\LOCAL\dotnet_` 或 `EPERM` 且路径在 `~` 下，就是沙箱，不是代码问题。不要重试同一条命令，换上面任一条绕开路径。
+

@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { createResolver, normalizeCwd } from '../lib/index.js'
+import { createResolver, normalizeCwd, rankOf, RANK_ORDER } from '../lib/index.js'
 
 /**
  * 求值链与 cwd 归一。
@@ -48,4 +48,25 @@ test('指向已删分组的残留归属不参与求值', () => {
   const resolver = createResolver({ pack, packId: 'p1', defaultPack: { items: {}, groups: {} }, groups })
   assert.equal(resolver.decide('a').via, 'builtin')
   assert.equal(resolver.groupOf('a'), undefined)
+})
+test('rankOf：四档与落点未知', () => {
+  // 显式记录优先，与落点无关。
+  assert.equal(rankOf(true, false, false), 'explicit-on')
+  assert.equal(rankOf(false, false, true), 'explicit-off')
+  // default 自己没有上一层，未记录就等于开。
+  assert.equal(rankOf(null, true, true), 'explicit-on')
+  // 跟随：按落点分两档。
+  assert.equal(rankOf(null, false, true), 'follow-on')
+  assert.equal(rankOf(null, false, false), 'follow-off')
+  // 落点未知按跟随档排：档位只是视觉分段，不拿它表达不确定性。
+  assert.equal(rankOf(null, false, null), 'follow-on')
+})
+
+test('RANK_ORDER：显式在前，跟随在后', () => {
+  assert.deepEqual(RANK_ORDER, {
+    'explicit-on': 0,
+    'explicit-off': 1,
+    'follow-on': 2,
+    'follow-off': 3,
+  })
 })

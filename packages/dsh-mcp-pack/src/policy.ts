@@ -1,5 +1,5 @@
 export { normalizeCwd }
-import { normalizeCwd } from '@dreanzy/dsh-pack-core'
+import { normalizeCwd, rankOf } from '@dreanzy/dsh-pack-core'
 import {
   DEFAULT_MODE,
   DEFAULT_PACK_ID,
@@ -418,6 +418,12 @@ interface EnabledPick extends FieldPick<boolean> {
   readonly via: DecisionVia
 }
 
+/** pack 里的组级显式值；没有键或没有组返回 `null`（跟随）。 */
+function groupValueOf(pack: McpPack | null, groupId: string | null): boolean | null {
+  if (pack === null || groupId === null || !Object.hasOwn(pack.groups, groupId)) return null
+  return pack.groups[groupId] ?? null
+}
+
 /**
  * `enabled` 的求值：行级 → 组级 → 上一层的行级 → 上一层的组级 → 开。
  *
@@ -498,6 +504,11 @@ export function resolveRow(
   const tools = pickField<readonly string[]>(rowKey, defaultPack, 'tools')
   const description = pickField<string>(rowKey, defaultPack, 'description')
 
+  const itemWorkspace = pack?.rows[rowKey]?.enabled ?? null
+  const itemGlobal = defaultPack.rows[rowKey]?.enabled ?? null
+  const groupWorkspace = groupValueOf(pack, groupId)
+  const groupGlobal = groupValueOf(defaultPack, groupId)
+  const landing = groupWorkspace ?? (global.value ?? !declaredDisabled)
   return {
     rowKey,
     groupId,
@@ -506,8 +517,12 @@ export function resolveRow(
     mode: mode.value ?? DEFAULT_MODE,
     tools: tools.value ?? [],
     description: description.value ?? '',
-    itemWorkspace: pack?.rows[rowKey]?.enabled ?? null,
-    itemGlobal: defaultPack.rows[rowKey]?.enabled ?? null,
+    itemWorkspace,
+    itemGlobal,
+    groupGlobal,
+    groupWorkspace,
+    landing,
+    rank: rankOf(itemWorkspace, pack === null, landing),
     decidedBy: enabled.source === 'pack' ? packId : DEFAULT_PACK_ID,
     decidedVia: enabled.via,
   }

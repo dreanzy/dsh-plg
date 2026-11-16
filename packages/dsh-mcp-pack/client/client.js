@@ -30,6 +30,17 @@ window.__ModuleLoader__.load({
     const TITLE = 'MCP Pack'
     /** 内置 pack 的 id。未绑定的工作区按它求值。 */
     const DEFAULT_PACK_ID = 'default'
+
+/**
+ * 排序档位的序。与 core 的 `RANK_ORDER` 逐字一致——浏览器半边走不了服务端模块，
+ * 只能复制；`test/client.test.js` 逐档比对两边，漂移立刻红。
+ */
+const RANK_ORDER = {
+  'explicit-on': 0,
+  'explicit-off': 1,
+  'follow-on': 2,
+  'follow-off': 3,
+}
     /** 工作区清单上限：会话一多，绑定表会变成一堵墙。 */
     const MAX_WORKSPACES = 30
 
@@ -1490,12 +1501,6 @@ window.__ModuleLoader__.load({
       return policyOf(defaultPack, rowKeyOf(row))
     }
 
-    /** pack 里的组级显式值；没有键返回 null（跟随）。 */
-    function groupValueOf(pack, groupId) {
-      const groups = pack && pack.groups && typeof pack.groups === 'object' ? pack.groups : null
-      const value = groups === null ? undefined : groups[groupId]
-      return typeof value === 'boolean' ? value : null
-    }
 
     /**
      * 这一行属于哪个组。
@@ -1515,21 +1520,6 @@ window.__ModuleLoader__.load({
       return '未分组'
     }
 
-    /**
-     * 排序档位：显式开 0、显式关 1、跟随且落到开 2、跟随且落到关 3。
-     *
-     * 跟随要按「实际会落到哪」再分一次：两种跟随在界面上长得一样，但一个等于开、
-     * 一个等于关，混在同一档里用户没法按状态扫读。
-     *
-     * `default` 没有上一层，它的「未记录」就等于开，所以直接归 0——否则同一屏会
-     * 出现「排在跟随档、按钮却亮在开上」的错位。
-     */
-    function rankOf(value, isDefault, inherit) {
-      if (value === true) return 0
-      if (value === false) return 1
-      if (isDefault) return 0
-      return inherit ? 2 : 3
-    }
 
     /**
      * 已知工作区：从会话列表里取 cwd，排除子代理会话，按最近更新倒序去重，
@@ -1705,47 +1695,6 @@ window.__ModuleLoader__.load({
 
     // ---------- 弹层 ----------
 
-    /**
-     * 当前 pack 相对 default 的差异：分组在上，行在下。
-     *
-     * 只列「记录过、且与 default 取值不同」的键。没有键是「不表态」，与 default
-     * 同值的记录不改变任何结果——两者都不算「差在哪」。
-     */
-    function diffOf(data) {
-      const packs = Array.isArray(data.packs) ? data.packs : []
-      const pack = packById(packs, data.packId)
-      // 生效 pack 查不到时无从比较：返回空差异，不假造条目。
-      if (pack === null) return []
-      const fallback = defaultPackOf(packs)
-      const groups = groupsOf(data)
-      const rows = []
-      // 组已从注册表删掉时没有名字可显示：那是悬空引用，不是差异。
-      for (const group of groups.groups) {
-        const own = groupValueOf(pack, group.id)
-        if (own === null) continue
-        const base = groupValueOf(fallback, group.id)
-        if (own === (base === null ? true : base)) continue
-        rows.push({ key: 'group:' + group.id, isGroup: true, name: group.name, on: own })
-      }
-      for (const row of rowsOf(data)) {
-        const rowKey = rowKeyOf(row)
-        if (rowKey === '') continue
-        const entry = policyOf(pack, rowKey)
-        if (entry === null) continue
-        const baseEntry = policyOf(fallback, rowKey)
-        const item = { key: 'row:' + rowKey, isGroup: false, name: rowNameOf(row), on: null }
-        if (typeof entry.enabled === 'boolean') {
-          const baseEnabled = baseEntry && typeof baseEntry.enabled === 'boolean' ? baseEntry.enabled : true
-          if (entry.enabled !== baseEnabled) item.on = entry.enabled
-        }
-        // `mode` / `tools` / `description` 只在内置 `default` 里求值，分包不读它们。
-        // 把它们标成「差异」会让用户以为那条键有效，实际不影响任何结果。
-        if (item.on === null) continue
-        rows.push(item)
-      }
-      return rows
-    }
-
 
     /**
      * 策略文件的告警。
@@ -1848,7 +1797,8 @@ window.__ModuleLoader__.load({
 
       // 生效的 pack 就是 default 时没有差异可言：整块只留一句说明。
       const usingDefault = data !== null && (data.binding === null || data.packId === DEFAULT_PACK_ID)
-      const rows = data !== null && !usingDefault ? diffOf(data) : []
+      // 差异由服务端算好：浏览器不再自己走一遍求值链。
+      const rows = data !== null && !usingDefault && Array.isArray(data.diff) ? data.diff : []
       /** 试算后的绑定：点一行就会变成它，但还没保存。 */
       const bound =
         data !== null && data.binding !== null && hasPack(data.packs, data.binding) ? data.binding : DEFAULT_PACK_ID
@@ -2810,9 +2760,8 @@ window.__ModuleLoader__.load({
       const enabled = fieldOf(pack, rowKey, 'enabled')
       const source = rowSourceOf(row)
       // 「跟随」不是一种状态值，而是一个待求值的位置：告诉用户它此刻落到开还是关，
-      // 否则三态里那个中间项等于什么也没说。选中 pack 的组记录优先，其余由宿主
-      // 按 default 求出的值决定——链只在宿主那边走一次。
-      const landing = groupValueOf(pack, gid) ?? row.openGlobal
+      // 否则三态里那个中间项等于什么也没说。落点由服务端算好（`row.landing`）。
+      const landing = row.landing
       // 迁移可能把老的三个字段带进非 default 的 pack。MCP 页只读 default，看不到这些
       // 覆盖；这里只提示，绝不删数据。
       const overridden =
@@ -3100,26 +3049,25 @@ window.__ModuleLoader__.load({
                 return gid !== null && hitGroups.has(gid)
               })
         // 顺序是「开 > 关 > 跟随(开) > 跟随(关)」：显式决定过的排在前面，
-        // 跟随项再按它会落到开还是关区分。落点与 RowLine 同一套：选中 pack 的组记录
-        // 优先，其余是宿主按 default 求出的值。同档按 server 名排。
+        // 跟随项再按它会落到开还是关区分。同档按 server 名排。
         //
-        // 待保存期间排序键取自改动前的那份视图（`sortPack`）：否则拨一个开关就把行
-        // 挪到另一档，下一次点击会落在别的行上。
-        const landingOf = (row) => groupValueOf(sortPack, groupIdOf(row)) ?? row.openGlobal
+        // 档位由服务端算好（core 的 rankOf）：浏览器只按它排，不再自己走求值链。
+        const rankOfRow = (row) => RANK_ORDER[row.rank] ?? RANK_ORDER['follow-on']
         return visible.sort((a, b) => {
-          const left = rankOf(fieldOf(sortPack, rowKeyOf(a), 'enabled'), isDefault, landingOf(a))
-          const right = rankOf(fieldOf(sortPack, rowKeyOf(b), 'enabled'), isDefault, landingOf(b))
+          const left = rankOfRow(a)
+          const right = rankOfRow(b)
           if (left !== right) return left - right
           return rowNameOf(a).localeCompare(rowNameOf(b), 'zh') || rowKeyOf(a).localeCompare(rowKeyOf(b))
         })
       }, [rows, groups, query, sortPack, sortDefault, isDefault])
 
       /** 分组同样「开 > 关 > 跟随(开) > 跟随(关)」；跟随落点用 default 的组记录。 */
+      const groupRanks = data.groupRanks || {}
       const orderedGroups = useMemo(() => {
-        const inheritOf = (gid) => groupValueOf(sortDefault, gid) ?? true
         return [...groups.groups].sort((a, b) => {
-          const left = rankOf(groupValueOf(sortPack, a.id), isDefault, inheritOf(a.id))
-          const right = rankOf(groupValueOf(sortPack, b.id), isDefault, inheritOf(b.id))
+          // 组级档位同样由服务端算：groupRanks 与行的 rank 用同一条规则。
+          const left = RANK_ORDER[groupRanks[a.id]] ?? RANK_ORDER['follow-on']
+          const right = RANK_ORDER[groupRanks[b.id]] ?? RANK_ORDER['follow-on']
           if (left !== right) return left - right
           // 兜底按「改动前」的名字：否则改个组名，这一组就跳到新位置。
           const leftName = frozen && baseGroupName.has(a.id) ? baseGroupName.get(a.id) : a.name
@@ -3333,8 +3281,10 @@ window.__ModuleLoader__.load({
           groups.groups.length === 0
             ? h('div', { style: S.hint }, '还没有分组。到「分组」页新建，或直接在下面逐行设置。')
             : orderedGroups.map((group) => {
-                const value = groupValueOf(pack, group.id)
-                const inherited = groupValueOf(defaultPack, group.id) ?? true
+                const rank = groupRanks[group.id]
+                const value =
+                  rank === 'explicit-on' ? true : rank === 'explicit-off' ? false : null
+                const inherited = rank === 'follow-off' ? false : true
                 return h(
                   'div',
                   {

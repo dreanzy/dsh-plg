@@ -1,7 +1,7 @@
 import type { Envelope, ErrorCode } from '@dreanzy/dsh-pack-core'
 import { candidateTools, defaultCatalogFeed, type CatalogFeed } from './catalog.js'
-import { resolveSession, type RouteContext, type SessionResolution } from '@dreanzy/dsh-pack-core'
-import { effective, type EffectiveRow } from './effective.js'
+import { resolveSession, type Rank, type RouteContext, type SessionResolution } from '@dreanzy/dsh-pack-core'
+import { effective, type EffectiveDiff, type EffectiveRow } from './effective.js'
 import type { Support, ToolSchemaLike, ToolsFace } from './hooks.js'
 import { defaultPackOf } from './policy.js'
 import { applyCommands, loadState, previewCommands, type PolicyState } from './store.js'
@@ -69,6 +69,16 @@ export interface PluginRow {
   readonly itemWorkspace: boolean | null
   /** `default` pack 里这一项的项级记录；跟随为 `null`。 */
   readonly itemGlobal: boolean | null
+  /** 只按 default pack 求值的值。它与目录是否完整无关。 */
+  readonly openGlobal: boolean
+  /** default pack 里这一项所属组的组级记录；没有键为 `null`。 */
+  readonly groupGlobal: boolean | null
+  /** 工作区绑定的 pack 里这一项所属组的组级记录；没有键为 `null`。 */
+  readonly groupWorkspace: boolean | null
+  /** 跟随时会落到的值：选中 pack 的组级记录优先，否则 `openGlobal`。 */
+  readonly landing: boolean
+  /** 排序档位。四档的规则见 core 的 `rankOf`。 */
+  readonly rank: Rank
   /** 做出决定的 pack id；落到内置缺省时是 `default`。 */
   readonly decidedBy: string
   readonly decidedVia: 'item' | 'group' | 'builtin'
@@ -105,6 +115,10 @@ export interface PluginView {
   readonly outOfScope: readonly string[]
   /** 目录还没扫完。前端据此把空的归属显示成「识别中」而不是「未知」。 */
   readonly pending: boolean
+  /** 选中 pack 相对 default 的差异。浏览器只渲染，不再自己算。 */
+  readonly diff: readonly EffectiveDiff[]
+  /** 每个分组的排序档位。 */
+  readonly groupRanks: Readonly<Record<string, Rank>>
 }
 
 export interface WorkspaceView extends PluginView {
@@ -327,16 +341,15 @@ function buildPluginView(input: BuildInput): PluginView {
 
   // 求值用全量包名：面板是否列官方插件只影响列表，不该连带改变它们的开关。
   // 目录残缺时 `open` 为 `null`，行上显示「未生效」——比硬报开或关诚实。
-  const answers = new Map<string, EffectiveRow>(
-    effective({
-      policy: loaded,
-      names: plugins.map((plugin) => plugin.pkg),
-      // 全局视图的 `loadState(null)` 里 `pack` 本来就是 `null`，同一段代码对两种视图都对：
-      // 没有绑定时链自然只剩 default 层。
-      scope: 'workspace',
-      complete: catalog !== null && catalog.complete !== false,
-    }).rows.map((row) => [row.name, row] as const),
-  )
+  const answer = effective({
+    policy: loaded,
+    names: plugins.map((plugin) => plugin.pkg),
+    // 全局视图的 `loadState(null)` 里 `pack` 本来就是 `null`，同一段代码对两种视图都对：
+    // 没有绑定时链自然只剩 default 层。
+    scope: 'workspace',
+    complete: catalog !== null && catalog.complete !== false,
+  })
+  const answers = new Map<string, EffectiveRow>(answer.rows.map((row) => [row.name, row] as const))
 
   const showOfficial = loaded.ui.showOfficialPlugins === true
   const officialTotal = plugins.filter((plugin) => plugin.pkg.startsWith(OFFICIAL_SCOPE)).length
@@ -370,8 +383,13 @@ function buildPluginView(input: BuildInput): PluginView {
       protected: PROTECTED_PACKAGES.has(plugin.pkg),
       groupId: answer.groupId,
       open: answer.open,
+      openGlobal: answer.openGlobal,
       itemWorkspace: answer.itemWorkspace,
       itemGlobal: answer.itemGlobal,
+      groupGlobal: answer.groupGlobal,
+      groupWorkspace: answer.groupWorkspace,
+      landing: answer.landing,
+      rank: answer.rank,
       decidedBy: answer.decidedBy,
       decidedVia: answer.decidedVia,
     })
@@ -400,6 +418,8 @@ function buildPluginView(input: BuildInput): PluginView {
     support: deps.support(),
     outOfScope: [...extras].sort(),
     pending,
+    diff: answer.diff,
+    groupRanks: answer.groupRanks,
   }
 }
 

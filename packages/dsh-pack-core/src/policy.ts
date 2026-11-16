@@ -24,6 +24,43 @@ export function normalizeCwd(cwd: string | null): string | null {
   return unified
 }
 
+
+/**
+ * 一行的排序档位。
+ *
+ * 四档：显式开、显式关、跟随且落到开、跟随且落到关。两种跟随在界面上长得一样，
+ * 但一个等于开、一个等于关，混在同一档里用户没法按状态扫读。
+ *
+ * `default` 没有上一层，它的「未记录」就等于开，所以直接归 `explicit-on`——否则
+ * 同一屏会出现「排在跟随档、按钮却亮在开上」的错位。
+ *
+ * 落点未知（清单没扫全）按跟随档排：档位只是视觉分段，不拿它表达不确定性。
+ */
+export type Rank = 'explicit-on' | 'explicit-off' | 'follow-on' | 'follow-off'
+
+/** 档位的排序序：显式在前，跟随在后，同档内按名字。 */
+export const RANK_ORDER: Readonly<Record<Rank, number>> = {
+  'explicit-on': 0,
+  'explicit-off': 1,
+  'follow-on': 2,
+  'follow-off': 3,
+}
+
+/**
+ * 算一行的档位。
+ *
+ * `explicit` 是这一行在**当前 pack** 里的显式记录（`null` 表示跟随）；
+ * `isDefault` 表示当前看的正是 `default` 自己（它没有上一层）；
+ * `landing` 是跟随时会落到的值，`null` 表示落点未知。
+ */
+export function rankOf(explicit: boolean | null, isDefault: boolean, landing: boolean | null): Rank {
+  if (explicit === true) return 'explicit-on'
+  if (explicit === false) return 'explicit-off'
+  if (isDefault) return 'explicit-on'
+  if (landing === null) return 'follow-on'
+  return landing ? 'follow-on' : 'follow-off'
+}
+
 /** 一次求值的结论：值、做出决定的 pack，以及落在 pack 的哪一级。 */
 export interface Decision {
   readonly value: boolean
