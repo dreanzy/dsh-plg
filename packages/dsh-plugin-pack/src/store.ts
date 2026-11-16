@@ -347,10 +347,20 @@ export async function previewCommands(
 ): Promise<PolicyState> {
   const warnings: string[] = []
   const files = filesOf(commands)
+  // 读失败各自兜底：真写路径会把读失败降级成 warning 并跳过那份文件，
+  // 试算若直接抛，面板的「改了会是什么样」整块报错而保存却能成功。
+  const readOr = async (path: string, label: string): Promise<string | undefined> => {
+    try {
+      return await readText(path)
+    } catch (error) {
+      warnings.push(`${label} 读取失败，试算按空策略处理：${reasonOf(error)}`)
+      return undefined
+    }
+  }
   const [packsCurrent, groupsCurrent, workspacesCurrent] = await Promise.all([
-    readText(packsPath()),
-    readText(groupsPath()),
-    readText(workspacesPath()),
+    readOr(packsPath(), 'packs.json'),
+    readOr(groupsPath(), 'groups.json'),
+    readOr(workspacesPath(), 'workspaces.json'),
   ])
 
   let packsText = packsCurrent

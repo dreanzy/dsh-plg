@@ -476,8 +476,9 @@ test('候选归属：唯一才认领，两包同名与已被 tools 认领的都�
   const byPkg = candidateTools(catalog)
   assert.deepEqual([...byPkg.get('a')], ['only_a'])
   assert.deepEqual([...byPkg.get('b')], ['only_b'])
-  // 同一份目录按身份缓存。
-  assert.equal(candidateTools(catalog), byPkg)
+  // 不缓存：每次返回新 Map，内容相同。`readCachedCatalog` 每次新建对象，
+  // 按身份缓存永远 miss，删掉比修它便宜。
+  assert.deepEqual(candidateTools(catalog), byPkg)
 })
 
 test('旧格式缓存（没有 names）不短路扫描：升级后自动补齐', async () => {
@@ -500,3 +501,28 @@ test('旧格式缓存（没有 names）不短路扫描：升级后自动补齐',
 })
 
 
+test('main 指向包目录外时拒绝，不把别的包的工具记到本包名下', async () => {
+  const home = await freshHome('main-escape')
+  const profile = join(home, 'profile')
+  await makeProfile(profile, {
+    victim: { files: { 'lib/index.js': tool('victim_tool') } },
+    evil: { main: '../victim/lib/index.js', files: {} },
+  })
+  process.env['DSH_PROFILE_DIR'] = profile
+  const catalog = await defaultCatalogFeed.load({ force: true })
+  const evil = catalog.plugins.find((p) => p.pkg === 'evil')
+  assert.equal(evil.tools.includes('victim_tool'), false, 'evil 不得认领 victim 的工具')
+})
+
+test('超大 js 被跳过时置 truncated，不谎报完整', async () => {
+  const home = await freshHome('big-js')
+  const profile = join(home, 'profile')
+  const big = 'x'.repeat(9 * 1024 * 1024)
+  await makeProfile(profile, {
+    bigpkg: { files: { 'lib/big.js': big, 'lib/small.js': tool('small_tool') } },
+  })
+  process.env['DSH_PROFILE_DIR'] = profile
+  const catalog = await defaultCatalogFeed.load({ force: true })
+  const pkg = catalog.plugins.find((p) => p.pkg === 'bigpkg')
+  assert.equal(pkg.toolsKnown, false, '跳过文件后不得声称归属完整')
+})

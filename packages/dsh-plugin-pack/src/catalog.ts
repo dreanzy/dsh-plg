@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
 import { readFileSync, statSync } from 'node:fs'
 import { mkdir, open, readdir, readFile, stat } from 'node:fs/promises'
-import { dirname, join, resolve } from 'node:path'
+import { dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { withFileLock, writeFileAtomic } from '@deepseek-ai/dsh-atomic-write'
 import { dshHomePath } from '@deepseek-ai/dsh-home-paths'
@@ -385,7 +385,10 @@ async function listLibJs(dir: string, depth: number, out: CandidateFile[]): Prom
       if (await listLibJs(join(dir, entry.name), depth + 1, out)) truncated = true
     } else if (entry.isFile() && entry.name.endsWith('.js')) {
       const file = await candidateFile(join(dir, entry.name))
-      if (file !== null) out.push(file)
+      // 跳过（超限或 stat 失败）必须置 truncated：说完整却少了一半文件，
+      // 比说残缺更贵——该包的工具不进 deny 掩码，停用后部分工具仍可见。
+      if (file === null) truncated = true
+      else out.push(file)
     }
   }
   return truncated
@@ -394,7 +397,10 @@ async function listLibJs(dir: string, depth: number, out: CandidateFile[]): Prom
 /** 解析包声明的入口：文件就用它，目录按 Node 的惯例取 `index.js`。 */
 async function entryFile(dir: string, main: string | null): Promise<CandidateFile | null> {
   if (main === null) return null
-  const target = join(dir, main)
+  const target = resolve(dir, main)
+  // 入口必须在包目录内：`main: "../victim/lib/index.js"` 会把别的包的工具
+  // 记到本包名下，停用 A 却关掉了 B。
+  if (relative(dir, target).startsWith('..')) return null
   const direct = await candidateFile(target)
   if (direct !== null) return direct
   return await candidateFile(join(target, 'index.js'))
@@ -917,12 +923,30 @@ async function writeCatalog(catalog: Catalog): Promise<void> {
   })
 }
 
+/** 在飞的扫描：并发调用共用一次，避免冷启动时重复全量扫描。 */
+let inflight: Promise<Catalog> | null = null
+
 /**
  * 读目录：缓存命中直接返回，否则扫描并写盘。
  *
  * 指纹 = 各包 `name@version` + 入口 mtime 的哈希，对不上就重扫。
  */
 async function loadCatalog(options?: CatalogLoadOptions): Promise<Catalog> {
+  // 单飞：预热、路由、hooks 三条路径都会调进来，冷启动时它们会并发。
+  // 不去重的话面板第一次打开会再扫一遍（实测多 500ms 与一次 5.67 MB 头解析），
+  // 两次扫描还会互相覆盖 catalog.json。
+  if (inflight !== null) return await inflight
+  const run = loadCatalogOnce(options)
+  inflight = run
+  try {
+    return await run
+  } finally {
+    if (inflight === run) inflight = null
+  }
+}
+
+/** 一次真正的扫描。并发去重由 `loadCatalog` 负责。 */
+async function loadCatalogOnce(options?: CatalogLoadOptions): Promise<Catalog> {
   // 写盘失败只降级成日志：默认空函数，调用方没接就不是错误。
   const warn = options?.warn ?? (() => undefined)
   const cached = await readCachedEntry()
@@ -1031,17 +1055,13 @@ export function candidateOwners(catalog: Catalog): Map<string, string> {
   return owners
 }
 
-const candidateCache = new WeakMap<Catalog, Map<string, Set<string>>>()
-
 /**
  * 每个包由候选名补上的工具名。
  *
- * 缓存命中时 `Catalog` 是同一个对象，按身份缓存即可；hooks 的工具掩码与面板的
- * 工具数读的是同一份，两边不会各算一套。
+ * 不缓存：`readCachedCatalog` 每次命中 memo 都返回 `toCatalog(...)` 新建的对象，
+ * 按对象身份缓存永远 miss。删掉缓存比修它便宜——实测单次计算是毫秒级。
  */
 export function candidateTools(catalog: Catalog): Map<string, Set<string>> {
-  const hit = candidateCache.get(catalog)
-  if (hit !== undefined) return hit
   const out = new Map<string, Set<string>>()
   for (const [name, pkg] of candidateOwners(catalog)) {
     let set = out.get(pkg)
@@ -1051,7 +1071,6 @@ export function candidateTools(catalog: Catalog): Map<string, Set<string>> {
     }
     set.add(name)
   }
-  candidateCache.set(catalog, out)
   return out
 }
 
