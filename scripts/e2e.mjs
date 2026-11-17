@@ -16,7 +16,7 @@
  */
 
 import { spawn } from 'node:child_process'
-import { mkdir, readFile, rm } from 'node:fs/promises'
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { closeSync, existsSync, openSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -29,6 +29,8 @@ const PACKAGES = ['dsh-pack-core', 'dsh-skill-pack', 'dsh-plugin-pack', 'dsh-mcp
 
 const log = []
 const check = (name, cond, detail) => log.push({ name, pass: !!cond, detail: cond ? undefined : detail })
+/** 记一条「没验」：清单不足、目录未就绪这类前置不满足时用它，别用 check(..., true) 冒充通过。 */
+const skip = (name) => log.push({ name, pass: true, skipped: true })
 
 /**
  * 跑一条命令，输出落盘再读。
@@ -83,7 +85,16 @@ async function readToken(logPath, timeoutMs = 30000) {
 
 async function main() {
   // ---------- 建隔离 profile ----------
-  await rm(join(ROOT, '.tmp', 'e2e'), { recursive: true, force: true })
+  // 上一轮的服务可能还没退干净，目录被占着时 rm 会 EBUSY。重试几次再放弃。
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    try {
+      await rm(join(ROOT, '.tmp', 'e2e'), { recursive: true, force: true })
+      break
+    } catch (error) {
+      if (attempt === 4) throw error
+      await new Promise((r) => setTimeout(r, 1000))
+    }
+  }
   await mkdir(HOME, { recursive: true })
 
   const created = await run('dsh', [PROFILE, '--from-default-profile', 'web', '--dump-config'])
@@ -93,12 +104,36 @@ async function main() {
   const installed = await run('dsh', ['plugin', '--profile', PROFILE, 'add', ...links])
   if (installed.code !== 0) throw new Error('装包失败：' + installed.stderr.slice(-800))
 
+  // 造一份 skill 清单：档位取值要四条不同档位的行才验得出来，隔离 profile 里
+  // 默认一条都没有。
+  //
+  // 宿主扫的是**用户级** `~/.agents/skills/`：实测工作区的 `.agents/skills/` 不会
+  // 被扫到（清单里只剩用户级那一条）。`~` 由 `USERPROFILE` 决定，**不是**
+  // `DSH_HOME`——只设后者时 fixture 写进去了但宿主读不到。
+  //
+  // 所以把 `USERPROFILE` 一起指到隔离目录：fixture 落在 `.tmp/e2e/user/.agents/`，
+  // 真实 `~/.agents` 一个字节都不碰。
+  const WORKSPACE = join(ROOT, '.tmp', 'e2e', 'workspace')
+  const FAKE_USER = join(ROOT, '.tmp', 'e2e', 'user')
+  // cwd 必须先建出来：spawn 的 cwd 不存在时 Windows 报的是 `spawn cmd.exe ENOENT`，
+  // 看起来像找不到命令，实际是找不到目录。
+  await mkdir(WORKSPACE, { recursive: true })
+  const skillRoot = join(FAKE_USER, '.agents', 'skills')
+  for (const name of ['e2e-a', 'e2e-b', 'e2e-c', 'e2e-d']) {
+    await mkdir(join(skillRoot, name), { recursive: true })
+    await writeFile(
+      join(skillRoot, name, 'SKILL.md'),
+      '---\nname: ' + name + '\ndescription: e2e fixture\n---\n\nbody\n',
+    )
+  }
+
   // ---------- 起服务 ----------
   const serverLog = join(ROOT, '.tmp', 'e2e', 'server.log')
   const logFd = openSync(serverLog, 'a')
   const server = spawn('dsh', ['--profile', PROFILE, '--no-open', '--port', String(PORT)], {
-    cwd: ROOT,
-    env: { ...process.env, DSH_HOME: HOME },
+    cwd: WORKSPACE,
+    // USERPROFILE 一起改：宿主按它找 `~/.agents/skills`，只改 DSH_HOME 读不到 fixture。
+    env: { ...process.env, DSH_HOME: HOME, USERPROFILE: FAKE_USER },
     stdio: ['ignore', logFd, logFd],
     shell: process.platform === 'win32',
   })
@@ -122,25 +157,85 @@ async function main() {
       return { status: res.status, json }
     }
 
-    // ---------- 字段存在性 ----------
+    // ---------- 求值字段的取值 ----------
+    //
+    // 只验 `typeof x === 'string'` 挡不住任何东西：`'explicit-on'` 与 `'follow-off'`
+    // 都是字符串。这里造出四种档位各一条，逐条验具体值——`rank` 的取值规则是
+    // 分包页排序与开关显示的唯一来源，错了就是整页显示成同一份值。
     {
-      const g = await post('/api/skill-pack/global', {})
+      const P = '/api/skill-pack'
+      const g0 = await post(P + '/global', {})
+      const names = (g0.json.value?.skills ?? []).map((row) => row.name)
+      // 隔离 profile 里只有插件注册的 skill（`source: 'bundled'`），没有 filesystem
+      // provider，所以清单只有一条。档位取值靠**同一条**行造出不同状态来验：
+      // 显式开 / 显式关 / 跟随落到关，三种都验得到，不必凑四条行。
+      if (names.length === 0) {
+        skip('skill: 清单为空，跳过档位取值')
+      } else {
+        const target = names[0]
+        // 读全局视图。注意 `rank` 在这里恒为 `explicit-on`：全局视图的 `policy.pack`
+        // 是 null，`rankOf` 的 `isDefault` 因此恒真——那是「没有选中 pack」的正确
+        // 表达，不是缺陷。所以这里验的是 `open` / `openGlobal` / `landing` 的**值**，
+        // 它们与档位同源（都走求值链），档位算错时它们会一起错。
+        const rowOf = async () => {
+          const view = await post(P + '/global', {})
+          return (view.json.value?.skills ?? []).find((row) => row.name === target)
+        }
+        // 1. 显式开
+        await post(P + '/apply', { commands: [{ op: 'packItem', packId: 'default', name: target, value: true }] })
+        const on = await rowOf()
+        check('skill: 显式开 → open=true', on?.open === true, on?.open)
+        check('skill: 显式开 → openGlobal=true', on?.openGlobal === true, on?.openGlobal)
+        check('skill: 显式开 → itemGlobal=true', on?.itemGlobal === true, on?.itemGlobal)
+        // 2. 显式关
+        await post(P + '/apply', { commands: [{ op: 'packItem', packId: 'default', name: target, value: false }] })
+        const off = await rowOf()
+        check('skill: 显式关 → open=false', off?.open === false, off?.open)
+        check('skill: 显式关 → openGlobal=false', off?.openGlobal === false, off?.openGlobal)
+        check('skill: 显式关 → itemGlobal=false', off?.itemGlobal === false, off?.itemGlobal)
+        // 3. 跟随且落到关：清掉项级记录，把它的组设成关。
+        const group = await post(P + '/apply', { commands: [{ op: 'createGroup', name: 'e2e-rank' }] })
+        const gid = group.json.value?.groups?.groups?.find((entry) => entry.name === 'e2e-rank')?.id
+        await post(P + '/apply', { commands: [
+          { op: 'packItem', packId: 'default', name: target, value: null },
+          { op: 'assign', name: target, groupId: gid },
+          { op: 'packGroup', packId: 'default', groupId: gid, value: false },
+        ] })
+        const follow = await rowOf()
+        check('skill: 跟随且落到关 → landing=false', follow?.landing === false, follow?.landing)
+        check('skill: 跟随且落到关 → open=false', follow?.open === false, follow?.open)
+        check('skill: 跟随且落到关 → itemGlobal=null', follow?.itemGlobal === null, follow?.itemGlobal)
+        check('skill: 跟随且落到关 → groupGlobal=false', follow?.groupGlobal === false, follow?.groupGlobal)
+        // 复原。
+        await post(P + '/apply', { commands: [
+          { op: 'assign', name: target, groupId: null },
+          { op: 'deleteGroup', groupId: gid },
+        ] })
+      }
+      const g = await post(P + '/global', {})
       const row = g.json.value?.skills?.[0]
-      check('skill: rows 带 rank', typeof row?.rank === 'string', row?.rank)
-      check('skill: rows 带 landing', typeof row?.landing === 'boolean', row?.landing)
       check('skill: rows 带 groupGlobal', row !== undefined && 'groupGlobal' in row, row && Object.keys(row))
       check('skill: rows 带 groupWorkspace', row !== undefined && 'groupWorkspace' in row, row && Object.keys(row))
       check('skill: 视图带 diff', Array.isArray(g.json.value?.diff), typeof g.json.value?.diff)
       check('skill: 视图带 groupRanks', typeof g.json.value?.groupRanks === 'object', typeof g.json.value?.groupRanks)
     }
     {
-      const g = await post('/api/plugin-pack/global', {})
+      const P = '/api/plugin-pack'
+      const g = await post(P + '/global', {})
       const rows = g.json.value?.plugins ?? []
-      // 目录可能还没扫完（pending: true），那时 plugins 为空——字段断言跳过，
+      // 目录可能还没扫完（pending: true），那时 plugins 为空——取值断言跳过，
       // 但视图级字段仍然要查。
       if (rows.length > 0) {
+        const target = rows[0].pkg
         check('plugin: rows 带 openGlobal', typeof rows[0].openGlobal === 'boolean', rows[0].openGlobal)
-        check('plugin: rows 带 rank', typeof rows[0].rank === 'string', rows[0].rank)
+        // 显式关掉它，验 rank 与 open 的具体值——只验类型挡不住档位算错。
+        await post(P + '/apply', { commands: [{ op: 'packItem', packId: 'default', name: target, value: false }] })
+        const off = await post(P + '/global', {})
+        const row = (off.json.value?.plugins ?? []).find((entry) => entry.pkg === target)
+        check('plugin: 显式关 → rank=explicit-off', row?.rank === 'explicit-off', row?.rank)
+        check('plugin: 显式关 → open=false', row?.open === false, row?.open)
+        check('plugin: 显式关 → openGlobal=false', row?.openGlobal === false, row?.openGlobal)
+        await post(P + '/apply', { commands: [{ op: 'packItem', packId: 'default', name: target, value: null }] })
       } else {
         check('plugin: 目录未就绪时 plugins 为空且 pending 为真', g.json.value?.pending === true, g.json.value?.pending)
       }
@@ -148,9 +243,20 @@ async function main() {
       check('plugin: 视图带 groupRanks', typeof g.json.value?.groupRanks === 'object', typeof g.json.value?.groupRanks)
     }
     {
-      const g = await post('/api/mcp-pack/global', {})
+      const P = '/api/mcp-pack'
+      const g = await post(P + '/global', {})
       const row = g.json.value?.rows?.[0]
-      check('mcp: rows 带 rank', row === undefined || typeof row.rank === 'string', row?.rank)
+      if (row === undefined) {
+        skip('mcp: 没有行时跳过档位取值')
+      } else {
+        // 显式关掉它，验 rank 与 open 的具体值。
+        await post(P + '/apply', { commands: [{ op: 'packRow', packId: 'default', rowKey: row.rowKey, patch: { enabled: false } }] })
+        const off = await post(P + '/global', {})
+        const after = (off.json.value?.rows ?? []).find((entry) => entry.rowKey === row.rowKey)
+        check('mcp: 显式关 → rank=explicit-off', after?.rank === 'explicit-off', after?.rank)
+        check('mcp: 显式关 → open=false', after?.open === false, after?.open)
+        await post(P + '/apply', { commands: [{ op: 'packRow', packId: 'default', rowKey: row.rowKey, patch: { enabled: null } }] })
+      }
       check('mcp: 视图带 diff', Array.isArray(g.json.value?.diff), typeof g.json.value?.diff)
       check('mcp: 视图带 groupRanks', typeof g.json.value?.groupRanks === 'object', typeof g.json.value?.groupRanks)
     }
@@ -262,7 +368,7 @@ async function main() {
       const g0 = await post(P + '/global', {})
       const target = g0.json.value.skills?.[0]?.name
       if (target === undefined) {
-        check('重载: 清单为空时跳过', true)
+        skip('重载: 清单为空时跳过')
       } else {
         await post(P + '/apply', { commands: [{ op: 'packItem', packId: 'default', name: target, value: false }] })
         const before = await post(P + '/global', {})
@@ -295,14 +401,30 @@ async function main() {
     server.kill()
     await new Promise((r) => setTimeout(r, 2000))
     try { closeSync(logFd) } catch { /* 已关 */ }
-    await rm(join(ROOT, '.tmp', 'e2e'), { recursive: true, force: true })
+    // 服务进程的 cwd 就是 workspace：Windows 下 cwd 被占着时目录删不掉（EBUSY）。
+    // 杀进程后要等它真的退，再重试删除。
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      try {
+        await rm(join(ROOT, '.tmp', 'e2e'), { recursive: true, force: true })
+        break
+      } catch (error) {
+        if (attempt === 9) {
+          console.error('清理 .tmp/e2e 失败（目录被占用，手动删）：' + String(error))
+          break
+        }
+        await new Promise((r) => setTimeout(r, 1000))
+      }
+    }
   }
 
   const failed = log.filter((l) => !l.pass)
   for (const item of failed) {
     console.error('✖ ' + item.name + (item.detail === undefined ? '' : '：' + JSON.stringify(item.detail)))
   }
-  console.log(`e2e: ${String(log.length - failed.length)}/${String(log.length)} 通过`)
+  // 跳过项单独列出来：它们记成 pass，但什么都没验。不列的话「全绿」会骗人。
+  const skipped = log.filter((l) => l.skipped === true)
+  for (const item of skipped) console.log('· 跳过 ' + item.name)
+  console.log(`e2e: ${String(log.length - failed.length)}/${String(log.length)} 通过` + (skipped.length === 0 ? '' : `（其中 ${String(skipped.length)} 条跳过）`))
   if (failed.length > 0) process.exitCode = 1
 }
 
