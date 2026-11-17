@@ -94,7 +94,7 @@ const CLIENT = [
   {
     name: '新建 pack 后不自动选中',
     file: 'packages/dsh-skill-pack/client/client.js',
-    lines: [2411, 2411],
+    lines: [2433, 2433],
     repl: [],
   },
   {
@@ -108,6 +108,14 @@ const CLIENT = [
     file: 'packages/dsh-skill-pack/client/client.js',
     from: "props.onChange(option.value === 'on' ? true : option.value === 'off' ? false : null)",
     to: "props.onChange(option.value === 'on' ? true : null)",
+  },
+  {
+    // 待保存期间不冻结 pack 序：改一张 pack 的名字，它立刻跳到新位置，
+    // 下一次点击就落在别的 pack 上。
+    name: '待保存期间不冻结 pack 序',
+    file: 'packages/dsh-skill-pack/client/client.js',
+    from: '      if (!frozen) return packs',
+    to: '      return packs',
   },
 ]
 
@@ -130,6 +138,13 @@ const SERVER = [
     file: 'packages/dsh-pack-core/src/policy.ts',
     from: '    const top = defaultPack.items[name]',
     to: '    const top = undefined',
+  },
+  {
+    // pack 名册退回按 id 排：id 与名字脱钩，用户看到的顺序就成了「创建顺序」。
+    name: 'pack 名册退回按 id 排',
+    file: 'packages/dsh-skill-pack/src/routes.ts',
+    from: '    const byName = nameOf(a).localeCompare(nameOf(b), \'zh\')',
+    to: '    const byName = a.localeCompare(b)',
   },
 ]
 
