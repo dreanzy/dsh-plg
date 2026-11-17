@@ -6,15 +6,18 @@ import { parseToolFilter } from '../lib/filter.js'
 const defineTool = (options) => options
 
 function fakePool() {
-  const state = { acquired: [], released: [], called: [] }
+  const state = { acquired: [], released: [], called: [], handle: null }
   const pool = {
     async acquire(key) {
       state.acquired.push(key)
-      return {
+      // 同一个 key 复用同一个 handle：真实池就是这样，测试要能改到「那一条」连接。
+      if (state.handle !== null) return state.handle
+      const handle = {
         key,
         connection: {
           key,
           alive: () => true,
+          generation: () => 1,
           listTools: async () => [],
           callTool: async (name, args) => {
             state.called.push({ name, args })
@@ -29,6 +32,8 @@ function fakePool() {
           { name: 'boom', description: '', inputSchema: {} },
         ],
       }
+      state.handle = handle
+      return handle
     },
     release(handle) { state.released.push(handle.key) },
     size: () => 0,
@@ -126,6 +131,25 @@ test('mcp_call 把 isError 结果转成错误', async () => {
   const ctx = build()
   await ctx.load.execute({ server: 'srv' }, { agent: ctx.agent })
   await assert.rejects(() => ctx.call.execute({ server: 'srv', tool: 'boom' }, { agent: ctx.agent }), /tool failed/u)
+})
+
+test('mcp_call 连接失败时补上 server 名与下一步', async () => {
+  const ctx = build()
+  await ctx.load.execute({ server: 'srv' }, { agent: ctx.agent })
+  // 让底层调用抛连接层错误。
+  const handle = ctx.poolState.state.handle
+  handle.connection.callTool = async () => {
+    const error = new TypeError('fetch failed')
+    error.cause = { code: 'ECONNREFUSED', message: 'connect ECONNREFUSED 127.0.0.1:8080' }
+    throw error
+  }
+  await assert.rejects(
+    () => ctx.call.execute({ server: 'srv', tool: 'read_file' }, { agent: ctx.agent }),
+    (error) =>
+      /MCP server "srv" call to "read_file" failed/u.test(error.message) &&
+      /ECONNREFUSED/u.test(error.message) &&
+      /mcp_load again/u.test(error.message),
+  )
 })
 
 test('mcp_call 拒绝未知工具名', async () => {

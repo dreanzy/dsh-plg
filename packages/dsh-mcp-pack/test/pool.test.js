@@ -3,12 +3,13 @@ import assert from 'node:assert/strict'
 import { createPool } from '../lib/pool.js'
 
 function fakeConnection(key, tools = [{ name: 'a', description: '', inputSchema: {} }]) {
-  const state = { closed: 0 }
+  const state = { closed: 0, generation: 1 }
   return {
     state,
     connection: {
       key,
       alive: () => state.dead !== true,
+      generation: () => state.generation,
       listTools: async () => tools,
       callTool: async () => ({}),
       close: async () => { state.closed += 1 },

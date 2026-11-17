@@ -31,6 +31,14 @@ export interface McpToolInfo {
 export interface McpConnection {
   readonly key: string
   /**
+   * 会话代数：每重建一次底层会话就 +1。
+   *
+   * 池靠它判断缓存的工具目录是否过期。服务端重启后工具列表可能变了（插件升级、
+   * 换项目），而池里的 `tools` 是首次连接时列的——不刷新的话，新工具永远看不到，
+   * `mcp_call` 还会因为 `admitted` 检查用旧目录而拒绝它。
+   */
+  generation(): number
+  /**
    * 底层传输是否还活着。
    *
    * stdio 子进程崩溃、HTTP 断开后连接对象仍在，池无从得知。没有这个判据时，
@@ -139,26 +147,144 @@ export function callOptionsFromExec(exec: unknown): { readonly signal?: AbortSig
 }
 
 /**
+ * 传输层已经不可用的错误码。
+ *
+ * 只收「重连可能成功」的那几个：服务端刚重启（ECONNREFUSED）、连接被断
+ * （ECONNRESET / EPIPE）、超时（ETIMEDOUT）、undici 的 socket 错误。
+ * DNS 解析失败（ENOTFOUND / EAI_AGAIN）刻意不收：重连只会再失败一次，
+ * 白白多一次网络往返。
+ */
+const CONNECTION_LOST_CODES: ReadonlySet<string> = new Set([
+  'ECONNREFUSED',
+  'ECONNRESET',
+  'EPIPE',
+  'ETIMEDOUT',
+  'UND_ERR_SOCKET',
+])
+
+/**
+ * 这条连接已经不可用了。
+ *
+ * 两类，SDK 都不处理，`onclose` 都不触发，`alive()` 都会一直报「活着」：
+ *
+ * 1. **服务端回收了 session**：Streamable HTTP 的 session 归服务端所有，空闲超时后
+ *    直接丢弃，此后所有带旧 `Mcp-Session-Id` 的请求返回 404 与 `Session not found`。
+ * 2. **传输层断了**：HTTP 没有长连接，服务端进程挂掉时客户端这边什么都不会发生，
+ *    下一次请求才报 `fetch failed`（cause 里是 ECONNREFUSED 一类）。
+ *
+ * 两类都必须重建会话：不重建的话，池会一直交出这条死连接，每次调用都失败，
+ * 直到进程重启。
+ */
+function isConnectionLost(error: unknown): boolean {
+  const record = error as { message?: unknown; cause?: { code?: unknown } } | null | undefined
+  if (record === null || record === undefined) return false
+  const message = typeof record.message === 'string' ? record.message : ''
+  // 只认服务端这句明确的语义。单看 404 不够：URL 写错、路径不存在也是 404，
+  // 那种情况重连一次仍然失败，只会把真实错误盖成第二次的同一个错误。
+  if (/session not found/iu.test(message)) return true
+  if (!/fetch failed/iu.test(message)) return false
+  const code = record.cause?.code
+  return typeof code === 'string' && CONNECTION_LOST_CODES.has(code)
+}
+
+/** 一条底层会话。`dead` 只属于它自己：重连后旧会话的 onclose 不能污染新会话。 */
+interface Session {
+  readonly client: Client
+  dead: boolean
+}
+
+/**
  * 连上一台 MCP server。
  *
  * 连接失败一律抛出原始错误：调用方要据此告诉模型「这台连不上」，而不是给一个
  * 空工具列表让它以为服务器没有工具。
+ *
+ * 连接**自愈**：服务端回收 session 后，下一次调用会重建会话并重试一次。没有这一条，
+ * 一次空闲超时就让这台 server 永久废掉——池的 `alive()` 判据看不见 session 失效，
+ * 只会一直把这条死连接交出去。
  */
 export async function connectMcp(key: string, spec: ConnectionSpec, options: { readonly timeoutMs?: number } = {}): Promise<McpConnection> {
-  const client = new Client({ name: 'dsh-mcp-pack', version: '0.1.0' }, { capabilities: {} })
-  await client.connect(createTransport(spec))
   const deadline = timeoutOf(options.timeoutMs, 30_000)
-  // 传输关闭后 SDK 会调 onclose；此后这条连接不可再用。
-  let dead = false
-  client.onclose = () => {
-    dead = true
+  let current: Session | null = null
+  let connecting: Promise<Session> | null = null
+  let closed = false
+  /** 会话代数：每次重建 +1，池据此判断工具目录是否过期。 */
+  let generation = 0
+
+  const open = async (): Promise<Session> => {
+    const client = new Client({ name: 'dsh-mcp-pack', version: '0.1.0' }, { capabilities: {} })
+    const session: Session = { client, dead: false }
+    // 先挂 onclose 再 connect：连接期间的关闭也要记下来。
+    client.onclose = () => {
+      session.dead = true
+    }
+    await client.connect(createTransport(spec))
+    return session
   }
+
+  /**
+   * 取一条可用会话，必要时重连。
+   *
+   * 并发调用共享同一次重连：`connecting` 是单飞的，否则 N 个并发调用会各建一条
+   * 连接，前 N-1 条立刻变成没人认领的孤儿。
+   */
+  const ensure = async (): Promise<Session> => {
+    if (closed) throw new Error('连接已关闭')
+    if (current !== null && !current.dead) return current
+    if (connecting === null) {
+      connecting = open().then(
+        (session) => {
+          connecting = null
+          // 建好时连接可能已被 close：这条没人认领，自己关掉，别塞回 current。
+          if (closed) {
+            void session.client.close().catch(() => undefined)
+            throw new Error('连接已关闭')
+          }
+          current = session
+          generation += 1
+          return session
+        },
+        (error: unknown) => {
+          connecting = null
+          throw error
+        },
+      )
+    }
+    return await connecting
+  }
+
+  /** 作废一条会话：标记、摘掉、关掉。 */
+  const drop = (session: Session): void => {
+    session.dead = true
+    if (current === session) current = null
+    void session.client.close().catch(() => undefined)
+  }
+
+  /**
+   * 跑一次请求，连接失效时重建并重试一次。
+   *
+   * 只重试一次——重连后仍失败说明不是连接的问题，再试只会放大故障。
+   */
+  const withSession = async <T>(request: (session: Session) => Promise<T>): Promise<T> => {
+    const session = await ensure()
+    try {
+      return await request(session)
+    } catch (error) {
+      if (!isConnectionLost(error)) throw error
+      drop(session)
+      return await request(await ensure())
+    }
+  }
+
+  // 首次连接失败要抛给调用方：池据此判断「这台连不上」。
+  await ensure()
 
   return {
     key,
-    alive: () => !dead,
+    generation: () => generation,
+    alive: () => !closed && (connecting !== null || (current !== null && !current.dead)),
     async listTools() {
-      const result = await client.listTools(undefined, { timeout: deadline })
+      const result = await withSession((session) => session.client.listTools(undefined, { timeout: deadline }))
       return result.tools.map((tool) => ({
         name: tool.name,
         description: tool.description ?? '',
@@ -170,13 +296,22 @@ export async function connectMcp(key: string, spec: ConnectionSpec, options: { r
       // 第二参数是 **zod result schema**，不是 options。传一个普通对象进去，
       // SDK 会去调 `resultSchema.safeParse`，报 "safeParse is not a function"。
       // options 必须放第三个参数。
-      return await client.callTool({ name, arguments: args }, undefined, {
-        timeout: timeoutOf(callOptions.timeoutMs, 60_000),
-        ...(callOptions.signal === undefined ? {} : { signal: callOptions.signal }),
-      })
+      return await withSession((session) =>
+        session.client.callTool({ name, arguments: args }, undefined, {
+          timeout: timeoutOf(callOptions.timeoutMs, 60_000),
+          ...(callOptions.signal === undefined ? {} : { signal: callOptions.signal }),
+        }),
+      )
     },
     async close() {
-      await client.close()
+      closed = true
+      const session = current
+      current = null
+      if (session !== null) await session.client.close()
+      if (connecting !== null) {
+        // 在飞的连接没人认领，等它建好再关掉，否则就是一条永不退出的子进程。
+        void connecting.then((late) => late.client.close()).catch(() => undefined)
+      }
     },
   }
 }

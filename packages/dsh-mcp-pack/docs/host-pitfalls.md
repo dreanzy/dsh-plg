@@ -51,6 +51,57 @@
 插件 `apply` 那一刻 `agents` 服务常常还没注册，直接 `get` 拿到 `undefined`，容易静默
 放弃。要补历史会话，必须写成 `context.inject(['agents'], () => …)`。
 
+## Streamable HTTP 的 session 归服务端，SDK 不会自愈
+
+`StreamableHTTPClientTransport` 在 `initialize` 时拿到 `Mcp-Session-Id`，此后每个请求都带上它。
+**session 的所有权在服务端**：空闲超时（mcp-for-unity-server 是 30 分钟）后服务端直接丢弃，
+之后所有带旧 id 的请求返回 404 与 `Session not found`。
+
+SDK 对此**不做任何处理**：不清 `_sessionId`、不触发 `onclose`、不重连。后果是
+`connection.alive()` 一直报「活着」，池一直把这条死连接交出去，每次调用都失败，
+直到进程重启。实测（`test/session-recovery.test.js`）：
+
+```
+DELETE (simulate idle timeout) -> 200
+alive() after server reclaimed session = true
+call after reclaim #1 -> ERROR: ... "Session not found"
+```
+
+**第二类同样不会自愈：传输层断了。** HTTP 没有长连接，服务端进程挂掉时客户端这边
+什么都不会发生——`onclose` 不触发、`alive()` 一直报活着，下一次请求才报 `fetch failed`
+（`cause.code` 是 `ECONNREFUSED` 一类）。实测：
+
+```
+服务端进程已杀
+alive() = true          ← onclose 不触发
+mcp_call -> ERROR: fetch failed
+mcp_call -> ERROR: fetch failed   ← 重试多少次都一样
+```
+
+所以自愈必须由 `connectMcp` 自己做，判据是 `isConnectionLost`：
+
+- `Session not found` 消息文本 —— **不认 404**：URL 写错、路径不存在也是 404，那种情况
+  重连一次仍然失败，只会把真实错误盖成第二次的同一个错误。
+- `fetch failed` + `cause.code` 在 `ECONNREFUSED` / `ECONNRESET` / `EPIPE` /
+  `ETIMEDOUT` / `UND_ERR_SOCKET` 里 —— **不认 `ENOTFOUND` / `EAI_AGAIN`**：DNS 解析
+  失败重连只会再失败一次，白多一次网络往返。
+
+池这一层看不见连接失效，所以不要试图在 `pool.ts` 里补这个判据：`alive()` 拿不到
+这个信息，加了也只是猜。池只做一件相关的事：**会话重建后刷新工具目录**（见下）。
+
+## 会话重建后，池里的工具目录会过期
+
+`pool.open()` 只在首次连接时 `listTools` 一次，之后 `handle.tools` 是缓存。服务端重启后
+工具列表可能变了（插件升级、换项目），不刷新的话新工具永远看不到，`mcp_call` 的
+`admitted` 检查还会用旧目录拒掉它。
+
+所以 `McpConnection` 暴露 `generation()`：每重建一次底层会话 +1。池在 `acquire` 时比对
+`entry.toolsGeneration` 与 `connection.generation()`，不一致就重新列一次。
+
+注意这**不解决**「`mcp_load` 假成功」：`mcp_load` 读的是缓存，session 失效后它照样返回
+完整工具列表而不发请求。这是刻意的——每次 load 都探活会给热路径加一次网络往返。
+代价是模型可能先看到「加载成功」再在 `mcp_call` 上失败一次，然后自愈。
+
 ## `exec.agent` 与 `agent/created` 的 agent 未必是同一个对象
 
 用 `WeakMap` 按对象身份索引会话状态时会落空。工具执行路径要准备按 `agent.id` 兜底。

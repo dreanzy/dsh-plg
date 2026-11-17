@@ -122,6 +122,15 @@ const CLIENT = [
 /** 服务端变异：求值链与显示态。 */
 const SERVER = [
   {
+    // 2026-11-17 实测故障：服务端 30 分钟空闲超时回收 session，此后每个请求都
+    // 返回 404 `Session not found`。SDK 不清 `_sessionId`、不触发 `onclose`，
+    // 连接看起来一直活着——一次超时就让这台 server 永久废掉。
+    name: '连接失效后不自愈',
+    file: 'packages/dsh-mcp-pack/src/mcp-connection.ts',
+    from: '      if (!isConnectionLost(error)) throw error',
+    to: '      throw error',
+  },
+  {
     name: 'landing 恒为 true',
     file: 'packages/dsh-skill-pack/src/effective.ts',
     from: '      landing: groupValueOf(policy.pack, resolver.groupOf(name)) ?? globalResolver.decide(name).value,',

@@ -12,7 +12,7 @@ function fakePool() {
       state.acquired.push({ key, spec })
       const handle = {
         key,
-        connection: { key, alive: () => true, listTools: async () => [], callTool: async () => ({}), close: async () => {} },
+        connection: { key, alive: () => true, generation: () => 1, listTools: async () => [], callTool: async () => ({}), close: async () => {} },
         tools: [
           { name: 'read_file', description: '', inputSchema: {} },
           { name: 'delete_file', description: '', inputSchema: {} },
@@ -68,6 +68,36 @@ function build({ tools = fakeTools(), poolState = fakePool(), resolveTarget = ()
   })
   return { load, unload, tools, poolState }
 }
+
+test('连接失败时补上 server 名与下一步', async () => {
+  const pool = {
+    async acquire() {
+      const error = new TypeError('fetch failed')
+      error.cause = { code: 'ECONNREFUSED', message: 'connect ECONNREFUSED 127.0.0.1:8080' }
+      throw error
+    },
+    release() {},
+    size: () => 0,
+    keys: () => [],
+    closeAll: async () => {},
+  }
+  const { load } = createOnDemandTools({
+    defineTool,
+    pool,
+    resolveTarget: () => target(),
+    resolveFactory: async () => factory,
+    logger: { warn() {} },
+  })
+  // 原始错误是 `fetch failed`，模型看不出该做什么。必须带上 server 名、
+  // 真正的原因（cause 里的 ECONNREFUSED）与下一步。
+  await assert.rejects(
+    () => load.execute({ server: 'srv' }, { agent: fakeAgent(fakeTools()) }),
+    (error) =>
+      /MCP server "srv" is unreachable/u.test(error.message) &&
+      /ECONNREFUSED/u.test(error.message) &&
+      /mcp_load again/u.test(error.message),
+  )
+})
 
 test('未知 server 报可读错误', async () => {
   const { load } = build({ resolveTarget: () => null })

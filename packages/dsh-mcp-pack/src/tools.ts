@@ -84,6 +84,16 @@ function disposeAll(disposers: readonly (() => unknown)[]): void {
   for (const dispose of disposers) disposeQuietly(dispose)
 }
 
+/** 取错误里最短的决定性一行：`fetch failed` 的 cause 才是真正的原因。 */
+function messageOf(error: unknown): string {
+  const record = error as { message?: unknown; cause?: { message?: unknown; code?: unknown } } | null | undefined
+  const message = typeof record?.message === 'string' ? record.message : String(error)
+  const cause = record?.cause
+  if (cause === undefined || cause === null) return message
+  const detail = typeof cause.message === 'string' ? cause.message : typeof cause.code === 'string' ? cause.code : ''
+  return detail === '' ? message : `${message} (${detail})`
+}
+
 /** 文本结果块。宿主的 render 只认这个形状。 */
 function textBlock(text: string): readonly { type: 'text'; text: string }[] {
   return [{ type: 'text', text }]
@@ -179,7 +189,17 @@ export function createOnDemandTools(deps: OnDemandDeps): { load: unknown; unload
         throw new Error(`MCP server "${target.serverName}" is declared eager: its tools are already available without loading`)
       }
 
-      const handle = await deps.pool.acquire(target.rowKey, target.spec)
+      let handle: PoolHandle
+      try {
+        handle = await deps.pool.acquire(target.rowKey, target.spec)
+      } catch (error) {
+        // 连接失败：原始错误是 `fetch failed` 一类，模型看不出该做什么。
+        // 补上 server 名与下一步，否则它只会反复重试同一个调用。
+        throw new Error(
+          `MCP server "${target.serverName}" is unreachable: ${messageOf(error)}. ` +
+            'Check that the server is running, then call mcp_load again.',
+        )
+      }
       // acquire 之后任何一条抛错路径都必须释放引用：否则 refs 永不归零，
       // 连接与子进程永不关闭，而模型每次重试都再泄漏一个。
       try {
@@ -362,7 +382,17 @@ export function createOnDemandTools(deps: OnDemandDeps): { load: unknown; unload
       if (!admitted) {
         throw new Error(`MCP server "${target.serverName}" has no callable tool named "${tool}"`)
       }
-      const result = await entry.handle.connection.callTool(tool, payload, callOptionsFromExec(exec))
+      let result: unknown
+      try {
+        result = await entry.handle.connection.callTool(tool, payload, callOptionsFromExec(exec))
+      } catch (error) {
+        // 连接层错误（`fetch failed` 一类）对模型没有信息量：它不知道该重试、
+        // 该换工具，还是该让用户去启动服务。补上 server 名与下一步。
+        throw new Error(
+          `MCP server "${target.serverName}" call to "${tool}" failed: ${messageOf(error)}. ` +
+            'If the server was restarted, call mcp_load again to refresh its tools.',
+        )
+      }
       const outcome = result as { isError?: unknown } | undefined
       if (outcome?.isError === true) throw new Error(resultText(result))
       return result

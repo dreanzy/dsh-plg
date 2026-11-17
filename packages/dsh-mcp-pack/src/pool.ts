@@ -4,7 +4,10 @@ import { connectMcp, type ConnectionSpec, type McpConnection, type McpToolInfo }
 interface Entry {
   readonly key: string
   readonly connection: McpConnection
-  readonly tools: readonly McpToolInfo[]
+  /** 首次连接时列出的工具目录。会话重建后可能过期，见 `generation`。 */
+  tools: readonly McpToolInfo[]
+  /** 这份 `tools` 对应的会话代数。 */
+  toolsGeneration: number
   refs: number
 }
 
@@ -60,7 +63,7 @@ export function createPool(options: PoolOptions = {}): Pool {
       // 两个 await 之间池可能已被关闭：这条连接没人认领，必须自己关掉，
       // 否则 stdio 下就是一个永不退出的子进程。
       if (closed) throw new Error('连接池已关闭，本次连接作废')
-      const entry: Entry = { key, connection, tools, refs: 0 }
+      const entry: Entry = { key, connection, tools, toolsGeneration: connection.generation(), refs: 0 }
       live.set(key, entry)
       handed = true
       return entry
@@ -95,6 +98,17 @@ export function createPool(options: PoolOptions = {}): Pool {
         if (slots.get(key) === slot) slots.delete(key)
         void entry.connection.close().catch(() => undefined)
         return await acquire(key, spec)
+      }
+      // 会话重建过（服务端重启、session 被回收）：缓存的工具目录可能已经过期。
+      // 重新列一次，而不是把旧目录继续交出去——否则新工具永远看不到，
+      // `mcp_call` 的 `admitted` 检查还会用旧目录拒掉它。
+      if (entry.toolsGeneration !== entry.connection.generation()) {
+        try {
+          entry.tools = await entry.connection.listTools()
+          entry.toolsGeneration = entry.connection.generation()
+        } catch {
+          // 列不出来就继续用旧目录：调用本身会再报一次，不必在这里放大成加载失败。
+        }
       }
       entry.refs += 1
       return { key: entry.key, connection: entry.connection, tools: entry.tools }
