@@ -179,6 +179,18 @@ test('default pack 关掉的项在行里体现为 openGlobal=false 且来源是 
   assert.equal(alpha.decidedVia, 'item')
 })
 
+test('landing 是「跟随时会落到的值」，不是恒为 true', async () => {
+  // landing 恒为 true 时，分包页的「跟随（开）/（关）」提示全是「开」，
+  // 用户看不出跟随会落到哪。这条守的是 effective.ts 里那行 ?? 链。
+  const home = await freshHome()
+  await writePacks(home, { default: { name: 'default', items: { alpha: false } } })
+  const view = await handleGlobal(fakeCtx(fakeSkills()), depsWith(fakeSkills()))
+  const alpha = view.value.skills.find((row) => row.name === 'alpha')
+  assert.equal(alpha.landing, false, 'default 里 alpha 显式关，跟随时应落到关')
+  const beta = view.value.skills.find((row) => row.name === 'beta')
+  assert.equal(beta.landing, true, 'default 里 beta 没记录，跟随时应落到开')
+})
+
 test('清单不完整时行不下发生效值，hidden 为空', async () => {
   const home = await freshHome()
   await writePacks(home, { default: { name: 'default', items: { alpha: false } } })
