@@ -58,6 +58,38 @@ function render(data) {
   return PackSettings({ data, base: data, run: () => {}, queue: () => {}, pending: { count: 0, keys: new Set() } })
 }
 
+test('待保存期间沿用改动前的 pack 序，改名不跳位', () => {
+  const { orderPacks } = loadPanel(CLIENT)
+  const before = [
+    { id: 'default', name: '默认', items: {}, groups: {}, builtin: true },
+    { id: 'p1', name: 'alpha', items: {}, groups: {}, builtin: false },
+    { id: 'p2', name: 'zeta', items: {}, groups: {}, builtin: false },
+  ]
+  // 把 alpha 改名成 zzz：服务端按名字排会把它挪到 zeta 之后，冻结序必须留在原位。
+  const after = [
+    { id: 'default', name: '默认', items: {}, groups: {}, builtin: true },
+    { id: 'p2', name: 'zeta', items: {}, groups: {}, builtin: false },
+    { id: 'p1', name: 'zzz', items: {}, groups: {}, builtin: false },
+  ]
+  assert.deepEqual(orderPacks(after, before, true).map((pack) => pack.id), ['default', 'p1', 'p2'])
+  // 不冻结时原样返回服务端给的序：改名后的位置就是新名字该在的位置。
+  assert.deepEqual(orderPacks(after, before, false).map((pack) => pack.id), ['default', 'p2', 'p1'])
+})
+
+test('待保存期间新建的 pack 落到末尾，不插进改动前的序里', () => {
+  const { orderPacks } = loadPanel(CLIENT)
+  const before = [
+    { id: 'default', name: '默认', items: {}, groups: {}, builtin: true },
+    { id: 'p1', name: 'alpha', items: {}, groups: {}, builtin: false },
+  ]
+  const after = [
+    { id: 'default', name: '默认', items: {}, groups: {}, builtin: true },
+    { id: 'p1', name: 'alpha', items: {}, groups: {}, builtin: false },
+    { id: 'p2', name: 'aaa', items: {}, groups: {}, builtin: false },
+  ]
+  assert.deepEqual(orderPacks(after, before, true).map((pack) => pack.id), ['default', 'p1', 'p2'])
+})
+
 test('默认 pack 里显式关掉的插件，分包页显示「关」而不是「开」', () => {
   const packs = [{ id: 'default', name: '默认', items: { alpha: false }, groups: {}, builtin: true }]
   const tree = render(viewOf(packs, [rowOf('alpha', { open: false, openGlobal: false, itemGlobal: false })]))

@@ -108,6 +108,31 @@ function fileExists(path) {
   )
 }
 
+test('pack 名册按名字排，default 恒置顶', async () => {
+  const home = await freshHome()
+  // id 与名字故意反序：按 id 排会得到 p1/p2/p3，按名字排才是 alpha/mid/zeta。
+  await writePacks(home, {
+    default: { name: '默认' },
+    p1: { name: 'zeta' },
+    p2: { name: 'alpha' },
+    p3: { name: 'mid' },
+  })
+  const view = await handleGlobal(fakeCtx(fakeSkills()), depsWith(fakeSkills()))
+  assert.equal(view.ok, true)
+  assert.deepEqual(view.value.packs.map((pack) => pack.name), ['默认', 'alpha', 'mid', 'zeta'])
+})
+
+test('pack 重名时按 id 兜底，顺序仍是全序', async () => {
+  const home = await freshHome()
+  await writePacks(home, {
+    default: { name: '默认' },
+    p2: { name: '同名' },
+    p1: { name: '同名' },
+  })
+  const view = await handleGlobal(fakeCtx(fakeSkills()), depsWith(fakeSkills()))
+  assert.deepEqual(view.value.packs.map((pack) => pack.id), ['default', 'p1', 'p2'])
+})
+
 test('parseCommands 拒绝非法形状', () => {
   assert.equal(parseCommands(undefined).ok, false)
   assert.equal(parseCommands([]).ok, false)

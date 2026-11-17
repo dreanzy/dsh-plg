@@ -78,6 +78,33 @@ function deps(entries, afterWrite) {
   return { snapshot, afterWrite }
 }
 
+test('pack 名册按名字排，default 恒置顶', async () => {
+  const home = await freshHome()
+  // id 与名字故意反序：按 id 排会得到 p1/p2/p3，按名字排才是 alpha/mid/zeta。
+  await writeJson(join(home, 'packs', 'mcp', 'packs.json'), packsFile({
+    default: { name: '默认' },
+    p1: { name: 'zeta' },
+    p2: { name: 'alpha' },
+    p3: { name: 'mid' },
+  }))
+  const entries = [mcpEntry('a')]
+  const view = await handleGlobal(fakeCtx(entries), deps(entries))
+  assert.equal(view.ok, true)
+  assert.deepEqual(view.value.packs.map((pack) => pack.name), ['默认', 'alpha', 'mid', 'zeta'])
+})
+
+test('pack 重名时按 id 兜底，顺序仍是全序', async () => {
+  const home = await freshHome()
+  await writeJson(join(home, 'packs', 'mcp', 'packs.json'), packsFile({
+    default: { name: '默认' },
+    p2: { name: '同名' },
+    p1: { name: '同名' },
+  }))
+  const entries = [mcpEntry('a')]
+  const view = await handleGlobal(fakeCtx(entries), deps(entries))
+  assert.deepEqual(view.value.packs.map((pack) => pack.id), ['default', 'p1', 'p2'])
+})
+
 test('全局视图列出 Loader 行与托管行，并给出三份策略路径', async () => {
   const home = await freshHome()
   await writeJson(join(home, 'packs', 'mcp', 'servers.json'), {

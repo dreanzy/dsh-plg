@@ -95,13 +95,25 @@ function readString(source: Record<string, unknown> | null, key: string): string
   return typeof value === 'string' && value !== '' ? value : null
 }
 
-/** 全部 pack，`default` 排第一，其余按 id 排序。 */
+/**
+ * 全部 pack，`default` 排第一，其余按名字（`localeCompare(…, 'zh')`）排序。
+ *
+ * `default` 不参与名字序：它是求值链终点，不是一张普通 pack，混进名字序里用户
+ * 找「基线」得先扫一遍列表。重名按 id 兜底——`parsePack` 在 name 缺失时用 id
+ * 代替，手改文件可能造出重名，没有兜底就不是全序。
+ */
 function packViews(book: PackBook): PackView[] {
+  const nameOf = (id: string): string => {
+    if (id === DEFAULT_PACK_ID) return DEFAULT_PACK_NAME
+    const pack = book.packs[id]
+    return pack === undefined ? id : pack.name
+  }
   const ids = Object.keys(book.packs).sort((a, b) => {
     if (a === b) return 0
     if (a === DEFAULT_PACK_ID) return -1
     if (b === DEFAULT_PACK_ID) return 1
-    return a < b ? -1 : 1
+    const byName = nameOf(a).localeCompare(nameOf(b), 'zh')
+    return byName !== 0 ? byName : a < b ? -1 : 1
   })
   const out: PackView[] = []
   for (const id of ids) {

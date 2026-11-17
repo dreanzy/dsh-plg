@@ -625,7 +625,11 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * 名册列表：`default` 排第一，其余按 id 排序。
+     * 名册列表：`default` 排第一，其余按名字（`localeCompare(…, 'zh')`）排序。
+     *
+     * `default` 不参与名字序：它是求值链终点，不是一张普通 pack，混进名字序里用户
+     * 找「基线」得先扫一遍列表。重名按 id 兜底——`parsePacks` 在 name 缺失时用 id
+     * 代替，手改文件可能造出重名，没有兜底就不是全序。
      *
      * `frozenOrder` 是改动前那份视图的 id 序：待保存期间按它排，名册就不会因为刚落下的
      * 一条命令而重排。凭「改动前的排序键」而不是数组下标——新建的 pack 会插进数组，
@@ -651,13 +655,24 @@ window.__ModuleLoader__.load({
       const packs = packsOf(data)
       const ids = Object.keys(packs)
       const rank = frozenRank(frozenOrder)
+      const nameOf = (id) => packNameOf(data, id)
+      /** 名字序，重名按 id 兜底：没有兜底就不是全序。 */
+      const byName = (a, b) => {
+        const order = nameOf(a).localeCompare(nameOf(b), 'zh')
+        return order !== 0 ? order : String(a).localeCompare(String(b))
+      }
       if (rank.size === 0) {
-        ids.sort()
+        ids.sort((a, b) => {
+          if (a === b) return 0
+          if (a === DEFAULT_PACK_ID) return -1
+          if (b === DEFAULT_PACK_ID) return 1
+          return byName(a, b)
+        })
       } else {
         ids.sort((a, b) => {
           const left = rank.has(a) ? rank.get(a) : rank.size
           const right = rank.has(b) ? rank.get(b) : rank.size
-          return left === right ? String(a).localeCompare(String(b)) : left - right
+          return left === right ? byName(a, b) : left - right
         })
       }
       const at = ids.indexOf(DEFAULT_PACK_ID)
@@ -3627,7 +3642,7 @@ window.__ModuleLoader__.load({
 
     return {
       // 测试出口：只供 test/ 断言结构与纯逻辑用，运行期不要读它。
-      __internals: { pendingKey, createQueue, frozenRank, usePending, TABS, PackRoster, WorkspaceBoard, ChipModal, CHIP_CSS },
+      __internals: { pendingKey, createQueue, frozenRank, packListOf, usePending, TABS, PackRoster, WorkspaceBoard, ChipModal, CHIP_CSS },
       // 依赖声明照抄官方 settings-subagent：remote.session 是独立服务名，
       // 只声明 remote 拿不到它（ctx.remote.session 会是空的，模型目录读不到）。
       // 声明里少一个 → 插件停在 pending → 整个设置分区连入口都不出现。

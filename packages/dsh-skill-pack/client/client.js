@@ -1244,6 +1244,28 @@ const RANK_ORDER = {
       return null
     }
 
+    /**
+     * 名册的显示序。
+     *
+     * 服务端已按名字排好（`default` 恒置顶），这里只在待保存期间覆盖成改动前的 id 序：
+     * 改名会让那张 pack 立刻跳到新位置，下一次点击就落在别的 pack 上——与分组、行
+     * 同一条规则。新建的 pack 不在改动前的序里，落到末尾，同档沿用服务端的名字序
+     * （`Array.prototype.sort` 稳定）。
+     */
+    function orderPacks(packs, basePacks, frozen) {
+      if (!frozen) return packs
+      const rank = new Map()
+      for (const pack of basePacks || []) rank.set(pack.id, rank.size)
+      if (rank.size === 0) return packs
+      const out = packs.slice()
+      out.sort((a, b) => {
+        const left = rank.has(a.id) ? rank.get(a.id) : rank.size
+        const right = rank.has(b.id) ? rank.get(b.id) : rank.size
+        return left - right
+      })
+      return out
+    }
+
     /** 内置 pack 的显示名。数据里仍是 `default`，不写盘，也不参与重名校验。 */
     function packLabel(pack) {
       if (pack === null || pack === undefined) return ''
@@ -2253,7 +2275,7 @@ const RANK_ORDER = {
       const queue = props.queue
       const pending = props.pending || { count: 0, keys: new Set() }
       const frozen = pending.count > 0
-      const packs = data.packs
+      const packs = orderPacks(data.packs, base.packs, frozen)
       /** 磁盘上真实存在的 pack id；刚新建还没保存的那些不在里面。 */
       const realPackIds = new Set((base.packs || []).map((entry) => entry.id))
       const defaultPack = defaultPackOf(packs)
@@ -2810,7 +2832,7 @@ const RANK_ORDER = {
 
     return {
       // 测试出口：只供 test/ 断言结构与纯逻辑用，运行期不要读它。
-      __internals: { pendingKey, createQueue, frozenGroupNames, usePending, TABS, GroupsPage, PackSettings, WorkspacePage, PendingBar, CHIP_CSS },
+      __internals: { pendingKey, createQueue, frozenGroupNames, usePending, orderPacks, TABS, GroupsPage, PackSettings, WorkspacePage, PendingBar, CHIP_CSS },
       // `remote` 与 `remote.session` 都是独立服务名：只声明 `remote` 拿不到 session。
       // 声明是「服务在不在 ctx 上」的唯一开关；取用仍要 try/catch（ctx.get 对取不到的
       // 已声明服务会抛错）。缺了这两个，工作区页会空着。

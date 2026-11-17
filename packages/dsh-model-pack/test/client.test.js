@@ -86,6 +86,50 @@ test('apply 在服务缺失时只降级，不抛错', () => {
   assert.doesNotThrow(() => apply(ctx))
 })
 
+/** 名册的形状：`data.state.packs.packs`，见 `packsOf`。 */
+function rosterOf(packs) {
+  return { state: { packs: { packs } } }
+}
+
+/**
+ * 顺序断言。
+ *
+ * 不能用 `deepEqual`：`packListOf` 跑在 vm 沙箱里，数组原型与宿主不是同一个，
+ * 结构相同也会被判成不等。拼成字符串比。
+ */
+function orderOf(entries, key) {
+  return entries.map((entry) => entry[key]).join(',')
+}
+
+test('pack 名册按名字排，default 恒置顶', () => {
+  const { packListOf } = loadClient().__internals
+  // id 与名字故意反序：按 id 排会得到 p1/p2/p3，按名字排才是 alpha/mid/zeta。
+  const data = rosterOf({
+    default: { name: '默认' },
+    p1: { name: 'zeta' },
+    p2: { name: 'alpha' },
+    p3: { name: 'mid' },
+  })
+  assert.equal(orderOf(packListOf(data), 'name'), '默认,alpha,mid,zeta')
+})
+
+test('pack 重名时按 id 兜底，顺序仍是全序', () => {
+  const { packListOf } = loadClient().__internals
+  const data = rosterOf({ default: { name: '默认' }, p2: { name: '同名' }, p1: { name: '同名' } })
+  assert.equal(orderOf(packListOf(data), 'id'), 'default,p1,p2')
+})
+
+test('待保存期间沿用改动前的 id 序，改名不跳位', () => {
+  const { packListOf } = loadClient().__internals
+  const before = rosterOf({ default: { name: '默认' }, p1: { name: 'alpha' }, p2: { name: 'zeta' } })
+  // 把 alpha 改名成 zzz：按名字排它会跳到末尾，冻结序必须把它留在原位。
+  const after = rosterOf({ default: { name: '默认' }, p1: { name: 'zzz' }, p2: { name: 'zeta' } })
+  const frozenOrder = packListOf(before).map((entry) => entry.id)
+  assert.equal(orderOf(packListOf(after, frozenOrder), 'id'), 'default,p1,p2')
+  // 不冻结时按新名字排：p2 的 zeta 在 p1 的 zzz 之前。
+  assert.equal(orderOf(packListOf(after), 'id'), 'default,p2,p1')
+})
+
 test('待保存键覆盖每一类可覆盖命令', () => {
   const { pendingKey } = loadClient().__internals
   assert.equal(typeof pendingKey, 'function')
