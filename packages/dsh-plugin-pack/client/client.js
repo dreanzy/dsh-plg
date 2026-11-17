@@ -1471,6 +1471,62 @@ const RANK_ORDER = {
     }
 
     /**
+     * 分包页读的是**选中那张 pack 的原始记录**，不是工作区求值链。
+     *
+     * 服务端行上的 `itemWorkspace` / `rank` 按**工作区绑定的** pack 算，而分包页让
+     * 用户逐张编辑 pack——选中哪张由本地状态决定，服务端不知道。拿绑定 pack 的结论
+     * 渲染分包页，结果是每张 pack 都显示成同一份值：默认 pack 里显式关掉的项显示成
+     * 「开」，其余 pack 全部显示成「跟随」，排序也退化成按名字。
+     *
+     * 这里只做「读原始记录 + 算档位」，不碰求值链：链仍由服务端算，行上的 `open` 就是它。
+     */
+    function packItemOf(pack, name) {
+      if (pack === null || pack === undefined || !pack.items) return null
+      // hasOwn：`items['toString']` 会拿到原型上的函数，被当成「用户设过这个键」。
+      if (!Object.hasOwn(pack.items, name)) return null
+      const value = pack.items[name]
+      return typeof value === 'boolean' ? value : null
+    }
+
+    /** 选中 pack 里这一组的显式值；没有键返回 null（跟随）。 */
+    function packGroupOf(pack, groupId) {
+      if (pack === null || pack === undefined || !pack.groups || groupId === null || groupId === undefined) return null
+      if (!Object.hasOwn(pack.groups, groupId)) return null
+      const value = pack.groups[groupId]
+      return typeof value === 'boolean' ? value : null
+    }
+
+    /**
+     * 这一项在选中 pack 里「跟随」时会落到哪。
+     *
+     * 与 `effective.ts` 的 `landing` 同一条规则，只是把「工作区绑定的 pack」换成
+     * 「选中的 pack」：先看这张 pack 的组记录，再走 default 层的项、组，最后内置缺省开。
+     */
+    function landingOf(pack, defaultPack, name, groupId) {
+      const byGroup = packGroupOf(pack, groupId)
+      if (byGroup !== null) return byGroup
+      const byItem = packItemOf(defaultPack, name)
+      if (byItem !== null) return byItem
+      const defaultGroup = packGroupOf(defaultPack, groupId)
+      if (defaultGroup !== null) return defaultGroup
+      return true
+    }
+
+    /**
+     * 分包页的排序档位。
+     *
+     * 与 core 的 `rankOf` 同一条规则，输入换成「选中 pack 的显式记录」。名字带 `pack`
+     * 前缀是为了与工作区那条链区分：`scripts/check-panels.mjs` 禁止客户端再写一遍
+     * `rankOf`，挡的是工作区求值链回潮，不是这里。
+     */
+    function packRankOf(explicit, isDefault, landing) {
+      if (explicit === true) return 'explicit-on'
+      if (explicit === false) return 'explicit-off'
+      if (isDefault) return 'explicit-on'
+      return landing ? 'follow-on' : 'follow-off'
+    }
+
+    /**
      * 停用一个插件省下的 token：工具 schema 的估算值，加上段字符数按 4 字符/token 折算。
      *
      * 两半的口径不同（服务端已在 toolVolume 里除过 4），所以这里只折段字符。
@@ -2547,21 +2603,35 @@ const RANK_ORDER = {
         // 顺序是「开 > 关 > 跟随(开) > 跟随(关)」：显式决定过的排在前面，
         // 跟随项再按它实际会落到开还是关分档。同档按包名排。
         //
-        // 档位由服务端算好（core 的 rankOf）：浏览器只按它排，不再自己走求值链。
-        const rankOfRow = (row) => RANK_ORDER[row.rank] ?? RANK_ORDER['follow-on']
+        // 档位按**选中那张 pack** 算，不按工作区绑定的那张：分包页编辑的是前者。
+        const rankOfRow = (row) => {
+          const name = itemKey(row)
+          const gid = groupOfRow(groups, row)
+          return RANK_ORDER[
+            packRankOf(packItemOf(sortPack, name), isDefault, landingOf(sortPack, sortDefault, name, gid))
+          ]
+        }
         return visible.sort((a, b) => {
           const left = rankOfRow(a)
           const right = rankOfRow(b)
           if (left !== right) return left - right
           return itemKey(a).localeCompare(itemKey(b), 'zh')
         })
-      }, [plugins, groups, query, sortPack, isDefault])
+      }, [plugins, groups, query, sortPack, sortDefault, isDefault])
 
-      /** 分组同样「开 > 关 > 跟随(开) > 跟随(关)」。 */
-      const groupRanks = data.groupRanks || {}
+      /** 分组同样「开 > 关 > 跟随(开) > 跟随(关)」，同样按选中那张 pack 算。 */
+      const groupRanks = useMemo(() => {
+        const out = {}
+        for (const group of groups.groups) {
+          const own = packGroupOf(sortPack, group.id)
+          const landing = packGroupOf(sortDefault, group.id) ?? true
+          out[group.id] = packRankOf(own, isDefault, landing)
+        }
+        return out
+      }, [groups.groups, sortPack, sortDefault])
       const orderedGroups = useMemo(() => {
         return [...groups.groups].sort((a, b) => {
-          // 组级档位同样由服务端算：groupRanks 与行的 rank 用同一条规则。
+          // 组级档位与行的档位用同一条规则，同样按选中那张 pack 算。
           const left = RANK_ORDER[groupRanks[a.id]] ?? RANK_ORDER['follow-on']
           const right = RANK_ORDER[groupRanks[b.id]] ?? RANK_ORDER['follow-on']
           if (left !== right) return left - right
@@ -2594,9 +2664,12 @@ const RANK_ORDER = {
         for (const row of plugins) {
           const gid = groupOfRow(groups, row)
           if (gid === null) continue
-          const groupEffective = row.groupWorkspace ?? row.groupGlobal
+          // 按选中那张 pack 算：分包页画的是它，不是工作区绑定的那张。
+          const groupEffective = packGroupOf(pack, gid) ?? packGroupOf(defaultPack, gid)
           if (groupEffective === null) continue
-          if (row.open !== groupEffective) {
+          const name = itemKey(row)
+          const effective = packItemOf(pack, name) ?? landingOf(pack, defaultPack, name, gid)
+          if (effective !== groupEffective) {
             counts[gid] = (counts[gid] || 0) + 1
           }
         }
@@ -2614,20 +2687,22 @@ const RANK_ORDER = {
         let volume = 0
         if (pack === null) return { count: 0, volume: 0 }
         for (const row of plugins) {
-          if (itemKey(row) === '') continue
-          // 只数「确定关掉」的行：落点未知时按开算，宁可少报省下的量。
-          if (row.open !== false) continue
+          const name = itemKey(row)
+          if (name === '') continue
+          // 按选中那张 pack 求值：这张 pack 绑上去以后，哪些插件不可见。
+          const gid = groupOfRow(groups, row)
+          if ((packItemOf(pack, name) ?? landingOf(pack, defaultPack, name, gid)) !== false) continue
           count += 1
           volume += weightOf(row)
         }
         return { count: count, volume: Math.round(volume) }
-      }, [plugins, pack, groups])
+      }, [plugins, pack, defaultPack, groups])
 
       /**
-       * 复制后选中新出现的那一张。
+       * 新建或复制后选中新出现的那一张。
        *
-       * 新建不选中（空 pack 没什么可看），复制要选中：副本有完整内容，用户复制它
-       * 就是为了改，不选中等于让用户多点一下。
+       * 两者都要选中：不选中的话，用户接着改开关时改的是**上一张** pack，新包保存
+       * 下来是空的——看起来就是「新建的包丢了」。
        *
        * 必须放在下面那个 `pack === null` 的提前返回**之前**：hook 的调用顺序不能随
        * 渲染分支变化，放在条件返回之后会让整个面板崩成空白。
@@ -2662,6 +2737,10 @@ const RANK_ORDER = {
           if (props.notify) props.notify('已存在同名 pack：' + trimmed)
           return
         }
+        // 新建后立刻选中它：不选中的话，用户接着改开关时改的是**上一张** pack，
+        // 新包保存下来是空的——看起来就是「新建的包丢了」。
+        // 与复制同一条规则：记下改动前的 id 集合，试算视图里多出来的那张就是它。
+        wanted.current = new Set(packs.map((entry) => entry.id))
         queue([{ op: 'createPack', name: trimmed }])
         setNewName('')
       }
@@ -2841,11 +2920,11 @@ const RANK_ORDER = {
           groups.groups.length === 0
             ? h('div', { style: S.hint }, '还没有分组。到「分组」页新建，或直接在下面逐项设置。')
             : orderedGroups.map((group) => {
-                const rank = groupRanks[group.id]
-                const value =
-                  rank === 'explicit-on' ? true : rank === 'explicit-off' ? false : null
+                // 显示值读**试算后**的 pack（`pack`），不读冻结的 `sortPack`：
+                // 后者只用来定排序位置，拿它渲染会让未保存的改动看不见。
+                const value = packGroupOf(pack, group.id)
                 // 组的落点：这张 pack 没记录时看 default 的组记录，再退到内置缺省（开）。
-                const inherited = rank === 'follow-off' ? false : true
+                const inherited = packGroupOf(defaultPack, group.id) ?? true
                 return h(
                   'div',
                   {
@@ -2904,9 +2983,10 @@ const RANK_ORDER = {
             ? h('div', { style: S.empty }, plugins.length === 0 ? '还没有识别到任何插件。' : '没有匹配的插件')
             : items.map((row) => {
                 const name = itemKey(row)
-                const value = row.itemWorkspace
+                // 读选中那张 pack 的原始记录：`row.itemWorkspace` 是工作区绑定的那张。
+                const value = packItemOf(pack, name)
                 const gid = groupOfRow(groups, row)
-                const inherited = row.landing
+                const inherited = landingOf(pack, defaultPack, name, gid)
                 const followLabel = inherited ? '跟随（开）' : '跟随（关）'
                 return h(
                   'div',

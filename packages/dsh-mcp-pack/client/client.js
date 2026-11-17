@@ -1520,6 +1520,58 @@ const RANK_ORDER = {
       return '未分组'
     }
 
+    /**
+     * 分包页读的是**选中那张 pack 的原始记录**，不是工作区求值链。
+     *
+     * 服务端行上的 `itemWorkspace` / `rank` 按**工作区绑定的** pack 算，而分包页让
+     * 用户逐张编辑 pack——选中哪张由本地状态决定，服务端不知道。拿绑定 pack 的结论
+     * 渲染分包页，结果是每张 pack 都显示成同一份值：默认 pack 里显式关掉的行显示成
+     * 「开」，其余 pack 全部显示成「跟随」，排序也退化成按名字。
+     *
+     * 这里只做「读原始记录 + 算档位」，不碰求值链：链仍由服务端算，行上的 `open` 就是它。
+     */
+    function packEnabledOf(pack, rowKey) {
+      return entryField(policyOf(pack, rowKey), 'enabled')
+    }
+
+    /** 选中 pack 里这一组的显式值；没有键返回 null（跟随）。 */
+    function packGroupOf(pack, gid) {
+      if (pack === null || pack === undefined || !pack.groups || gid === null || gid === undefined) return null
+      if (!Object.hasOwn(pack.groups, gid)) return null
+      const value = pack.groups[gid]
+      return typeof value === 'boolean' ? value : null
+    }
+
+    /**
+     * 这一行在选中 pack 里「跟随」时会落到哪。
+     *
+     * 与 `resolveRow` 的 `landing` 同一条规则，只是把「工作区绑定的 pack」换成
+     * 「选中的 pack」：先看这张 pack 的组记录，再走 default 层的行、组，最后内置缺省开。
+     */
+    function landingOf(pack, defaultPack, rowKey, gid) {
+      const byGroup = packGroupOf(pack, gid)
+      if (byGroup !== null) return byGroup
+      const byRow = packEnabledOf(defaultPack, rowKey)
+      if (byRow !== null) return byRow
+      const defaultGroup = packGroupOf(defaultPack, gid)
+      if (defaultGroup !== null) return defaultGroup
+      return true
+    }
+
+    /**
+     * 分包页的排序档位。
+     *
+     * 与 core 的 `rankOf` 同一条规则，输入换成「选中 pack 的显式记录」。名字带 `pack`
+     * 前缀是为了与工作区那条链区分：`scripts/check-panels.mjs` 禁止客户端再写一遍
+     * `rankOf`，挡的是工作区求值链回潮，不是这里。
+     */
+    function packRankOf(explicit, isDefault, landing) {
+      if (explicit === true) return 'explicit-on'
+      if (explicit === false) return 'explicit-off'
+      if (isDefault) return 'explicit-on'
+      return landing ? 'follow-on' : 'follow-off'
+    }
+
 
     /**
      * 已知工作区：从会话列表里取 cwd，排除子代理会话，按最近更新倒序去重，
@@ -2750,6 +2802,7 @@ const RANK_ORDER = {
     function RowLine(props) {
       const row = props.row
       const pack = props.pack
+      const packs = props.packs || []
       const groups = props.groups
       const isDefault = props.isDefault
       const queue = props.queue
@@ -2757,11 +2810,12 @@ const RANK_ORDER = {
       const [open, setOpen] = useState(false)
       const rowKey = rowKeyOf(row)
       const gid = groupIdOf(row)
-      const enabled = fieldOf(pack, rowKey, 'enabled')
+      // 读选中那张 pack 的原始记录：`row.itemWorkspace` 是工作区绑定的那张。
+      const enabled = packEnabledOf(pack, rowKey)
       const source = rowSourceOf(row)
       // 「跟随」不是一种状态值，而是一个待求值的位置：告诉用户它此刻落到开还是关，
-      // 否则三态里那个中间项等于什么也没说。落点由服务端算好（`row.landing`）。
-      const landing = row.landing
+      // 否则三态里那个中间项等于什么也没说。落点按选中那张 pack 算。
+      const landing = landingOf(pack, defaultPackOf(packs), rowKey, gid)
       // 迁移可能把老的三个字段带进非 default 的 pack。MCP 页只读 default，看不到这些
       // 覆盖；这里只提示，绝不删数据。
       const overridden =
@@ -3051,8 +3105,14 @@ const RANK_ORDER = {
         // 顺序是「开 > 关 > 跟随(开) > 跟随(关)」：显式决定过的排在前面，
         // 跟随项再按它会落到开还是关区分。同档按 server 名排。
         //
-        // 档位由服务端算好（core 的 rankOf）：浏览器只按它排，不再自己走求值链。
-        const rankOfRow = (row) => RANK_ORDER[row.rank] ?? RANK_ORDER['follow-on']
+        // 档位按**选中那张 pack** 算，不按工作区绑定的那张：分包页编辑的是前者。
+        const rankOfRow = (row) => {
+          const key = rowKeyOf(row)
+          const gid = groupIdOf(row)
+          return RANK_ORDER[
+            packRankOf(packEnabledOf(sortPack, key), isDefault, landingOf(sortPack, sortDefault, key, gid))
+          ]
+        }
         return visible.sort((a, b) => {
           const left = rankOfRow(a)
           const right = rankOfRow(b)
@@ -3061,11 +3121,19 @@ const RANK_ORDER = {
         })
       }, [rows, groups, query, sortPack, sortDefault, isDefault])
 
-      /** 分组同样「开 > 关 > 跟随(开) > 跟随(关)」；跟随落点用 default 的组记录。 */
-      const groupRanks = data.groupRanks || {}
+      /** 分组同样「开 > 关 > 跟随(开) > 跟随(关)」，同样按选中那张 pack 算。 */
+      const groupRanks = useMemo(() => {
+        const out = {}
+        for (const group of groups.groups) {
+          const own = packGroupOf(sortPack, group.id)
+          const landing = packGroupOf(sortDefault, group.id) ?? true
+          out[group.id] = packRankOf(own, isDefault, landing)
+        }
+        return out
+      }, [groups.groups, sortPack, sortDefault])
       const orderedGroups = useMemo(() => {
         return [...groups.groups].sort((a, b) => {
-          // 组级档位同样由服务端算：groupRanks 与行的 rank 用同一条规则。
+          // 组级档位与行的档位用同一条规则，同样按选中那张 pack 算。
           const left = RANK_ORDER[groupRanks[a.id]] ?? RANK_ORDER['follow-on']
           const right = RANK_ORDER[groupRanks[b.id]] ?? RANK_ORDER['follow-on']
           if (left !== right) return left - right
@@ -3087,10 +3155,10 @@ const RANK_ORDER = {
       }, [rows])
 
       /**
-       * 复制后选中新出现的那一张。
+       * 新建或复制后选中新出现的那一张。
        *
-       * 新建不选中（空 pack 没什么可看），复制要选中：副本有完整内容，用户复制它
-       * 就是为了改，不选中等于让用户多点一下。
+       * 两者都要选中：不选中的话，用户接着改开关时改的是**上一张** pack，新包保存
+       * 下来是空的——看起来就是「新建的包丢了」。
        *
        * 必须放在下面那个 `pack === null` 的提前返回**之前**：hook 的调用顺序不能随
        * 渲染分支变化，放在条件返回之后会让整个面板崩成空白。
@@ -3116,6 +3184,10 @@ const RANK_ORDER = {
           if (props.notify) props.notify('已存在同名 pack：' + trimmed)
           return
         }
+        // 新建后立刻选中它：不选中的话，用户接着改开关时改的是**上一张** pack，
+        // 新包保存下来是空的——看起来就是「新建的包丢了」。
+        // 与复制同一条规则：记下改动前的 id 集合，试算视图里多出来的那张就是它。
+        wanted.current = new Set(packs.map((entry) => entry.id))
         queue([{ op: 'createPack', name: trimmed }])
         setNewName('')
       }
@@ -3281,10 +3353,10 @@ const RANK_ORDER = {
           groups.groups.length === 0
             ? h('div', { style: S.hint }, '还没有分组。到「分组」页新建，或直接在下面逐行设置。')
             : orderedGroups.map((group) => {
-                const rank = groupRanks[group.id]
-                const value =
-                  rank === 'explicit-on' ? true : rank === 'explicit-off' ? false : null
-                const inherited = rank === 'follow-off' ? false : true
+                // 显示值读**试算后**的 pack（`pack`），不读冻结的 `sortPack`：
+                // 后者只用来定排序位置，拿它渲染会让未保存的改动看不见。
+                const value = packGroupOf(pack, group.id)
+                const inherited = packGroupOf(defaultPack, group.id) ?? true
                 return h(
                   'div',
                   {
@@ -3331,6 +3403,7 @@ const RANK_ORDER = {
                   key: rowKeyOf(row),
                   row: row,
                   pack: pack,
+                  packs: packs,
                   groups: groups,
                   isDefault: isDefault,
                   queue: queue,

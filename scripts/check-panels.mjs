@@ -85,6 +85,16 @@ const RULES = {
 }
 
 /**
+ * 剥掉块注释与行注释。
+ *
+ * 计数与判据都只该看代码：`dryRun` 这类词在注释里出现 3-6 次，把代码里的用法删掉
+ * 计数仍然达标；反过来，注释里解释「为什么不用 X」也会让禁用判据误报。
+ */
+function stripComments(source) {
+  return source.replace(/\/\*[\s\S]*?\*\//gu, '').replace(/^\s*\/\/.*$/gmu, '')
+}
+
+/**
  * 界面基调红线里能用字符串表达的那几条（见 docs/ui-baseline.md）。
  *
  * 只收「当前已满足、且回潮会静默坏掉」的：不测渲染，测的是「这条纪律还在不在」。
@@ -129,10 +139,36 @@ const BASELINE = [
     check(source) {
       // 注释里提到它是允许的——`T` 的注释正是在解释「为什么不用它」。
       // 只查代码：剥掉块注释与行注释再判。
-      const code = source.replace(/\/\*[\s\S]*?\*\//gu, '').replace(/^\s*\/\/.*$/gmu, '')
-      return !code.includes('--dsw-alias-state-idle-primary')
+      return !stripComments(source).includes('--dsw-alias-state-idle-primary')
     },
     detail: '开关用了 --dsw-alias-state-idle-primary：暗色主题下会变成一条白条',
+  },
+  {
+    // 分包页编辑的是**用户选中的**那张 pack，服务端行上的 itemWorkspace / landing /
+    // groupWorkspace 算的是**工作区绑定的**那张。两者不是一回事：全局视图里
+    // policy.pack 恒为 null，拿它渲染会让每张 pack 都显示成同一份值——默认 pack 里
+    // 显式关掉的项显示成「开」，其余 pack 全显示成「跟随」。
+    name: '分包页不读工作区求值字段',
+    check(source) {
+      return !/\brow\.(itemWorkspace|landing|groupWorkspace|groupGlobal)\b/u.test(stripComments(source))
+    },
+    detail: '分包页读了 row.itemWorkspace / row.landing：那是工作区绑定的 pack，不是用户选中的那张',
+  },
+  {
+    // 分包页的档位要判「选中的是不是 default pack」，不是「选中的是不是 null」。
+    // default pack 在数据里是真实对象，永远不为 null——写成 sortPack === null 会让
+    // isDefault 恒假，default 里没记录的项被算成「跟随」而不是「开」，于是「关」
+    // 排到了「开」前面。
+    name: '分包页档位判 isDefault 而不是 null',
+    check(source) {
+      // 逐行判：`packRankOf(packItemOf(...), sortPack === null, ...)` 里第一个参数自带
+      // 括号，用 `[^)]*` 会在那里停住，判据形同虚设。
+      for (const line of stripComments(source).split('\n')) {
+        if (line.includes('packRankOf(') && line.includes('=== null')) return false
+      }
+      return true
+    },
+    detail: 'packRankOf 的 isDefault 参数写成了 `xxx === null`：default pack 是真实对象，恒不为 null',
   },
 ]
 
@@ -198,7 +234,7 @@ for (const dir of dirs) {
     const source = readFileSync(path, 'utf8')
     // 计数前先剥注释：`dryRun` 这类词在注释里出现 3-6 次，把代码里的用法删掉
     // 计数仍然达标，断言形同虚设。
-    const code = source.replace(/\/\*[\s\S]*?\*\//gu, '').replace(/^\s*\/\/.*$/gmu, '')
+    const code = stripComments(source)
     const rules = RULES[dir.name]
     if (rules === undefined) continue
     for (const [needle, count] of Object.entries(rules.must ?? {})) {
