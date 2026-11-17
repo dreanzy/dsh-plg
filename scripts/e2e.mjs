@@ -32,27 +32,80 @@ const check = (name, cond, detail) => log.push({ name, pass: !!cond, detail: con
 /** 记一条「没验」：清单不足、目录未就绪这类前置不满足时用它，别用 check(..., true) 冒充通过。 */
 const skip = (name) => log.push({ name, pass: true, skipped: true })
 
+/** 落盘文件名计数器：同一毫秒内连跑两条命令时 `Date.now()` 会撞名。 */
+let runSeq = 0
+
 /**
  * 跑一条命令，输出落盘再读。
  *
  * 不用 `stdio: 'pipe'`：沙箱禁止程序打开命名管道，spawn 会直接 EPERM
  * （见 AGENTS.md「沙箱限制与绕开」）。落盘再读是唯一稳的路径。
+ *
+ * stdout 与 stderr 合并到同一个文件：调用方只关心「失败时能看到原因」，
+ * 分开两个文件反而要读两次。返回的 `stdout` 与 `stderr` 是同一份文本。
  */
 async function run(command, args) {
-  const outFile = join(ROOT, '.tmp', 'e2e', 'cmd-' + String(Date.now()) + '.log')
+  runSeq += 1
+  const outFile = join(ROOT, '.tmp', 'e2e', 'cmd-' + String(Date.now()) + '-' + String(runSeq) + '.log')
   await mkdir(join(ROOT, '.tmp', 'e2e'), { recursive: true })
-  const child = spawn(command, args, {
-    cwd: ROOT,
-    env: { ...process.env, DSH_HOME: HOME },
-    stdio: ['ignore', 'ignore', 'ignore'],
-    shell: process.platform === 'win32',
-    detached: false,
+  const fd = openSync(outFile, 'w')
+  let code
+  try {
+    const child = spawn(command, args, {
+      cwd: ROOT,
+      env: { ...process.env, DSH_HOME: HOME },
+      stdio: ['ignore', fd, fd],
+      shell: process.platform === 'win32',
+      detached: false,
+    })
+    code = await new Promise((resolvePromise, reject) => {
+      child.on('error', reject)
+      child.on('close', (value) => resolvePromise(value))
+    })
+  } finally {
+    closeSync(fd)
+  }
+  let text = ''
+  try {
+    text = await readFile(outFile, 'utf8')
+  } catch {
+    // 文件没写出来：命令可能在 spawn 阶段就失败了，错误由调用方的 code 判据兜住。
+  }
+  return { code, stdout: text, stderr: text }
+}
+
+/**
+ * 杀掉子进程**整棵树**，并等它真的退出。
+ *
+ * 两个坑叠在一起：
+ * 1. `shell: true` 下 spawn 起的是 `cmd.exe /c dsh ...`，`child.kill()` 只杀 cmd，
+ *    真正的 dsh 进程还活着，它的 cwd 就是 workspace，目录删不掉（EBUSY）。
+ * 2. `kill()` 只是发信号，进程可能还在收尾。固定 sleep 猜不准，等 `exit` 才可靠。
+ *
+ * 所以 Windows 下用 `taskkill /T /F` 杀整棵树，再等 `exit`。
+ */
+async function killTree(child, timeoutMs = 15000) {
+  if (child.exitCode !== null || child.signalCode !== null) return
+  if (process.platform === 'win32' && child.pid !== undefined) {
+    await new Promise((resolvePromise) => {
+      const killer = spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore' })
+      killer.on('error', () => resolvePromise())
+      killer.on('close', () => resolvePromise())
+    })
+  } else {
+    child.kill()
+  }
+  await new Promise((resolvePromise) => {
+    if (child.exitCode !== null || child.signalCode !== null) {
+      resolvePromise()
+      return
+    }
+    const timer = setTimeout(resolvePromise, timeoutMs)
+    child.once('exit', () => {
+      clearTimeout(timer)
+      resolvePromise()
+    })
   })
-  const code = await new Promise((resolvePromise, reject) => {
-    child.on('error', reject)
-    child.on('close', (value) => resolvePromise(value))
-  })
-  return { code, stdout: '', stderr: '' }
 }
 
 async function waitForServer(timeoutMs = 60000) {
@@ -398,11 +451,10 @@ async function main() {
       }
     }
   } finally {
-    server.kill()
-    await new Promise((r) => setTimeout(r, 2000))
-    try { closeSync(logFd) } catch { /* 已关 */ }
     // 服务进程的 cwd 就是 workspace：Windows 下 cwd 被占着时目录删不掉（EBUSY）。
-    // 杀进程后要等它真的退，再重试删除。
+    // 必须杀整棵树并等它真的退，见 `killTree`。
+    await killTree(server)
+    try { closeSync(logFd) } catch { /* 已关 */ }
     for (let attempt = 0; attempt < 10; attempt += 1) {
       try {
         await rm(join(ROOT, '.tmp', 'e2e'), { recursive: true, force: true })
