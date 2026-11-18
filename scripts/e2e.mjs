@@ -24,7 +24,14 @@ import { fileURLToPath } from 'node:url'
 const ROOT = resolve(fileURLToPath(new URL('..', import.meta.url)))
 const HOME = join(ROOT, '.tmp', 'e2e', 'home')
 const PROFILE = 'e2e-verify'
-const PORT = 3210
+/**
+ * 端口。
+ *
+ * 不用 3210：Windows 的 TCP 保留段（`netsh interface ipv4 show excludedportrange`）
+ * 实测覆盖 3139–3238，落在里面的端口 listen 会报 `EACCES`，而 dsh 把这条错误藏在
+ * stderr 里，表现是「进程起来了但端口不通」。3300 不在任何保留段内。
+ */
+const PORT = 3300
 const PACKAGES = ['dsh-pack-core', 'dsh-skill-pack', 'dsh-plugin-pack', 'dsh-mcp-pack', 'dsh-model-pack']
 
 const log = []
@@ -44,6 +51,26 @@ let runSeq = 0
  * stdout 与 stderr 合并到同一个文件：调用方只关心「失败时能看到原因」，
  * 分开两个文件反而要读两次。返回的 `stdout` 与 `stderr` 是同一份文本。
  */
+/**
+ * 子进程的环境。
+ *
+ * **必须剔掉宿主注入的 DSH_\* 变量**。在 DSH 自己的 bash 会话里跑这个脚本时，
+ * `dsh-shell-env` 会把 `DSH_PROFILE_DIR` / `DSH_PROFILE` / `DSH_SESSION_ID` 等
+ * 注入进来，`spawn` 默认继承 `process.env`，隔离 profile 的进程就会读到**真实**
+ * profile 的路径——目录扫描于是扫的是 `~/.dsh/profiles/web`，跨 profile 串味的
+ * 断言永远通过，抓不住任何 bug。
+ *
+ * 只保留 `DSH_HOME` 与调用方显式给的那几个。
+ */
+function childEnv(extra = {}) {
+  const env = {}
+  for (const [key, value] of Object.entries(process.env)) {
+    if (key.startsWith('DSH_')) continue
+    env[key] = value
+  }
+  return { ...env, DSH_HOME: HOME, ...extra }
+}
+
 async function run(command, args) {
   runSeq += 1
   const outFile = join(ROOT, '.tmp', 'e2e', 'cmd-' + String(Date.now()) + '-' + String(runSeq) + '.log')
@@ -53,7 +80,7 @@ async function run(command, args) {
   try {
     const child = spawn(command, args, {
       cwd: ROOT,
-      env: { ...process.env, DSH_HOME: HOME },
+      env: childEnv(),
       stdio: ['ignore', fd, fd],
       shell: process.platform === 'win32',
       detached: false,
@@ -180,13 +207,50 @@ async function main() {
     )
   }
 
+  // ---------- 第二个 profile：只装一个当前 profile 没有的包 ----------
+  //
+  // 必须在起服务**之前**建好：面板读的是启动时写下的目录缓存，服务起来之后再建
+  // 第二个 profile，串味也看不出来——那条断言就抓不住 bug。
+  //
+  // 不能用仓库里的包：当前 profile 是从 `web` 复制的，那些包它本来就有，列出来
+  // 是对的，验不出串味。
+  const OTHER = 'e2e-other'
+  const FOREIGN = 'e2e-foreign-pkg'
+  const foreignDir = join(ROOT, '.tmp', 'e2e', 'foreign', FOREIGN)
+  await mkdir(join(foreignDir, 'lib'), { recursive: true })
+  await writeFile(
+    join(foreignDir, 'package.json'),
+    JSON.stringify(
+      {
+        name: FOREIGN,
+        version: '1.0.0',
+        main: './lib/index.js',
+        dsh: { bundle: { patch: './cordis.patch.yml' } },
+      },
+      null,
+      2,
+    ),
+  )
+  await writeFile(join(foreignDir, 'lib', 'index.js'), 'export const name = ' + JSON.stringify(FOREIGN) + '\n')
+  await writeFile(join(foreignDir, 'cordis.patch.yml'), '[]\n')
+
+  // 第二个 profile 与当前 profile 同住一个 DSH_HOME：这正是串味的现场。
+  const madeOther = await run('dsh', [OTHER, '--from-default-profile', 'web', '--dump-config'])
+  const addedForeign =
+    madeOther.code === 0
+      ? await run('dsh', ['plugin', '--profile', OTHER, 'add', 'link:' + foreignDir])
+      : { code: 1 }
+  const foreignReady = madeOther.code === 0 && addedForeign.code === 0
+
   // ---------- 起服务 ----------
   const serverLog = join(ROOT, '.tmp', 'e2e', 'server.log')
   const logFd = openSync(serverLog, 'a')
   const server = spawn('dsh', ['--profile', PROFILE, '--no-open', '--port', String(PORT)], {
     cwd: WORKSPACE,
     // USERPROFILE 一起改：宿主按它找 `~/.agents/skills`，只改 DSH_HOME 读不到 fixture。
-    env: { ...process.env, DSH_HOME: HOME, USERPROFILE: FAKE_USER },
+    // childEnv 剔掉宿主注入的 DSH_*：留着 DSH_PROFILE_DIR 会让隔离 profile 的进程
+    // 读到真实 profile 的路径，跨 profile 串味的断言就永远通过。
+    env: childEnv({ USERPROFILE: FAKE_USER }),
     stdio: ['ignore', logFd, logFd],
     shell: process.platform === 'win32',
   })
@@ -285,9 +349,14 @@ async function main() {
         await post(P + '/apply', { commands: [{ op: 'packItem', packId: 'default', name: target, value: false }] })
         const off = await post(P + '/global', {})
         const row = (off.json.value?.plugins ?? []).find((entry) => entry.pkg === target)
-        check('plugin: 显式关 → rank=explicit-off', row?.rank === 'explicit-off', row?.rank)
+        // 全局视图的 rank 恒为 explicit-on：loadState(null) 的 policy.pack 是 null，
+        // rankOf 的 isDefault 因此恒真——那是「没有选中 pack」的正确表达，不是缺陷
+        // （skill 包的同一处断言也这么写）。这里验的是 open 与 openGlobal 的值，
+        // 它们与档位同源，档位算错时会一起错。
+        check('plugin: 显式关 → rank=explicit-on（全局视图无选中 pack）', row?.rank === 'explicit-on', row?.rank)
         check('plugin: 显式关 → open=false', row?.open === false, row?.open)
         check('plugin: 显式关 → openGlobal=false', row?.openGlobal === false, row?.openGlobal)
+        check('plugin: 显式关 → itemGlobal=false', row?.itemGlobal === false, row?.itemGlobal)
         await post(P + '/apply', { commands: [{ op: 'packItem', packId: 'default', name: target, value: null }] })
       } else {
         check('plugin: 目录未就绪时 plugins 为空且 pending 为真', g.json.value?.pending === true, g.json.value?.pending)
@@ -436,6 +505,37 @@ async function main() {
         // 复原。
         await post(P + '/apply', { commands: [{ op: 'packItem', packId: 'default', name: target, value: null }] })
       }
+    }
+
+    // ---------- 插件目录只扫当前 profile ----------
+    //
+    // 单包测试能验 `profileDirs()` 的返回值，验不到「profileContext 是否真的注入到了
+    // 插件进程」——那只有真实装配路径能验。第二个 profile 在**起服务之前**就建好，
+    // 否则面板读的是启动时写下的缓存，串味也看不出来（这条断言就抓不住 bug）。
+    if (!foreignReady) {
+      skip('目录范围: 第二个 profile 没建起来，跳过')
+    } else {
+      const view = await post('/api/plugin-pack/global', {})
+      const names = (view.json.value?.plugins ?? []).map((row) => row.pkg)
+      // 判据是「那个只装在别的 profile 里的包不得出现」。用行数或依赖集合比对
+      // 都不行：当前 profile 从 web 复制而来，本来就有一堆第三方包。
+      check(
+        '目录范围: 面板不列出别的 profile 装的包',
+        !names.includes(FOREIGN),
+        '只装在 ' + OTHER + ' 里的 ' + FOREIGN + ' 出现在了当前 profile 的面板上',
+      )
+      // 目录可能还在扫（pending=true 表示后台扫描在飞）。等它落定再判完整性：
+      // 判据是「扫描完成后目录是完整的」，不是「第一次请求就完整」。
+      let settled = view
+      for (let attempt = 0; attempt < 20 && settled.json.value?.pending === true; attempt += 1) {
+        await new Promise((r) => setTimeout(r, 500))
+        settled = await post('/api/plugin-pack/global', {})
+      }
+      check(
+        '目录范围: 目录完整（profileContext 已注入）',
+        settled.json.value?.pending !== true,
+        'pending=' + String(settled.json.value?.pending),
+      )
     }
 
     // ---------- 原型链 op 不被当成 internal ----------

@@ -170,9 +170,12 @@ test('新建 pack 会记下改动前的 id 集合，供 effect 选中新出现�
   // 新建后 selected 停在上一张 pack，用户接着改的开关全落在旧包上。
   const source = readFileSync(CLIENT, 'utf8')
   const body = source.slice(source.indexOf('const createPack = () =>'), source.indexOf('const duplicatePack'))
-  assert.ok(
-    body.includes('wanted.current = new Set('),
-    'createPack 没有记下改动前的 id 集合：新建后不会自动选中新包，改动会落在上一张 pack 上',
+  // 判据必须带上「用 packs 的 id 填进去」：只查 `new Set(` 的话，写成 `new Set()`
+  // 也照样通过——集合恒空，试算视图里永远认不出新包，而测试全绿。
+  assert.match(
+    body,
+    /wanted\.current = new Set\(\s*packs\.map\(/u,
+    'createPack 没有用改动前的 id 集合填 wanted：新建后不会自动选中新包，改动会落在上一张 pack 上',
   )
 })
 

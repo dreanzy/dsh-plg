@@ -92,10 +92,13 @@ const CLIENT = [
     ],
   },
   {
+    // 新建后不记下改动前的 id 集合，试算视图里就认不出哪张是新包，于是不选中它。
+    // 用户接着改开关时改的是上一张 pack，新包保存下来是空的——看起来就是「新建的包丢了」。
+    // 用字面量锚点而不是行号：这个文件里加几行样式就会让行号整体下移，锚点静默失配。
     name: '新建 pack 后不自动选中',
     file: 'packages/dsh-skill-pack/client/client.js',
-    lines: [2433, 2433],
-    repl: [],
+    from: '        wanted.current = new Set(packs.map((entry) => entry.id))',
+    to: '        wanted.current = new Set()',
   },
   {
     name: '排序档位顺序对调（follow-on / follow-off）',
@@ -154,6 +157,16 @@ const SERVER = [
     file: 'packages/dsh-skill-pack/src/routes.ts',
     from: '    const byName = nameOf(a).localeCompare(nameOf(b), \'zh\')',
     to: '    const byName = a.localeCompare(b)',
+  },
+  {
+    // 2026-11-18 真出过：面板列出了别的 profile 装过的插件，用户在 web 里卸载了
+    // dsh-tool-antigravity，它却还在面板上——因为扫描退回扫了全部 profile。
+    // 抓住它的是 e2e：单测里 profileDirs() 读的是假目录，验不到 profileContext
+    // 是否真的注入到了插件进程。
+    name: '目录退回扫全部 profile',
+    file: 'packages/dsh-plugin-pack/src/catalog.ts',
+    from: '  if (profileDirHint !== null && (await isProfileDir(profileDirHint))) {\n    return { dirs: [profileDirHint], certain: true }\n  }',
+    to: '  // 变异：忽略 profileContext，退回全扫',
   },
 ]
 

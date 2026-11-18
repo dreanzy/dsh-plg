@@ -155,6 +155,49 @@ const BASELINE = [
     detail: '分包页读了 row.itemWorkspace / row.landing：那是工作区绑定的 pack，不是用户选中的那张',
   },
   {
+    // 2026-11-18 真出过：残留键组件在三个包里都写了 `style: S.action`，但只有
+    // plugin-pack 有这个样式键。另外两包拿到 `undefined`，按钮落回浏览器默认样式
+    // ——用户看到的是「一条黑框」，而 `node --check`、单测、check-panels 全绿。
+    //
+    // 判据：源码里引用的每个 `S.<键>` 都必须在同一个文件的 `S = {` 里定义过。
+    // 只查 S 不查 T：T 是颜色常量，漏了会直接报 undefined 而不是静默降级。
+    name: '引用的 S 样式键都有定义',
+    check(source) {
+      const code = stripComments(source)
+      const start = code.indexOf('const S = {')
+      if (start < 0) return true
+      // 从 `const S = {` 起找到配对的 `}`：按花括号深度扫，跳过字符串。
+      let depth = 0
+      let end = -1
+      let quote = null
+      for (let index = start; index < code.length; index += 1) {
+        const char = code[index]
+        if (quote !== null) {
+          if (char === '\\') { index += 1; continue }
+          if (char === quote) quote = null
+          continue
+        }
+        if (char === '"' || char === "'" || char === '`') { quote = char; continue }
+        if (char === '{') depth += 1
+        else if (char === '}') {
+          depth -= 1
+          if (depth === 0) { end = index; break }
+        }
+      }
+      if (end < 0) return true
+      const body = code.slice(start, end)
+      // 定义：行首缩进后的 `键:` 或 `键(`（函数式样式）。
+      const defined = new Set()
+      for (const match of body.matchAll(/^\s{4,}([A-Za-z_][A-Za-z0-9_]*)\s*[:(]/gmu)) defined.add(match[1])
+      // 引用：`S.键`，排除 `S.键(` 之外的属性链（`S.a.b` 只取 a）。
+      for (const match of code.matchAll(/\bS\.([A-Za-z_][A-Za-z0-9_]*)/gu)) {
+        if (!defined.has(match[1])) return false
+      }
+      return true
+    },
+    detail: '引用了未定义的 S 样式键：该处 style 会拿到 undefined，控件落回浏览器默认样式',
+  },
+  {
     // 分包页的档位要判「选中的是不是 default pack」，不是「选中的是不是 null」。
     // default pack 在数据里是真实对象，永远不为 null——写成 sortPack === null 会让
     // isDefault 恒假，default 里没记录的项被算成「跟随」而不是「开」，于是「关」
