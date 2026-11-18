@@ -1,4 +1,5 @@
 import type { Envelope, ErrorCode } from '@dreanzy/dsh-pack-core'
+import { staleKeysOf } from '@dreanzy/dsh-pack-core'
 import { candidateTools, defaultCatalogFeed, type CatalogFeed } from './catalog.js'
 import { resolveSession, type Rank, type RouteContext, type SessionResolution } from '@dreanzy/dsh-pack-core'
 import { effective, type EffectiveDiff, type EffectiveRow } from './effective.js'
@@ -94,6 +95,21 @@ export interface PackView {
   readonly builtin: boolean
 }
 
+/**
+ * 一个残留键。
+ *
+ * `kind` 决定清理时要发哪种命令：`item` 是 `packItem: null`，`group` 是
+ * `packGroup: null`，`assignment` 是 `assign: null`。三者不能合并——它们的键
+ * 空间不同（包名 vs 组 id），合并会让用户看到一串分不清是包还是组的名字。
+ */
+export interface StaleKey {
+  /** 键本身：包名或组 id。 */
+  readonly key: string
+  readonly kind: 'item' | 'group' | 'assignment'
+  /** 这个键出现在哪些 pack 里；`assignment` 是全局的，恒为空。 */
+  readonly packs: readonly string[]
+}
+
 export interface PluginView {
   /** 全部 pack，`default` 排第一。 */
   readonly packs: readonly PackView[]
@@ -111,8 +127,14 @@ export interface PluginView {
   readonly officialTotal: number
   readonly warnings: readonly string[]
   readonly support: Support
-  /** 策略里有、目录里没有的包名。保留不删（卸载再装回来决定还在）。 */
+  /**
+   * 策略里有、当前名册里没有的键。保留不删（卸载再装回来决定还在）。
+   *
+   * 保留 `outOfScope` 这个名字给旧客户端：它只是 `stale` 的键列表。
+   */
   readonly outOfScope: readonly string[]
+  /** 残留键的结构化形态：键、种类、出现在哪些 pack 里。 */
+  readonly stale: readonly StaleKey[]
   /** 目录还没扫完。前端据此把空的归属显示成「识别中」而不是「未知」。 */
   readonly pending: boolean
   /** 选中 pack 相对 default 的差异。浏览器只渲染，不再自己算。 */
@@ -407,15 +429,41 @@ function buildPluginView(input: BuildInput): PluginView {
     })
   }
 
-  // 范围外名字：策略里有、目录里没有。保留不删——卸载再装回来时决定还在。
+  // 残留键：策略里有、当前名册里没有。保留不删——卸载再装回来时决定还在。
+  //
+  // 两类名册分开算：
+  // - 项级键与分组归属的键是**包名**，名册是目录里的包名；
+  // - 组级键的键是**组 id**，名册是组注册表里的 id。
+  // 混成一份会把组 id 当成包名报出来，用户看不懂那是什么。
   const known = new Set(plugins.map((plugin) => plugin.pkg))
-  const extras = new Set<string>()
-  const collect = (namesInPack: Iterable<string>): void => {
-    for (const name of namesInPack) if (!known.has(name)) extras.add(name)
+  const itemPacks = new Map<string, string[]>()
+  const groupPacks = new Map<string, string[]>()
+  for (const [packId, pack] of Object.entries(loaded.packs.packs)) {
+    for (const name of Object.keys(pack.items)) {
+      const list = itemPacks.get(name)
+      if (list === undefined) itemPacks.set(name, [packId])
+      else list.push(packId)
+    }
+    for (const groupId of Object.keys(pack.groups)) {
+      const list = groupPacks.get(groupId)
+      if (list === undefined) groupPacks.set(groupId, [packId])
+      else list.push(packId)
+    }
   }
-  collect(Object.keys(defaultPack.items))
-  if (loaded.pack !== null) collect(Object.keys(loaded.pack.items))
-  collect(Object.keys(assignments))
+
+  const stale: StaleKey[] = []
+  for (const name of staleKeysOf(itemPacks.keys(), known)) {
+    stale.push({ key: name, kind: 'item', packs: itemPacks.get(name) ?? [] })
+  }
+  for (const name of staleKeysOf(Object.keys(assignments), known)) {
+    // 分组归属是全局的，不属于任何一张 pack。
+    stale.push({ key: name, kind: 'assignment', packs: [] })
+  }
+  const groupIds = new Set(loaded.groups.groups.map((group) => group.id))
+  for (const groupId of staleKeysOf(groupPacks.keys(), groupIds)) {
+    stale.push({ key: groupId, kind: 'group', packs: groupPacks.get(groupId) ?? [] })
+  }
+  stale.sort((left, right) => (left.key < right.key ? -1 : left.key > right.key ? 1 : 0))
 
   return {
     packs: packViews(loaded.packs),
@@ -428,7 +476,8 @@ function buildPluginView(input: BuildInput): PluginView {
     officialTotal,
     warnings,
     support: deps.support(),
-    outOfScope: [...extras].sort(),
+    outOfScope: stale.map((entry) => entry.key),
+    stale,
     pending,
     diff: answer.diff,
     groupRanks: answer.groupRanks,

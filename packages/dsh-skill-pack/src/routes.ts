@@ -1,5 +1,12 @@
 import type { Envelope, ErrorCode } from '@dreanzy/dsh-pack-core'
-import { cwdFromAgent, resolveSession, type Rank, type RouteContext, type SessionResolution } from '@dreanzy/dsh-pack-core'
+import {
+  cwdFromAgent,
+  resolveSession,
+  staleKeysOf,
+  type Rank,
+  type RouteContext,
+  type SessionResolution,
+} from '@dreanzy/dsh-pack-core'
 import { defaultPackOf } from './policy.js'
 import { effective, type EffectiveDiff } from './effective.js'
 import { isOfficialSkill, type SkillSummaryLike, type SkillsFace } from './inventory.js'
@@ -64,6 +71,18 @@ export interface PackView {
   readonly builtin: boolean
 }
 
+/**
+ * 一个残留键。
+ *
+ * 与 plugin-pack 同形：`kind` 决定清理时发哪种命令，`packs` 说明它出现在哪些 pack 里。
+ * 键空间不同（skill 名 vs 组 id），合并显示会让用户分不清。
+ */
+export interface StaleKey {
+  readonly key: string
+  readonly kind: 'item' | 'group' | 'assignment'
+  readonly packs: readonly string[]
+}
+
 export interface GlobalView {
   /** 全部 pack，`default` 排第一。 */
   readonly packs: readonly PackView[]
@@ -80,6 +99,8 @@ export interface GlobalView {
   readonly warnings: readonly string[]
   /** 已注册遮蔽但复验仍可见的名字。全局面板也要能提示「关不掉」。 */
   readonly stuck: readonly string[]
+  /** 策略里有、当前名册里没有的键。保留不删（重新装回来决定还在）。 */
+  readonly stale: readonly StaleKey[]
 }
 
 export interface WorkspaceView extends GlobalView {
@@ -183,7 +204,12 @@ function buildRows(
   state: PolicyState,
   scope: 'global' | 'workspace',
   complete: boolean,
-): { rows: SkillRow[]; diff: readonly EffectiveDiff[]; groupRanks: Readonly<Record<string, Rank>> } {
+): {
+  rows: SkillRow[]
+  diff: readonly EffectiveDiff[]
+  groupRanks: Readonly<Record<string, Rank>>
+  stale: readonly StaleKey[]
+} {
   const answer = effective({ policy: state, names: rows.map((row) => row.name), scope, complete })
   const answers = new Map(answer.rows.map((row) => [row.name, row]))
   const showOfficial = state.ui.showOfficialSkills
@@ -204,7 +230,40 @@ function buildRows(
       origin: originOf(row),
     })
   }
-  return { rows: out, diff: answer.diff, groupRanks: answer.groupRanks }
+  // 残留键：策略里有、当前名册里没有。名册是宿主快照给出的那一份，随工作区与
+  // preset 变化——同一个 skill 名在不同工作区可能一个是残留、一个不是。
+  //
+  // 两类名册分开算：项级键与分组归属的键是 skill 名，组级键的键是组 id。
+  const known = new Set(rows.map((row) => row.name))
+  const itemPacks = new Map<string, string[]>()
+  const groupPacks = new Map<string, string[]>()
+  for (const [packId, pack] of Object.entries(state.packs.packs)) {
+    for (const name of Object.keys(pack.items)) {
+      const list = itemPacks.get(name)
+      if (list === undefined) itemPacks.set(name, [packId])
+      else list.push(packId)
+    }
+    for (const groupId of Object.keys(pack.groups)) {
+      const list = groupPacks.get(groupId)
+      if (list === undefined) groupPacks.set(groupId, [packId])
+      else list.push(packId)
+    }
+  }
+
+  const stale: StaleKey[] = []
+  for (const name of staleKeysOf(itemPacks.keys(), known)) {
+    stale.push({ key: name, kind: 'item', packs: itemPacks.get(name) ?? [] })
+  }
+  for (const name of staleKeysOf(Object.keys(state.groups.assignments), known)) {
+    stale.push({ key: name, kind: 'assignment', packs: [] })
+  }
+  const groupIds = new Set(state.groups.groups.map((group) => group.id))
+  for (const groupId of staleKeysOf(groupPacks.keys(), groupIds)) {
+    stale.push({ key: groupId, kind: 'group', packs: groupPacks.get(groupId) ?? [] })
+  }
+  stale.sort((left, right) => (left.key < right.key ? -1 : left.key > right.key ? 1 : 0))
+
+  return { rows: out, diff: answer.diff, groupRanks: answer.groupRanks, stale }
 }
 
 function rootSkills(ctx: RouteContext): SkillsFace | null {
@@ -281,6 +340,7 @@ export async function handleGlobal(
         groupRanks: built.groupRanks,
         warnings: view.warnings,
         stuck: deps.stuck(),
+        stale: built.stale,
       },
     }
   } catch (error) {
@@ -328,6 +388,7 @@ async function buildWorkspaceView(
       live,
       hidden: view.hidden,
       stuck,
+      stale: built.stale,
     },
   }
 }

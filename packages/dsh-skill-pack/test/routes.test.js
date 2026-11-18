@@ -534,3 +534,78 @@ test('命令条数超过上限时拒绝，不进入 O(n²) 路径', () => {
   assert.equal(parsed.ok, false)
   assert.match(parsed.message, /最多 1000 条/u)
 })
+
+test('残留键：策略里有、名册里没有的 skill 名列出来', async () => {
+  const home = await freshHome()
+  await writePacks(home, {
+    default: { name: 'default', items: { alpha: false, 'ghost-skill': false } },
+    p1: { name: 'code', items: { 'ghost-skill': true } },
+  })
+  const view = await handleGlobal(fakeCtx(fakeSkills()), depsWith(fakeSkills()))
+  assert.equal(view.ok, true)
+  const item = view.value.stale.find((entry) => entry.key === 'ghost-skill' && entry.kind === 'item')
+  assert.ok(item, '项级残留键要列出来：' + JSON.stringify(view.value.stale))
+  assert.deepEqual([...item.packs].sort(), ['default', 'p1'])
+  // alpha 在名册里，不该出现。
+  assert.equal(
+    view.value.stale.some((entry) => entry.key === 'alpha'),
+    false,
+  )
+})
+
+test('残留键：组级键按组注册表判定，不按 skill 名册', async () => {
+  const home = await freshHome()
+  await writePacks(home, {
+    default: { name: 'default', items: {}, groups: { g9: false } },
+  })
+  await writeFile(
+    join(home, 'packs', 'skill', 'groups.json'),
+    JSON.stringify({ version: 1, groups: [{ id: 'g1', name: '官方' }], assignments: {} }, null, 2),
+  )
+  const view = await handleGlobal(fakeCtx(fakeSkills()), depsWith(fakeSkills()))
+  const group = view.value.stale.find((entry) => entry.key === 'g9' && entry.kind === 'group')
+  assert.ok(group, '组级残留键要列出来：' + JSON.stringify(view.value.stale))
+  assert.deepEqual([...group.packs], ['default'])
+})
+
+test('残留键：分组归属的键按 skill 名册判定', async () => {
+  const home = await freshHome()
+  await writePacks(home, { default: { name: 'default', items: {} } })
+  await writeFile(
+    join(home, 'packs', 'skill', 'groups.json'),
+    JSON.stringify(
+      { version: 1, groups: [{ id: 'g1', name: '官方' }], assignments: { 'ghost-skill': 'g1', alpha: 'g1' } },
+      null,
+      2,
+    ),
+  )
+  const view = await handleGlobal(fakeCtx(fakeSkills()), depsWith(fakeSkills()))
+  const assignment = view.value.stale.find((entry) => entry.key === 'ghost-skill' && entry.kind === 'assignment')
+  assert.ok(assignment, '分组归属的残留键要列出来：' + JSON.stringify(view.value.stale))
+  assert.deepEqual(assignment.packs, [])
+  assert.equal(
+    view.value.stale.some((entry) => entry.key === 'alpha'),
+    false,
+  )
+})
+
+test('清理残留键：命令应用后策略里该名字的所有键消失', async () => {
+  const home = await freshHome()
+  await writePacks(home, {
+    default: { name: 'default', items: { alpha: false, 'ghost-skill': false } },
+    p1: { name: 'code', items: { 'ghost-skill': true } },
+  })
+  const view = await handleGlobal(fakeCtx(fakeSkills()), depsWith(fakeSkills()))
+  const item = view.value.stale.find((entry) => entry.key === 'ghost-skill' && entry.kind === 'item')
+  const commands = item.packs.map((packId) => ({ op: 'packItem', packId, name: 'ghost-skill', value: null }))
+  const applied = await handleApply(fakeCtx(fakeSkills()), { commands }, depsWith(fakeSkills()))
+  assert.equal(applied.ok, true)
+
+  const book = await readJson(packsFile(home))
+  // 空 items 不落盘（序列化时省略），所以取不到就是「没有键」。
+  assert.equal(Object.hasOwn(book.packs.default.items ?? {}, 'ghost-skill'), false)
+  assert.equal(Object.hasOwn(book.packs.p1.items ?? {}, 'ghost-skill'), false)
+  // 其余键不受影响。
+  assert.equal(book.packs.default.items.alpha, false)
+  assert.deepEqual(applied.value.stale, [], '清完不该再有残留键')
+})

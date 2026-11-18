@@ -579,3 +579,70 @@ test('原型链上的 op 被当成未知操作，不是 internal', () => {
     assert.match(parsed.message, /不是已知操作/u)
   }
 })
+
+test('残留键：策略里有、Loader 里没有的行键列出来', async () => {
+  const home = await freshHome()
+  await writeJson(
+    join(home, 'packs', 'mcp', 'packs.json'),
+    packsFile({
+      default: { name: '默认', rows: { 'own:ghost': { enabled: false }, 'own:a': { enabled: true } } },
+      p1: { name: 'code', rows: { 'own:ghost': { enabled: true } } },
+    }),
+  )
+  const entries = [mcpEntry('a')]
+  const view = await handleGlobal(fakeCtx(entries), deps(entries))
+  assert.equal(view.ok, true)
+  const item = view.value.stale.find((entry) => entry.key === 'own:ghost' && entry.kind === 'item')
+  assert.ok(item, '行级残留键要列出来：' + JSON.stringify(view.value.stale))
+  assert.deepEqual([...item.packs].sort(), ['default', 'p1'])
+  // 这条 entry 的 parent 是 profile patch，行键是 global:a，它在 Loader 里，不该出现。
+  assert.equal(
+    view.value.stale.some((entry) => entry.key === 'global:a'),
+    false,
+  )
+})
+
+test('残留键：组级键按组注册表判定', async () => {
+  const home = await freshHome()
+  await writeJson(
+    join(home, 'packs', 'mcp', 'packs.json'),
+    packsFile({ default: { name: '默认', groups: { 'g-gone': false } } }),
+  )
+  await writeJson(join(home, 'packs', 'mcp', 'groups.json'), {
+    version: 1,
+    groups: [{ id: 'g1', name: '官方' }],
+    assignments: {},
+  })
+  const entries = [mcpEntry('a')]
+  const view = await handleGlobal(fakeCtx(entries), deps(entries))
+  const group = view.value.stale.find((entry) => entry.key === 'g-gone' && entry.kind === 'group')
+  assert.ok(group, '组级残留键要列出来：' + JSON.stringify(view.value.stale))
+  assert.deepEqual([...group.packs], ['default'])
+})
+
+test('清理残留键：整条行键条目消失，其余行不受影响', async () => {
+  const home = await freshHome()
+  await writeJson(
+    join(home, 'packs', 'mcp', 'packs.json'),
+    packsFile({
+      default: {
+        name: '默认',
+        rows: { 'own:ghost': { enabled: false, mode: 'lazy' }, 'global:a': { enabled: true } },
+      },
+    }),
+  )
+  const entries = [mcpEntry('a')]
+  const view = await handleGlobal(fakeCtx(entries), deps(entries))
+  const item = view.value.stale.find((entry) => entry.key === 'own:ghost' && entry.kind === 'item')
+  // 四个字段全设 null：applyPatch 在结果为空时整条删掉行键条目。
+  const clear = { enabled: null, mode: null, tools: null, description: null }
+  const commands = item.packs.map((packId) => ({ op: 'packRow', packId, rowKey: 'own:ghost', patch: clear }))
+  const applied = await handleApply(fakeCtx(entries), { commands }, deps(entries))
+  assert.equal(applied.ok, true)
+
+  const book = await readJson(join(home, 'packs', 'mcp', 'packs.json'))
+  // 整条行键条目消失：不是只删 enabled 一个字段。
+  assert.equal(Object.hasOwn(book.packs.default.rows ?? {}, 'own:ghost'), false)
+  assert.equal(book.packs.default.rows['global:a'].enabled, true)
+  assert.deepEqual(applied.value.stale, [], '清完不该再有残留键')
+})

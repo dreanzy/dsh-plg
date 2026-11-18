@@ -285,6 +285,62 @@ test('范围外包名保留不删，且不出现在插件行里', async () => {
   )
 })
 
+test('残留键分三类：项级、组级、分组归属各算各的名册', async () => {
+  const home = await freshHome()
+  await writeJson(packsFile(home), {
+    version: 1,
+    ui: { showOfficialPlugins: true },
+    packs: {
+      default: { name: 'default', items: { 'ghost-pkg': false, 'plug-a': false }, groups: { g9: false } },
+      p1: { name: 'code', items: { 'ghost-pkg': true }, groups: { g9: true } },
+    },
+  })
+  await writeJson(groupsFile(home), {
+    version: 1,
+    groups: [{ id: 'g1', name: '官方' }],
+    assignments: { 'ghost-pkg': 'g1', 'plug-a': 'g1' },
+  })
+  const view = await handleGlobal(fakeCtx(), null, deps({ catalog: feedFor(catalogFor(defaultPlugins)) }))
+  assert.equal(view.ok, true)
+
+  const stale = view.value.stale
+  // 项级：ghost-pkg 在 default 与 p1 两张 pack 里都有记录。
+  const item = stale.find((entry) => entry.key === 'ghost-pkg' && entry.kind === 'item')
+  assert.ok(item, '项级残留键要列出来：' + JSON.stringify(stale))
+  assert.deepEqual([...item.packs].sort(), ['default', 'p1'])
+  // 分组归属：ghost-pkg 仍挂在 g1 上。
+  const assignment = stale.find((entry) => entry.key === 'ghost-pkg' && entry.kind === 'assignment')
+  assert.ok(assignment, '分组归属的残留键要单独列出来')
+  assert.deepEqual(assignment.packs, [])
+  // 组级：g9 不在组注册表里，两张 pack 里的组开关都是残留。
+  const group = stale.find((entry) => entry.key === 'g9' && entry.kind === 'group')
+  assert.ok(group, '组级残留键要列出来')
+  assert.deepEqual([...group.packs].sort(), ['default', 'p1'])
+  // plug-a 在目录里，任何一类都不该出现。
+  assert.equal(
+    stale.some((entry) => entry.key === 'plug-a'),
+    false,
+  )
+})
+
+test('组 id 不会被当成包名报成项级残留', async () => {
+  const home = await freshHome()
+  await writeJson(packsFile(home), {
+    version: 1,
+    ui: { showOfficialPlugins: true },
+    packs: { default: { name: 'default', items: {}, groups: { g1: false } } },
+  })
+  await writeJson(groupsFile(home), {
+    version: 1,
+    groups: [{ id: 'g1', name: '官方' }],
+    assignments: {},
+  })
+  const view = await handleGlobal(fakeCtx(), null, deps({ catalog: feedFor(catalogFor(defaultPlugins)) }))
+  assert.equal(view.ok, true)
+  // g1 仍在注册表里：组级键不是残留。
+  assert.deepEqual(view.value.stale, [])
+})
+
 test('目录未就绪时请求不等扫描：返回 pending 并挂后台，期间不重复发起', async () => {
   await freshHome()
   // 这个用例关心的是 pending 与复用，不是官方过滤：先把开关打开，保持两行。

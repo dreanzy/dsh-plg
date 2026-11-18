@@ -1,5 +1,11 @@
 import type { Envelope, ErrorCode } from '@dreanzy/dsh-pack-core'
-import { resolveSession, type Rank, type RouteContext, type SessionResolution } from '@dreanzy/dsh-pack-core'
+import {
+  resolveSession,
+  staleKeysOf,
+  type Rank,
+  type RouteContext,
+  type SessionResolution,
+} from '@dreanzy/dsh-pack-core'
 import { scanRows } from './inventory.js'
 import { effective, type EffectiveDiff } from './effective.js'
 import { defaultPackOf, rowEntryOf } from './policy.js'
@@ -59,8 +65,22 @@ export interface RowView extends McpRow, ResolvedRow {
   readonly defaultEntry: RowPolicy | null
 }
 
+/**
+ * 一个残留键。
+ *
+ * 与另外两包同形：`kind` 决定清理时发哪种命令，`packs` 说明它出现在哪些 pack 里。
+ * 行键形如 `own:unityMCP`，与组 id 的键空间不同，合并显示会让用户分不清。
+ */
+export interface StaleKey {
+  readonly key: string
+  readonly kind: 'item' | 'group' | 'assignment'
+  readonly packs: readonly string[]
+}
+
 export interface RowsView {
   readonly rows: readonly RowView[]
+  /** 策略里有、Loader 里没有的键。保留不删（重新加回来决定还在）。 */
+  readonly stale: readonly StaleKey[]
   /** 行扫描是否完整；false 时面板不得据此隐藏任何东西。 */
   readonly complete: boolean
   readonly warnings: readonly string[]
@@ -162,12 +182,46 @@ async function buildView(
       defaultEntry: rowEntryOf(defaultPack, row.rowKey),
     })
   }
+  // 残留键：策略里有、Loader 里没有的行键。行被删掉后，packs.json 里针对它的
+  // enabled / mode / tools / description 记录与分组归属都成了残留键。
+  //
+  // 两类名册分开算：行键的名册是 Loader 里此刻存在的行，组 id 的名册是组注册表。
+  const known = new Set(view.rows.map((row) => row.rowKey))
+  const rowPacks = new Map<string, string[]>()
+  const groupPacks = new Map<string, string[]>()
+  for (const [packId, pack] of Object.entries(state.packs.packs)) {
+    for (const rowKey of Object.keys(pack.rows)) {
+      const list = rowPacks.get(rowKey)
+      if (list === undefined) rowPacks.set(rowKey, [packId])
+      else list.push(packId)
+    }
+    for (const groupId of Object.keys(pack.groups)) {
+      const list = groupPacks.get(groupId)
+      if (list === undefined) groupPacks.set(groupId, [packId])
+      else list.push(packId)
+    }
+  }
+
+  const stale: StaleKey[] = []
+  for (const rowKey of staleKeysOf(rowPacks.keys(), known)) {
+    stale.push({ key: rowKey, kind: 'item', packs: rowPacks.get(rowKey) ?? [] })
+  }
+  for (const rowKey of staleKeysOf(Object.keys(state.groups.assignments), known)) {
+    stale.push({ key: rowKey, kind: 'assignment', packs: [] })
+  }
+  const groupIds = new Set(state.groups.groups.map((group) => group.id))
+  for (const groupId of staleKeysOf(groupPacks.keys(), groupIds)) {
+    stale.push({ key: groupId, kind: 'group', packs: groupPacks.get(groupId) ?? [] })
+  }
+  stale.sort((left, right) => (left.key < right.key ? -1 : left.key > right.key ? 1 : 0))
+
   return {
     ok: true,
     value: {
       rows,
       complete: view.complete,
       warnings: view.warnings,
+      stale,
       cwd,
       live,
       binding: state.binding,
