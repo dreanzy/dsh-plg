@@ -1,4 +1,4 @@
-import { defaultCatalogFeed } from './catalog.js'
+import { defaultCatalogFeed, setProfileDirHint } from './catalog.js'
 import { readFetchFace, registerRoutes } from '@dreanzy/dsh-pack-core'
 import { installHooks, type PluginContext } from './hooks.js'
 import {
@@ -32,6 +32,21 @@ const ROUTES = {
 export function apply(ctx: unknown): void {
   const context = ctx as PluginContext & { inject(names: readonly string[], callback: () => void): unknown }
   const hooks = installHooks(context)
+
+  // 当前 profile 的目录：目录扫描只认它，否则会扫到别的 profile 装过的包。
+  // 不放进 inject——`profileContext` 只在由 dsh 启动的 profile 里存在，声明成硬依赖
+  // 会让测试与非 profile 启动直接起不来。取不到就退回全扫，目录会标记残缺。
+  try {
+    const profile = context.get('profileContext') as { dir?: unknown } | undefined
+    const dir = typeof profile?.dir === 'string' ? profile.dir : null
+    setProfileDirHint(dir)
+    if (dir === null) {
+      context.logger.warn(name + ': 宿主没有 profileContext，插件目录将退回扫描全部 profile')
+    }
+  } catch (error) {
+    setProfileDirHint(null)
+    context.logger.warn(name + ': 读取 profileContext 失败，插件目录将退回扫描全部 profile：' + String(error))
+  }
 
   // 预热插件目录：面板第一次打开时缓存已经在盘上，不用先空一轮「识别中」。
   // 它只影响速度与归属展示，失败绝不能影响插件装配。

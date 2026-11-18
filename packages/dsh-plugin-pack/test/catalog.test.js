@@ -3,7 +3,14 @@ import assert from 'node:assert/strict'
 import { mkdir, mkdtemp, readFile, stat, utimes, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { tmpdir } from 'node:os'
-import { candidateOwners, candidateTools, catalogPath, defaultCatalogFeed, fingerprint } from '../lib/catalog.js'
+import {
+  candidateOwners,
+  candidateTools,
+  catalogPath,
+  defaultCatalogFeed,
+  fingerprint,
+  setProfileDirHint,
+} from '../lib/catalog.js'
 
 /**
  * 假 profile：`package.json` 带 `dsh.profile.bundles`（识别 profile 的唯一判据），
@@ -514,15 +521,74 @@ test('main 指向包目录外时拒绝，不把别的包的工具记到本包名
   assert.equal(evil.tools.includes('victim_tool'), false, 'evil 不得认领 victim 的工具')
 })
 
-test('超大 js 被跳过时置 truncated，不谎报完整', async () => {
+test('超大 js 被跳过时该包归属不完整，但目录仍完整', async () => {
   const home = await freshHome('big-js')
   const profile = join(home, 'profile')
   const big = 'x'.repeat(9 * 1024 * 1024)
   await makeProfile(profile, {
     bigpkg: { files: { 'lib/big.js': big, 'lib/small.js': tool('small_tool') } },
+    normal: { files: { 'lib/index.js': tool('normal_tool') } },
   })
   process.env['DSH_PROFILE_DIR'] = profile
   const catalog = await defaultCatalogFeed.load({ force: true })
   const pkg = catalog.plugins.find((p) => p.pkg === 'bigpkg')
-  assert.equal(pkg.toolsKnown, false, '跳过文件后不得声称归属完整')
+  assert.equal(pkg.toolsKnown, false, '跳过文件后不得声称该包归属完整')
+  assert.deepEqual(pkg.tools, ['small_tool'], '小文件仍要扫到')
+  // 超限的是产物文件，跳过它是正确行为：整个目录不该因此判残缺，
+  // 否则面板全部显示「未生效」，且每次请求都重扫。
+  assert.equal(catalog.complete, true, '超限产物文件不该让整个目录判残缺')
+})
+
+test('只扫当前 profile：别的 profile 装过的包不得出现', async () => {
+  const home = await freshHome('scope')
+  const current = join(home, 'profiles', 'current')
+  const other = join(home, 'profiles', 'other')
+  await makeProfile(current, { 'pkg-current': { files: { 'lib/index.js': tool('current_tool') } } })
+  await makeProfile(other, { 'pkg-other': { files: { 'lib/index.js': tool('other_tool') } } })
+
+  // 宿主权威来源：profileContext.dir。DSH_PROFILE_DIR 不设，模拟插件进程的真实处境。
+  setProfileDirHint(current)
+  const catalog = await defaultCatalogFeed.load({ force: true })
+  assert.deepEqual(
+    catalog.plugins.map((p) => p.pkg),
+    ['pkg-current'],
+    '只应扫到当前 profile 的包',
+  )
+  assert.equal(catalog.complete, true, '知道当前 profile 时目录是完整的')
+})
+
+test('不知道当前 profile 时退回全扫，但标记残缺并告警', async () => {
+  const home = await freshHome('scope-unknown')
+  const first = join(home, 'profiles', 'first')
+  const second = join(home, 'profiles', 'second')
+  await makeProfile(first, { 'pkg-first': { files: { 'lib/index.js': tool('first_tool') } } })
+  await makeProfile(second, { 'pkg-second': { files: { 'lib/index.js': tool('second_tool') } } })
+
+  setProfileDirHint(null)
+  const warnings = []
+  const catalog = await defaultCatalogFeed.load({ force: true, warn: (message) => warnings.push(message) })
+  assert.deepEqual(
+    catalog.plugins.map((p) => p.pkg).sort(),
+    ['pkg-first', 'pkg-second'],
+    '退回分支仍要给出可用结果',
+  )
+  assert.equal(catalog.complete, false, '不确定当前 profile 时不得声称完整')
+  assert.ok(
+    warnings.some((line) => line.includes('无法确定当前 profile')),
+    '必须留下可读的告警：' + JSON.stringify(warnings),
+  )
+})
+
+test('只有一个 profile 时退回全扫与只扫它等价，不报不确定', async () => {
+  const home = await freshHome('scope-single')
+  const only = join(home, 'profiles', 'only')
+  await makeProfile(only, { 'pkg-only': { files: { 'lib/index.js': tool('only_tool') } } })
+
+  setProfileDirHint(null)
+  const catalog = await defaultCatalogFeed.load({ force: true })
+  assert.deepEqual(
+    catalog.plugins.map((p) => p.pkg),
+    ['pkg-only'],
+  )
+  assert.equal(catalog.complete, true, '只有一个 profile 时全扫就是它，不该报残缺')
 })

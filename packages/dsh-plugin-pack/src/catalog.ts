@@ -125,6 +125,14 @@ interface PackageCandidate {
   readonly lib: readonly CandidateFile[]
   /** lib 的清单被上限（单包文件数或递归深度）截断了：这份列表不是整包。 */
   readonly truncated: boolean
+  /**
+   * 有文件因为超过 `MAX_FILE_BYTES` 被跳过。
+   *
+   * 与 `truncated` 分开：超限的是产物文件（lighthouse worker 之类），跳过它是正确
+   * 行为，不该把整个目录判成残缺——那会让面板全部显示「未生效」。它只让这个包的
+   * `toolsKnown` 变 false，影响面收窄到一行。
+   */
+  readonly oversized: boolean
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -310,16 +318,47 @@ async function isProfileDir(dir: string): Promise<boolean> {
 }
 
 /**
+ * 当前 profile 的目录，由 `apply` 从宿主的 `profileContext.dir` 取来。
+ *
+ * 模块级可变状态，与 `memo` / `inflight` 同一套理由：扫描入口有三条（预热、路由、
+ * hooks），把 ctx 一路穿下去要改三个签名，而它只在这里用一次。
+ *
+ * 不放进 `inject`：`profileContext` 只在由 dsh 启动的 profile 里存在，声明成硬依赖
+ * 会让测试与非 profile 启动直接起不来。取不到就退回扫全部 profile 并标记不确定。
+ */
+let profileDirHint: string | null = null
+
+/** 由 `apply` 调用一次。传 `null` 表示宿主没有 `profileContext`。 */
+export function setProfileDirHint(dir: string | null): void {
+  profileDirHint = dir === null || dir.trim() === '' ? null : resolve(dir.trim())
+}
+
+/** 一次 profile 定位的结论。`certain` 为 false 表示不知道当前是哪个 profile。 */
+interface ProfileScope {
+  readonly dirs: readonly string[]
+  readonly certain: boolean
+}
+
+/**
  * 找出要扫的 profile 目录。
  *
- * 优先 `$DSH_PROFILE_DIR`（宿主注入）；它不存在或不合格时退回 `$DSH_HOME/profiles/*`，
- * 只认带 `package.json` 且声明了 `dsh.profile.bundles` 的目录，多个就全扫。
+ * 顺序：`$DSH_PROFILE_DIR`（测试与显式覆盖）→ `profileContext.dir`（宿主权威）
+ * → 退回 `$DSH_HOME/profiles/*` 全扫。
+ *
+ * 退回分支**不是**等价替代：它扫的是「这台机器上所有 profile 装过的包」，不是
+ * 「当前 profile 装了的包」。用户在 A 里卸载一个包，只要 B 还装着，它就继续出现在
+ * A 的面板里，且开关对它无效。因此退回时 `certain` 为 false，调用方据此把目录标成
+ * 残缺——不确定就不要假装确定。
  */
-async function profileDirs(): Promise<string[]> {
+async function profileDirs(): Promise<ProfileScope> {
   const explicit = process.env['DSH_PROFILE_DIR']
   if (typeof explicit === 'string' && explicit.trim() !== '') {
     const dir = resolve(explicit.trim())
-    if (await isProfileDir(dir)) return [dir]
+    if (await isProfileDir(dir)) return { dirs: [dir], certain: true }
+  }
+
+  if (profileDirHint !== null && (await isProfileDir(profileDirHint))) {
+    return { dirs: [profileDirHint], certain: true }
   }
 
   const root = dshHomePath('profiles')
@@ -327,7 +366,8 @@ async function profileDirs(): Promise<string[]> {
   try {
     entries = await readdir(root, { withFileTypes: true })
   } catch {
-    return []
+    // 一个 profile 都没有：空目录是正确答案，不是不确定。
+    return { dirs: [], certain: true }
   }
 
   const dirs: string[] = []
@@ -338,22 +378,39 @@ async function profileDirs(): Promise<string[]> {
   }
   // 排序只为让指纹与遍历顺序无关，结果本身不依赖顺序。
   dirs.sort()
-  return dirs
+  // 恰好一个 profile 时全扫与只扫它等价，不必报不确定。
+  return { dirs, certain: dirs.length <= 1 }
 }
 
-/** 把一个普通路径变成候选文件；不是普通文件、或超过大小上限时返回 null。 */
-async function candidateFile(path: string): Promise<CandidateFile | null> {
+/**
+ * 一个候选文件的读取结论。
+ *
+ * `too-large` 与 `unreadable` 必须分开：前者是「这个文件是产物，读了只会误抓」，
+ * 后者是「读不到，可能漏了工具」。混成同一个 `null` 会让一个 9 MB 的 lighthouse
+ * worker 把整包判成残缺，进而让整个目录 `complete: false`、面板全部「未生效」。
+ */
+type CandidateOutcome =
+  | { readonly kind: 'file'; readonly file: CandidateFile }
+  | { readonly kind: 'too-large' }
+  | { readonly kind: 'unreadable' }
+
+/** 把一个普通路径变成候选文件。 */
+async function candidateFile(path: string): Promise<CandidateOutcome> {
   try {
     const info = await stat(path)
-    if (!info.isFile() || info.size > MAX_FILE_BYTES) return null
+    if (!info.isFile()) return { kind: 'unreadable' }
+    if (info.size > MAX_FILE_BYTES) return { kind: 'too-large' }
     return {
-      path,
-      size: info.size,
-      mtime: Math.round(info.mtimeMs),
-      read: async () => await readFile(path, 'utf8'),
+      kind: 'file',
+      file: {
+        path,
+        size: info.size,
+        mtime: Math.round(info.mtimeMs),
+        read: async () => await readFile(path, 'utf8'),
+      },
     }
   } catch {
-    return null
+    return { kind: 'unreadable' }
   }
 }
 
@@ -362,36 +419,49 @@ async function candidateFile(path: string): Promise<CandidateFile | null> {
  *
  * 返回值表示**有没有因为上限放弃过子树**。上限命中时列表只是包的一部分，而调用方
  * 只看得到列表，从内容上分不出「就这么多」和「被砍了一半」，所以必须显式带出去。
+ *
+ * 超限文件（`too-large`）**不**置 truncated：那是产物文件，读了只会误抓，跳过它是
+ * 正确行为而不是残缺。它只让该包的 `toolsKnown` 变 false——影响面从整个面板收窄到
+ * 一行。`unreadable` 仍置 truncated：读不到是真的可能漏了工具。
  */
-async function listLibJs(dir: string, depth: number, out: CandidateFile[]): Promise<boolean> {
+interface LibScan {
+  /** 有子树或文件因上限被放弃：这份列表不是整包。 */
+  readonly truncated: boolean
+  /** 有文件因超过 `MAX_FILE_BYTES` 被跳过。 */
+  readonly oversized: boolean
+}
+
+async function listLibJs(dir: string, depth: number, out: CandidateFile[]): Promise<LibScan> {
   if (depth > MAX_LIB_DEPTH) {
     // 越过深度上限就整棵子树放弃，里面有没有 js 不再确认：那正是这条上限要省的遍历。
     // 宁可多报一次残缺（代价是一轮重扫），也不能把「只扫了一半」说成完整。
-    return true
+    return { truncated: true, oversized: false }
   }
-  if (out.length >= MAX_FILES_PER_PACKAGE) return true
+  if (out.length >= MAX_FILES_PER_PACKAGE) return { truncated: true, oversized: false }
   let entries
   try {
     entries = await readdir(dir, { withFileTypes: true })
   } catch {
-    return false
+    return { truncated: false, oversized: false }
   }
   entries.sort((left, right) => (left.name < right.name ? -1 : left.name > right.name ? 1 : 0))
   let truncated = false
+  let oversized = false
   for (const entry of entries) {
-    if (out.length >= MAX_FILES_PER_PACKAGE) return true
+    if (out.length >= MAX_FILES_PER_PACKAGE) return { truncated: true, oversized }
     if (entry.isDirectory()) {
       if (entry.name === 'node_modules' || entry.name.startsWith('.')) continue
-      if (await listLibJs(join(dir, entry.name), depth + 1, out)) truncated = true
+      const inner = await listLibJs(join(dir, entry.name), depth + 1, out)
+      if (inner.truncated) truncated = true
+      if (inner.oversized) oversized = true
     } else if (entry.isFile() && entry.name.endsWith('.js')) {
-      const file = await candidateFile(join(dir, entry.name))
-      // 跳过（超限或 stat 失败）必须置 truncated：说完整却少了一半文件，
-      // 比说残缺更贵——该包的工具不进 deny 掩码，停用后部分工具仍可见。
-      if (file === null) truncated = true
-      else out.push(file)
+      const outcome = await candidateFile(join(dir, entry.name))
+      if (outcome.kind === 'file') out.push(outcome.file)
+      else if (outcome.kind === 'too-large') oversized = true
+      else truncated = true
     }
   }
-  return truncated
+  return { truncated, oversized }
 }
 
 /** 解析包声明的入口：文件就用它，目录按 Node 的惯例取 `index.js`。 */
@@ -402,8 +472,9 @@ async function entryFile(dir: string, main: string | null): Promise<CandidateFil
   // 记到本包名下，停用 A 却关掉了 B。
   if (relative(dir, target).startsWith('..')) return null
   const direct = await candidateFile(target)
-  if (direct !== null) return direct
-  return await candidateFile(join(target, 'index.js'))
+  if (direct.kind === 'file') return direct.file
+  const fallback = await candidateFile(join(target, 'index.js'))
+  return fallback.kind === 'file' ? fallback.file : null
 }
 
 /** 一个装在普通目录里的包。 */
@@ -413,8 +484,15 @@ async function collectDirPackage(dir: string, name: string): Promise<PackageCand
   const version = typeof manifest['version'] === 'string' ? manifest['version'] : '0.0.0'
   const main = typeof manifest['main'] === 'string' && manifest['main'] !== '' ? manifest['main'] : null
   const lib: CandidateFile[] = []
-  const truncated = await listLibJs(join(dir, 'lib'), 0, lib)
-  return { name, version, entry: await entryFile(dir, main), lib, truncated }
+  const scan = await listLibJs(join(dir, 'lib'), 0, lib)
+  return {
+    name,
+    version,
+    entry: await entryFile(dir, main),
+    lib,
+    truncated: scan.truncated,
+    oversized: scan.oversized,
+  }
 }
 
 /**
@@ -601,7 +679,9 @@ async function collectArchivePackages(archive: string): Promise<PackageCandidate
       entry: entryEntry === undefined ? null : materialize(entryEntry),
       lib,
       // 归档这一路不设文件数与深度上限：条目表已经在内存里，遍历不再读盘。
+      // 超限文件在分组时就被 `entry.size <= MAX_FILE_BYTES` 滤掉了，这里同样记一笔。
       truncated: false,
+      oversized: [...files.values()].some((entry) => entry.size > MAX_FILE_BYTES),
     })
   }
   return candidates
@@ -626,7 +706,13 @@ async function collectOfficialDirPackages(root: string, deadline: number): Promi
   return out
 }
 
-async function collectCandidates(deadline: number): Promise<PackageCandidate[]> {
+interface CandidateScan {
+  readonly candidates: readonly PackageCandidate[]
+  /** 不知道当前是哪个 profile：候选清单可能来自别的 profile。 */
+  readonly scopeUncertain: boolean
+}
+
+async function collectCandidates(deadline: number): Promise<CandidateScan> {
   const out: PackageCandidate[] = []
   const seen = new Set<string>()
   const push = (candidate: PackageCandidate | null): void => {
@@ -635,7 +721,8 @@ async function collectCandidates(deadline: number): Promise<PackageCandidate[]> 
     out.push(candidate)
   }
 
-  for (const profile of await profileDirs()) {
+  const scope = await profileDirs()
+  for (const profile of scope.dirs) {
     if (Date.now() > deadline) break
     const manifest = await readJson(join(profile, 'package.json'))
     const deps = asRecord(manifest?.['dependencies'])
@@ -655,7 +742,7 @@ async function collectCandidates(deadline: number): Promise<PackageCandidate[]> 
       for (const candidate of await collectArchivePackages(root.path)) push(candidate)
     }
   }
-  return out
+  return { candidates: out, scopeUncertain: !scope.certain }
 }
 
 /**
@@ -824,6 +911,13 @@ interface ScanResult {
   readonly sectionChars: number
   readonly toolsKnown: boolean
   readonly sectionsKnown: boolean
+  /**
+   * 扫描被预算或 IO **掐断**了。
+   *
+   * 与 `toolsKnown === false` 分开：后者还可能只是「有超限产物文件被跳过」，
+   * 那是稳定的事实，不该让整个目录判残缺、每次请求都重扫。
+   */
+  readonly truncated: boolean
 }
 
 async function scanPackage(candidate: PackageCandidate, deadline: number): Promise<ScanResult> {
@@ -840,6 +934,8 @@ async function scanPackage(candidate: PackageCandidate, deadline: number): Promi
    * 的依据，说完整却少了一半文件，比说残缺更贵。
    */
   let complete = !candidate.truncated
+  // 超限文件被跳过：这个包的工具归属可能不全，但目录本身仍然完整。
+  let toolsComplete = !candidate.truncated && !candidate.oversized
   let dynamic = 0
 
   const files = candidate.entry === null ? candidate.lib : [candidate.entry, ...candidate.lib]
@@ -848,6 +944,7 @@ async function scanPackage(candidate: PackageCandidate, deadline: number): Promi
     seen.add(file.path)
     if (Date.now() > deadline) {
       complete = false
+      toolsComplete = false
       break
     }
     let text: string
@@ -855,6 +952,7 @@ async function scanPackage(candidate: PackageCandidate, deadline: number): Promi
       text = await file.read()
     } catch {
       complete = false
+      toolsComplete = false
       continue
     }
 
@@ -889,10 +987,12 @@ async function scanPackage(candidate: PackageCandidate, deadline: number): Promi
     names: [...names].sort(),
     sections: [...sections.keys()].sort(),
     sectionChars,
-    // 工具名是字面量，文件全读到就算完整。
-    toolsKnown: complete,
+    // 工具名是字面量，文件全读到就算完整。超限文件被跳过时不算完整——
+    // 但那只影响这一行，不影响目录级的 complete。
+    toolsKnown: toolsComplete,
     // 有模板名的包，运行期还会长出没扫到的段名，这份清单天然不完整。
     sectionsKnown: complete && dynamic === 0,
+    truncated: !complete,
   }
 }
 
@@ -954,7 +1054,8 @@ async function loadCatalogOnce(options?: CatalogLoadOptions): Promise<Catalog> {
   if (cached !== null && cached.manual) return toCatalog(cached)
 
   const deadline = Date.now() + SCAN_BUDGET_MS
-  const candidates = await collectCandidates(deadline)
+  const scan = await collectCandidates(deadline)
+  const candidates = scan.candidates
   const key = fingerprint(candidates)
 
   // 残缺缓存（complete: false）不短路：它有东西可用，但结果不可信，必须重扫。
@@ -984,7 +1085,9 @@ async function loadCatalogOnce(options?: CatalogLoadOptions): Promise<Catalog> {
       break
     }
     const scanned = await scanPackage(candidate, deadline)
-    if (!scanned.toolsKnown) truncated = true
+    // 只有「被掐断」才让整个目录判残缺。超限产物文件被跳过时 toolsKnown 也是 false，
+    // 但那是稳定事实——拿它置 truncated 会让目录永远 complete: false、每次请求都重扫。
+    if (scanned.truncated) truncated = true
     plugins.push({
       pkg: candidate.name,
       tools: scanned.tools,
@@ -1000,7 +1103,16 @@ async function loadCatalogOnce(options?: CatalogLoadOptions): Promise<Catalog> {
   plugins.sort((left, right) => (left.pkg < right.pkg ? -1 : left.pkg > right.pkg ? 1 : 0))
 
   // 孤儿要跟运行期清单求差才知道，静态扫描给不出来。留空数组，面板自己算。
-  const catalog: Catalog = { key, plugins, orphanTools: [], orphanSections: [], complete: !truncated }
+  //
+  // 不知道当前是哪个 profile 时也判残缺：候选清单可能来自别的 profile，面板会列出
+  // 当前 profile 根本没装的包，而开关对它们无效。不确定就不要假装确定。
+  const catalog: Catalog = {
+    key,
+    plugins,
+    orphanTools: [],
+    orphanSections: [],
+    complete: !truncated && !scan.scopeUncertain,
+  }
 
   /**
    * **残缺也落盘**，只是带 `complete: false`。
@@ -1016,6 +1128,12 @@ async function loadCatalogOnce(options?: CatalogLoadOptions): Promise<Catalog> {
     // 丢掉这一轮刚扫到的结果。但也不能像以前那样整个吞掉：没有这条日志，
     // 「面板一直停在识别中」就查不出是缓存根本没落盘。
     warn('dsh-plugin-pack: 插件目录缓存没写成，下次会重扫：' + String(error))
+  }
+  if (scan.scopeUncertain) {
+    warn(
+      'dsh-plugin-pack: 无法确定当前 profile（宿主没有 profileContext），已退回扫描全部 profile；' +
+        '面板可能列出别的 profile 装的插件，开关对它们无效。',
+    )
   }
   return catalog
 }
