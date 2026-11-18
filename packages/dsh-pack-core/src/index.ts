@@ -51,6 +51,8 @@ export {
 
 export { pendingKeyOf, PENDING_KEY_RULES, type PendingKeyCommand } from './pendingKeys.js'
 
+export { staleKeysOf } from './stale.js'
+
 export {
   parseCommands,
   filesOf,
