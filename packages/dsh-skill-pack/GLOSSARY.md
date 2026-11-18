@@ -41,6 +41,10 @@ _Avoid_: 组配置、分组设置
 路径含 `@deepseek-ai`，或 provider 为 `dsh-office` 的 skill。面板默认不展示，但模型仍可调用。
 _Avoid_: 内置技能、系统技能、官方包
 
+**残留键（Stale key）**:
+策略里有、当前名册里没有的 skill 名。通用定义见[根术语表](../../GLOSSARY.md)。本插件的名册是宿主 `skills.snapshot()` 给出的那一份，随工作区与 preset 变化。
+_Avoid_: 孤儿、失效项、脏数据
+
 **意图（Intent）**:
 一次写入表达的目标状态，与写入者读到的现状无关。
 _Avoid_: 补丁、差量、变更集

@@ -69,3 +69,7 @@ _Avoid_: 隐藏、禁用
 **托管文件（Owned include）**:
 本插件自己创建与维护的 include 文件。设计上只改它，不改用户已有的配置。
 _Avoid_: 配置文件、数据目录
+
+**残留键（Stale key）**:
+策略里有、当前名册里没有的行键。通用定义见[根术语表](../../GLOSSARY.md)。本插件的名册是 Loader 里此刻存在的 mcp-client 行——行被删掉后，`packs.json` 里针对它的 `enabled` / `mode` / `tools` / `description` 记录与分组归属都成了残留键。
+_Avoid_: 孤儿、失效项、脏数据

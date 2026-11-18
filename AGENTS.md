@@ -94,6 +94,9 @@ web 服务有浏览器认证栅栏：无 cookie 的 `/api/*` 请求一律 401。
 
 - 端到端要起 web 服务，用 `run_in_background` 起，**不要用 `cmd /c "dsh ... > log 2>&1"`**：外层 `cmd` 会一直等 dsh 退出，dsh 又因为端口被占一直重试，两者互相卡死，日志文件也被占着删不掉。
 - **端口被占时 dsh 的报错藏在 stderr**：`listen EADDRINUSE` 会让 `webserver` 插件判成 failed，但前台跑时这条被管道限制吞掉，表现是「进程起来了但端口不通」。换端口（3199 → 3201 → 3202）比重试快。
+- **Windows 有 TCP 保留段**：`netsh interface ipv4 show excludedportrange protocol=tcp` 列出的区间里 listen 会报 `EACCES`（不是 `EADDRINUSE`），同样藏在 stderr 里。本机实测保留 3139–3238 与 3307–3406，所以 e2e 用 3300，不用 3210。换端口前先查这张表，否则会以为是代码问题。
+- **在 DSH 自己的 bash 会话里跑 e2e，必须剔掉宿主注入的 `DSH_*` 环境变量**：`dsh-shell-env` 会把 `DSH_PROFILE_DIR` / `DSH_PROFILE` / `DSH_SESSION_ID` 注入进来，`spawn` 默认继承 `process.env`，隔离 profile 的进程于是读到**真实** profile 的路径。表现是「跨 profile 串味的断言永远通过」——它验的是真实 profile，不是隔离的那份。`scripts/e2e.mjs` 的 `childEnv()` 就是干这个的。
+- **回退验证要连缓存一起清**：`catalog.json` 按指纹命中，回退代码后指纹没变，读的还是旧缓存，于是「回退了 bug 但断言仍绿」。验证断言有效性时先删 `.tmp/e2e` 与 `$DSH_HOME/packs/*/catalog.json`。
 - **`job_kill` 只杀 job 本身，不保证杀掉它派生的子进程**。清理要两边都查：`job_list` 里没有 `running`，且 `Get-Process | Where-Object { $_.ProcessName -match 'dsh|node' }` 为空。只查一边会留下占着端口的孤儿进程，下一次启动就撞 `EADDRINUSE`。
 - 清理 `.tmp/e2e` 前先确认进程已退：文件被占着时 `Remove-Item -Force` 会静默失败，`Test-Path` 仍返回 `True`。
 
