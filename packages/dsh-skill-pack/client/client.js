@@ -170,6 +170,7 @@ const RANK_ORDER = {
       // 再给轨道加一圈内描边，暗色与亮色下都有轮廓。
       idle: 'rgba(127, 127, 127, 0.38)',
       error: 'var(--dsw-alias-state-error-primary, #c0392b)',
+      warn: 'var(--dsw-alias-state-warning-primary, #b7791f)',
       onAccent: '#ffffff',
       /*
        * 开关配色照官方「反色」风格：开态轨道取前景色（暗色主题下是亮白），圆点取底色
@@ -402,6 +403,22 @@ const RANK_ORDER = {
       }),
       error: { color: T.error, fontSize: '12px', marginBottom: '8px' },
       empty: { color: T.faint, padding: '12px 4px', fontSize: '12px' },
+      /**
+       * 需要用户注意但不阻断的提示（残留键、宿主能力缺失）。
+       *
+       * 与另外两包同形：浅黄底 + 黄字 + 描边。用 `S.hint` 代替它会让这类提示
+       * 与普通说明文字长得一样，用户扫过去不会停。
+       */
+      probeWarn: {
+        marginTop: '8px',
+        padding: '6px 10px',
+        borderRadius: '6px',
+        border: '1px solid ' + T.warn,
+        background: 'rgba(183,121,31,0.10)',
+        color: T.warn,
+        fontSize: '12px',
+        lineHeight: 1.6,
+      },
       modalBack: {
         position: 'fixed',
         inset: 0,
@@ -567,6 +584,76 @@ const RANK_ORDER = {
               list.map((warning, index) => h('div', { key: index }, warning)),
             )
           : null,
+      )
+    }
+
+    /** 残留键的种类标签。键空间不同，混着显示用户分不清是 skill 还是组。 */
+    const STALE_KIND_LABEL = { item: '技能', group: '分组', assignment: '归属' }
+
+    /**
+     * 残留键的提示与清理入口。
+     *
+     * 与 plugin-pack 同形：默认折叠，展开后每个键一行，带种类与「出现在哪些 pack 里」，
+     * 并给清理按钮。清理走待保存改动，用户能先试算看到要删多少条再决定落盘。
+     */
+    function StaleKeys(props) {
+      const [open, setOpen] = useState(false)
+      const entries = Array.isArray(props.entries) ? props.entries : []
+      if (entries.length === 0) return null
+
+      /** 一个残留键对应的清理命令：按种类发不同的 op，键空间不同不能合并。 */
+      const commandsFor = (entry) => {
+        if (entry.kind === 'assignment') return [{ op: 'assign', name: entry.key, groupId: null }]
+        if (entry.kind === 'group') {
+          return (entry.packs || []).map((packId) => ({ op: 'packGroup', packId: packId, groupId: entry.key, value: null }))
+        }
+        return (entry.packs || []).map((packId) => ({ op: 'packItem', packId: packId, name: entry.key, value: null }))
+      }
+
+      const collapsed = entries.length > 6
+      const shown = open || !collapsed ? entries : entries.slice(0, 6)
+
+      return h(
+        'div',
+        { style: S.probeWarn },
+        h(
+          'div',
+          null,
+          entries.length + ' 个键在策略里、当前名册里没有。已保留不删（重新装回来时决定还在），也可以现在清掉：',
+        ),
+        h(
+          'div',
+          { style: { marginTop: '6px' } },
+          shown.map((entry) =>
+            h(
+              'div',
+              {
+                key: entry.kind + ':' + entry.key,
+                style: { display: 'flex', alignItems: 'center', gap: '6px', marginTop: '2px' },
+              },
+              h('span', { style: S.badge }, STALE_KIND_LABEL[entry.kind] || entry.kind),
+              h(
+                'span',
+                { style: { fontFamily: 'ui-monospace, monospace', wordBreak: 'break-word', flex: '1 1 auto' } },
+                entry.key,
+              ),
+              h(
+                'span',
+                { style: { ...S.hint, flex: '0 0 auto' } },
+                Array.isArray(entry.packs) && entry.packs.length > 0 ? entry.packs.join('、') : '全局',
+              ),
+              h(Button, { variant: 'secondary', onClick: () => props.onClear(commandsFor(entry)) }, '清理'),
+            ),
+          ),
+        ),
+        h(
+          'div',
+          { style: { marginTop: '6px', display: 'flex', gap: '8px' } },
+          collapsed
+            ? h(Button, { variant: 'quiet', onClick: () => setOpen(!open) }, open ? '收起' : '展开全部 ' + entries.length + ' 个')
+            : null,
+          h(Button, { variant: 'quiet', onClick: () => props.onClear(entries.flatMap(commandsFor)) }, '清理全部 ' + entries.length + ' 个'),
+        ),
       )
     }
 
@@ -1891,6 +1978,10 @@ const RANK_ORDER = {
         ),
         state.error ? h('div', { style: { ...S.error, marginTop: '8px' } }, state.error) : null,
         h(Warnings, { warnings: data.warnings }),
+        h(StaleKeys, {
+          entries: Array.isArray(data.stale) ? data.stale : [],
+          onClear: (commands) => enqueue(commands),
+        }),
         // 「显示官方技能」只影响列表：分组页要它才看得见官方技能，分包页要靠它
         // 才能给官方技能设开关。工作区页是绑定表，与列不列官方项无关，因此不显示。
         current === 'workspace'

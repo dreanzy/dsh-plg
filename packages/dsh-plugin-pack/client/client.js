@@ -1233,34 +1233,87 @@ const RANK_ORDER = {
       )
     }
 
+    /** 残留键的种类标签。键空间不同，混着显示用户分不清是包还是组。 */
+    const STALE_KIND_LABEL = { item: '插件', group: '分组', assignment: '归属' }
+
     /**
-     * 范围外包名的提示：默认折叠，长到一定程度才给「展开全部」。
+     * 残留键的提示与清理入口。
      *
-     * 判断折叠用字符数而不是条数：包名本来就长（@dreanzy/dsh-plugin-pack 一条就 30 字），
-     * 十条平铺会把面板撑满。
+     * 默认折叠：包名本来就长（@dreanzy/dsh-plugin-pack 一条就 30 字），十条平铺会把
+     * 面板撑满。展开后每个键一行，带种类与「出现在哪些 pack 里」，并给清理按钮。
+     *
+     * 清理走待保存改动而不是当场写盘：它和开关一样是「攒着一起保存」的语义，
+     * 用户能先试算看到要删多少条，再决定要不要落盘。
      */
-    function OutOfScopeNotice(props) {
+    function StaleKeysNotice(props) {
       const [open, setOpen] = useState(false)
-      const all = Array.isArray(props.names) ? props.names : []
-      if (all.length === 0) return null
-      const collapsed = all.join('、').length > 120
-      const shown = open || !collapsed ? all : all.slice(0, 8)
+      const entries = Array.isArray(props.entries) ? props.entries : []
+      if (entries.length === 0) return null
+
+      /** 一个残留键对应的清理命令：按种类发不同的 op，键空间不同不能合并。 */
+      const commandsFor = (entry) => {
+        if (entry.kind === 'assignment') return [{ op: 'assign', name: entry.key, groupId: null }]
+        if (entry.kind === 'group') {
+          return (entry.packs || []).map((packId) => ({ op: 'packGroup', packId: packId, groupId: entry.key, value: null }))
+        }
+        return (entry.packs || []).map((packId) => ({ op: 'packItem', packId: packId, name: entry.key, value: null }))
+      }
+
+      const clearOne = (entry) => props.onClear(commandsFor(entry))
+      const clearAll = () => props.onClear(entries.flatMap(commandsFor))
+
+      const collapsed = entries.length > 6
+      const shown = open || !collapsed ? entries : entries.slice(0, 6)
+
       return h(
         'div',
         { style: S.probeWarn },
-        h('div', null, all.length + ' 个包名在策略里、目录里没有，已保留不删（重新装回来时决定还在）：'),
         h(
           'div',
-          { style: { marginTop: '4px', fontFamily: 'ui-monospace, monospace', wordBreak: 'break-word', opacity: 0.85 } },
-          shown.join('、') + (open || !collapsed ? '' : ' …'),
+          null,
+          entries.length + ' 个键在策略里、当前名册里没有。已保留不删（重新装回来时决定还在），也可以现在清掉：',
         ),
-        collapsed
-          ? h(
-              'button',
-              { type: 'button', style: { ...S.action, marginTop: '6px' }, onClick: () => setOpen(!open) },
-              open ? '收起' : '展开全部 ' + all.length + ' 个',
-            )
-          : null,
+        h(
+          'div',
+          { style: { marginTop: '6px' } },
+          shown.map((entry) =>
+            h(
+              'div',
+              {
+                key: entry.kind + ':' + entry.key,
+                style: { display: 'flex', alignItems: 'center', gap: '6px', marginTop: '2px' },
+              },
+              h('span', { style: S.badge }, STALE_KIND_LABEL[entry.kind] || entry.kind),
+              h(
+                'span',
+                { style: { fontFamily: 'ui-monospace, monospace', wordBreak: 'break-word', flex: '1 1 auto' } },
+                entry.key,
+              ),
+              h(
+                'span',
+                { style: { ...S.hint, flex: '0 0 auto' } },
+                Array.isArray(entry.packs) && entry.packs.length > 0 ? entry.packs.join('、') : '全局',
+              ),
+              h(
+                'button',
+                { type: 'button', style: S.action, onClick: () => clearOne(entry) },
+                '清理',
+              ),
+            ),
+          ),
+        ),
+        h(
+          'div',
+          { style: { marginTop: '6px', display: 'flex', gap: '8px' } },
+          collapsed
+            ? h(
+                'button',
+                { type: 'button', style: S.action, onClick: () => setOpen(!open) },
+                open ? '收起' : '展开全部 ' + entries.length + ' 个',
+              )
+            : null,
+          h('button', { type: 'button', style: S.action, onClick: clearAll }, '清理全部 ' + entries.length + ' 个'),
+        ),
       )
     }
 
@@ -2149,7 +2202,10 @@ const RANK_ORDER = {
         data.pending === true
           ? h('div', { style: S.hint }, '正在识别插件归属（首次约 1 秒，之后读缓存）…')
           : null,
-        h(OutOfScopeNotice, { names: data.outOfScope }),
+        h(StaleKeysNotice, {
+          entries: Array.isArray(data.stale) ? data.stale : [],
+          onClear: (commands) => enqueue(commands),
+        }),
         h(WarningsNotice, { warnings: data.warnings }),
 
         h(
