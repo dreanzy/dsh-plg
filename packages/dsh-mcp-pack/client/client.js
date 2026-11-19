@@ -2109,7 +2109,7 @@ const RANK_ORDER = {
       )
     }
 
-    /** 设置页的三页，顺序固定：分组 → 分包 → 工作区。 */
+    /** 设置页的四页，顺序固定：MCP → 分组 → 分包 → 工作区。 */
     const TABS = [
       { value: 'servers', label: 'MCP' },
       { value: 'groups', label: '分组' },

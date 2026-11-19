@@ -488,9 +488,10 @@ test('parseCommands 收下全部合法 op', () => {
     { op: 'deleteGroup', groupId: 'g1' },
     { op: 'showChip', value: false },
     { op: 'defaultTab', value: 'workspace' },
+    { op: 'defaultTab', value: 'servers' },
   ])
   assert.equal(parsed.ok, true)
-  assert.equal(parsed.commands.length, 12)
+  assert.equal(parsed.commands.length, 13)
   assert.deepEqual(parsed.commands[0].patch, { enabled: false, mode: null })
   assert.equal(parsed.commands[5].packId, null)
 })

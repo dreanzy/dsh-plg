@@ -155,7 +155,10 @@ function parseUi(raw: unknown, warnings: string[]): UiState {
   return {
     showChip: typeof raw['showChip'] === 'boolean' ? raw['showChip'] : true,
     defaultTab:
-      raw['defaultTab'] === 'servers' || raw['defaultTab'] === 'packs' || raw['defaultTab'] === 'workspace'
+      raw['defaultTab'] === 'servers' ||
+      raw['defaultTab'] === 'groups' ||
+      raw['defaultTab'] === 'packs' ||
+      raw['defaultTab'] === 'workspace'
         ? raw['defaultTab']
         : 'groups',
   }

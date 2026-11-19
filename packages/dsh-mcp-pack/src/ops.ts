@@ -64,7 +64,8 @@ function readName(record: Record<string, unknown>): string | null {
 
 function readTab(record: Record<string, unknown>): SettingsTab | null {
   const value = record['value']
-  if (value === 'groups' || value === 'packs' || value === 'workspace') return value
+  // 与 `SettingsTab` 逐字一致：漏一页时面板顶部那组单选发过来的值会被整批拒绝。
+  if (value === 'servers' || value === 'groups' || value === 'packs' || value === 'workspace') return value
   return null
 }
 

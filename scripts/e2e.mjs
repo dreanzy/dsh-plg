@@ -381,6 +381,15 @@ async function main() {
       }
       check('mcp: 视图带 diff', Array.isArray(g.json.value?.diff), typeof g.json.value?.diff)
       check('mcp: 视图带 groupRanks', typeof g.json.value?.groupRanks === 'object', typeof g.json.value?.groupRanks)
+
+      // 默认页：面板顶部那组单选把四页原样发过来，服务端白名单漏一页就整批被拒，
+      // 用户看到的是「选 MCP 当默认页 → 报 value 必须是 groups、packs 或 workspace」。
+      const tab = await post(P + '/apply', { commands: [{ op: 'defaultTab', value: 'servers' }] })
+      check('mcp: 默认页可设为 MCP', tab.json.ok === true && tab.json.value.ui.defaultTab === 'servers',
+        tab.json.error ?? tab.json.value?.ui)
+      const tabBack = await post(P + '/apply', { commands: [{ op: 'defaultTab', value: 'groups' }] })
+      check('mcp: 默认页可改回分组', tabBack.json.ok === true && tabBack.json.value.ui.defaultTab === 'groups',
+        tabBack.json.error ?? tabBack.json.value?.ui)
     }
 
     // ---------- 会话所属工作区 ----------

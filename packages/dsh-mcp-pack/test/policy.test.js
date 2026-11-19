@@ -235,7 +235,9 @@ test('ui 缺省值：chip 默认开、默认页是分组', () => {
   assert.equal(parsed.value.ui.defaultTab, 'groups')
 })
 
-test('ui 三值 defaultTab 都能取到，非法值回落 groups', () => {
+test('ui 四值 defaultTab 都能取到，非法值回落 groups', () => {
+  // `servers` 是面板第一页（MCP）。白名单漏了它，用户选「默认页 = MCP」会被静默改回 groups。
+  assert.equal(parsePacks(JSON.stringify({ ui: { defaultTab: 'servers' } })).value.ui.defaultTab, 'servers')
   assert.equal(parsePacks(JSON.stringify({ ui: { defaultTab: 'packs' } })).value.ui.defaultTab, 'packs')
   assert.equal(parsePacks(JSON.stringify({ ui: { defaultTab: 'workspace' } })).value.ui.defaultTab, 'workspace')
   assert.equal(parsePacks(JSON.stringify({ ui: { defaultTab: 'nope' } })).value.ui.defaultTab, 'groups')
