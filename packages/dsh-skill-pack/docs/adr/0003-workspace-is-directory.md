@@ -2,7 +2,9 @@
 
 ## 背景与决定
 
-DSH 里有两套「工作区」概念：`workspaceRegistry` 的持久化记录，以及每个会话可变的 `workingDirectory`。本插件按**目录路径**识别工作区，策略文件放在 `<cwd>/.dsh/skill-manager.json`。
+DSH 里有两套「工作区」概念：`workspaceRegistry` 的持久化记录，以及每个会话可变的 `workingDirectory` 投影。本插件按**目录路径**识别工作区，取的是会话的 `header.cwd`（创建时的工作区，创建后不可变），策略文件放在 `<cwd>/.dsh/skill-manager.json`。
+
+不取 `workingDirectory` 投影：投影会被 `working_directory` 工具（模型调用 `cd`）改写，而工作区应当由用户决定。UI 上切换工作区不是改现有会话的 cwd，而是换到该工作区的 blank 会话或新建一个，`header.cwd` 自然就是新工作区。
 
 选路径的理由是不需要额外生命周期管理：工作区身份天然等于目录，不存在记录被删、被改名、与目录脱钩这些需要处理的边角。代价是目录搬家会丢配置，接受。
 
@@ -16,5 +18,5 @@ DSH 里有两套「工作区」概念：`workspaceRegistry` 的持久化记录�
 ## 后果
 
 - 同一目录被两个 workspace 打开时共享同一份策略，这是预期行为。
-- 会话中途 `workingDirectory.set` 换目录不会重算策略，已知限制，写进文档；症状是策略不跟着走，重开会话即恢复。
+- 模型调用 `working_directory` 工具 `cd` 到别的目录不会重算策略：工作区是会话属性，不是当前目录。
 - 不做从社区实现旧位置的自动迁移；改为交付一份现有名单，由用户重配。

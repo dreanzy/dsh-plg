@@ -315,32 +315,9 @@ export function installHooks(deps: HookDeps): Hooks {
     }
   }
 
-  /**
-   * 会话换目录时重算。
-   *
-   * 这是 `dsh-skill-manager` 那条「切目录不重算」的已知限制，在 MCP 这边是可行的：
-   * 注册都落在 per-agent scope 且 dispose 精确。重算只影响新请求，已注册的工具
-   * 由用户下一次 `mcp_load` 自然带过来。
-   */
-  const onDirectoryChange = async (payload: unknown): Promise<void> => {
-    const agent = agentOf(payload) ?? null
-    if (agent === null) {
-      // 负载可能直接是会话/agent 的另一种形状：拿不到就什么都不做。
-      return
-    }
-    const cwd = cwdOf(agent)
-    if (cwd === null) return
-    try {
-      await reconcileOnce(agent, cwd)
-    } catch (error) {
-      deps.context.logger.warn(`dsh-mcp-pack: 切目录后重算失败（agent=${agent.id}）：${String(error)}`)
-    }
-  }
-
   try {
     offs.push(deps.context.on('agent/created', onCreated as never))
     offs.push(deps.context.on('agent/disposed', onDisposed as never))
-    offs.push(deps.context.on('working-directory/change', onDirectoryChange as never))
   } catch (error) {
     deps.context.logger.warn(`dsh-mcp-pack: 订阅宿主事件失败：${String(error)}`)
   }

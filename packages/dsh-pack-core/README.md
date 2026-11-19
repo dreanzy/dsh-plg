@@ -25,7 +25,7 @@
 
 | 模块 | 导出 |
 | --- | --- |
-| `cwd` | `projectedCwd` · `cwdFromAgent` · `cwdFromObserved` |
+| `cwd` | `cwdFromAgent` · `cwdFromObserved`（读 `header.cwd`：会话创建时的工作区，创建后不可变） |
 | `session` | `resolveSession` · `RouteContext` · `SessionResolution` |
 | `reconcile` | `createReconciler` · `Dispose` · `Reconciler` |
 | `protocol` | `Envelope` · `ErrorCode` |

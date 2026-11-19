@@ -96,7 +96,7 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 }
 
 /**
- * 工作目录的权威值在投影里，取法在 `@dreanzy/dsh-pack-core`：顺序与理由见那边的注释。
+ * 会话所属工作区，取法在 `@dreanzy/dsh-pack-core`：读 `header.cwd`，理由见那边的注释。
  *
  * 吃 `agent.raw` 而不是 `agent.session`：core 的 `cwdFromAgent` 要的是宿主给的
  * 对象本体，形状与 plugin / mcp 的 hooks 一致。
@@ -430,33 +430,6 @@ export function installHooks(
     if (cwd !== null) snapshot.invalidate(cwd)
   }
 
-  /**
-   * 切换工作区不重建 Agent，也不发 `skills/change`：清单与绑定会一起停在旧目录。
-   * 每步比一次工作目录，变了就重新落地（一次切换只跑一次）。
-   *
-   * `agent/pre-step` 是 waterfall：必须 `await next()` 并把下游结论原样返回，
-   * 否则整步连同目录、工具、提示词装配一起被吞掉。
-   */
-  const onPreStep = async (payload: unknown, next?: () => Promise<unknown>): Promise<unknown> => {
-    if (typeof next !== 'function') return undefined
-    const decision = await next()
-    try {
-      const agent = asAgentLike((payload as { agent?: unknown } | null)?.agent)
-      if (agent !== null) {
-        const state = states.get(agent.id)
-        const cwd = cwdOf(agent)
-        if (state !== undefined && cwd !== null && state.cwd !== cwd) {
-          await guarded(async () => {
-            await applyOne(state)
-          })
-        }
-      }
-    } catch (error) {
-      ctx.logger.warn(`dsh-skill-pack: 工作目录变化后重新落地失败：${String(error)}`)
-    }
-    return decision
-  }
-
   async function onChange(): Promise<void> {
     if (applying > 0) {
       // 自己注册遮蔽触发的 skills/change 会走这里；外部变化也走这里，不能丢。
@@ -486,8 +459,6 @@ export function installHooks(
   // 事件名必须带斜杠，与宿主 emit 的字符串逐字一致；写成点号不会报错，也永远不会被调用。
   const offSkills = ctx.on('skills/change', onChange as never)
   const offDisposed = ctx.on('agent/disposed', onDisposed as never)
-  // 切换工作区只改投影，不重建 Agent、也不发 `skills/change`：只能按步比较目录。
-  const offStep = ctx.on('agent/pre-step', onPreStep as never)
 
   /**
    * 策略保存不触碰 skill 注册表，因此不会发出 `skills/change`。
@@ -500,7 +471,7 @@ export function installHooks(
   }
 
   const stopAll = (): void => {
-    for (const off of [offCreated, offSkills, offDisposed, offStep]) {
+    for (const off of [offCreated, offSkills, offDisposed]) {
       try {
         off()
       } catch {

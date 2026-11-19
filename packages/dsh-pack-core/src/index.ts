@@ -8,7 +8,7 @@
 /** 骨架包的版本。搬迁期间用它确认四个插件加载的是同一份核心。 */
 export const CORE_VERSION = '0.1.0'
 
-export { projectedCwd, cwdFromAgent, cwdFromObserved } from './cwd.js'
+export { cwdFromAgent, cwdFromObserved } from './cwd.js'
 
 export { resolveSession, type RouteContext, type SessionResolution } from './session.js'
 

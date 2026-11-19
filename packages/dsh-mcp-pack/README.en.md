@@ -39,7 +39,7 @@ Trade-off: `dynamic` binds arguments best, but every `mcp_load` rewrites the too
 
   The group level carries a single on/off boolean. If a group could also set a mode, the next question would be "the group says dynamic, the row says disabled — which wins", and that merge rule has no cheap answer. So mode, tool rules and description stay at the row level.
 - State lives in three independently atomic files under `$DSH_HOME/packs/mcp/`: `packs.json`, `groups.json`, `workspaces.json`.
-- Changing `workingDirectory` mid-session recomputes that session's policy.
+- Policy is evaluated per the session's workspace (`header.cwd`), fixed at creation; a model `cd` does not change it.
 
 ## Panel
 

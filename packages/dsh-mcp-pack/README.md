@@ -37,7 +37,7 @@
 
   组级**只有开/关**一个布尔：组若也能设模式，立刻要回答「组说 dynamic、行说 disabled 算哪个」，那条合并规则没有便宜答案。所以模式、工具规则、描述只留在行级。
 - 落盘三份，各自原子：`$DSH_HOME/packs/mcp/` 下的 `packs.json`（pack 名册 + UI 开关）、`groups.json`（分组与归属）、`workspaces.json`（工作区绑定）。
-- 会话中途 `workingDirectory` 变化会重算该会话的策略。
+- 策略按会话所属工作区（`header.cwd`）求值，创建后不变；模型 `cd` 不改变它。
 
 ## 面板
 

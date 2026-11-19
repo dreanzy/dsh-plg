@@ -1,43 +1,35 @@
 import { asRecord, nonEmpty } from './unknown.js'
 
 /**
- * 会话当前工作目录。
+ * 会话所属工作区。
  *
- * 权威值在 `workingDirectory` 投影里：`cd` 与切换工作区只改投影，`header.cwd` 是会话
- * 创建时的快照。读 header 会让「切到另一个工作区后仍按上一个目录求值」——清单、绑定与
- * 开关全部停在旧目录（skill-pack 在 a0357f0 修正过同一处，其余包当时未同步）。
+ * 权威值是 `header.cwd`——**会话创建时的工作区路径，创建后不可变**。宿主把它声明为
+ * `readonly`（`dsh-session/src/types.ts` 的 `SessionHeader.cwd`），`workspace.attachSession`
+ * 也按它校验归属，注释原文：both inputs (stored header cwd, workspace path) are immutable。
  *
- * 不走 `workingDirectory.get()`：它在投影尚未写入时回落到进程的 `defaultDirectory`，
- * 会把「还没 cd 过的新会话」解析成宿主安装目录。顺序与宿主 `skill-catalog` 一致：
- * 投影 → header.cwd → 缺省。
+ * 不读 `workingDirectory` 投影。投影会被 `working_directory` 工具（模型调用 `cd`）改写，
+ * 而本项目的设计是「工作区由用户决定，模型无权变更」：读投影会让模型一次 `cd` 就把
+ * 清单、绑定与开关换到另一个目录，与面板 chip 显示的内容不一致（chip 读的是
+ * `session.list()` 的 `item.cwd`，也就是 header.cwd）。
+ *
+ * 用户在 UI 上切换工作区不是改现有会话的 cwd，而是换到该工作区的 blank 会话或新建一个
+ * （`dsh-client-ui-workspace/src/client/navigation.ts` 的 `createInWorkspace` →
+ * `sessions.create({ workspaceId })` → `cwd = workspace.path`）。所以换会话时 header.cwd
+ * 自然就是新工作区，不需要读投影。
  */
 
-/** 读 `workingDirectory` 投影的原始值。 */
-export function projectedCwd(session: unknown): string | null {
-  const projections = asRecord(asRecord(session)?.['projections'])
-  const faceOf = projections?.['faceOf']
-  if (typeof faceOf !== 'function') return null
-  try {
-    const face = asRecord((faceOf as (key: string) => unknown).call(projections, 'workingDirectory'))
-    const getSnapshot = face?.['getSnapshot']
-    const value = typeof getSnapshot === 'function' ? getSnapshot.call(face) : undefined
-    return nonEmpty(value)
-  } catch {
-    return null
-  }
-}
-
-/** 活动 Agent 的当前目录。 */
+/** 活动 Agent 所属工作区。 */
 export function cwdFromAgent(agent: unknown): string | null {
   const session = asRecord(asRecord(agent)?.['session'])
-  return projectedCwd(session) ?? nonEmpty(asRecord(session?.['header'])?.['cwd'])
+  return nonEmpty(asRecord(session?.['header'])?.['cwd'])
 }
 
-/** `observeSession` 快照的当前目录：投影值在 `projections.values.workingDirectory`。 */
+/**
+ * `observeSession` 快照所属工作区。
+ *
+ * 同样以 header 为准。观察体上的 `projections.values.workingDirectory` 是投影值，
+ * 与 `cwdFromAgent` 保持同一口径，否则 live 与非 live 两条路径会给出不同结论。
+ */
 export function cwdFromObserved(observation: unknown): string | null {
-  const observed = asRecord(observation)
-  const values = asRecord(asRecord(observed?.['projections'])?.['values'])
-  const projected = nonEmpty(values?.['workingDirectory'])
-  if (projected !== null) return projected
-  return nonEmpty(asRecord(observed?.['header'])?.['cwd'])
+  return nonEmpty(asRecord(asRecord(observation)?.['header'])?.['cwd'])
 }

@@ -227,16 +227,15 @@ function readCwd(value: unknown): string | typeof EMPTY | undefined {
 }
 
 /**
- * 调用方的 cwd。
+ * 调用方所属工作区。
  *
  * 宿主没有把 `workingDirectory` 服务交给本工具（依赖面只有四个字段），
- * 所以这里按会话头取：`agent.session.header.cwd` 就是该会话的创建目录。
+ * 所以这里按会话头取：`agent.session.header.cwd` 就是该会话的工作区，创建后不可变。
  */
 function callerCwd(agent: unknown): string | null {
   try {
-    // 投影优先：`cd` 与切换工作区只改投影，`header.cwd` 是创建时的快照。
-    const projected = cwdFromAgent(agent)
-    if (projected !== null) return projected
+    const fromAgent = cwdFromAgent(agent)
+    if (fromAgent !== null) return fromAgent
     const direct = readCwd(agent)
     if (typeof direct === 'string') return direct
     const session = (agent as { session?: unknown } | null | undefined)?.session

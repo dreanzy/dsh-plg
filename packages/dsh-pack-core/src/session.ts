@@ -54,7 +54,7 @@ export async function resolveSession(
   if (typeof observe === 'function') {
     let observation: unknown
     try {
-      // 不带 `projectionMode: 'none'`：历史会话的当前目录同样只在投影里。
+      // 不带 `projectionMode: 'none'`：观察体还要给调用方读别的投影，省一次准备。
       observation = await (observe as (id: string) => Promise<unknown>).call(query, sessionId)
       const cwd = cwdFromObserved(observation)
       if (cwd !== null) return { live: false, cwd }

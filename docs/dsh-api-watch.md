@@ -38,7 +38,7 @@
 ### mcp-server-config-shape
 
 - 包：`@deepseek-ai/dsh-mcp-client`
-- 复刻对象：`ServerDef` 形状对齐宿主 `Config` —— stdio 的 `command`/`args`/`env`/`cwd`，streamable-http 的 `url`/`headers`；0.2.2-rc.3 起宿主另有 `startupTimeoutMs`/`closeTimeoutMs`/`expandTemplates`，本地未复刻
+- 复刻对象：`ServerDef` 形状对齐宿主 `Config` —— stdio 的 `command`/`args`/`env`/`cwd`，streamable-http 的 `url`/`headers`；0.2.2-rc.3 起宿主另有 `startupTimeoutMs`/`closeTimeoutMs`/`expandTemplates`，0.2.2-rc.5 起另有 `failOnStartupError`/`maxInstructionBytes`/`reconnect`，本地均未复刻
 - 位置：`packages/dsh-mcp-pack/src/servers.ts:10`
 - 起始版本：0.2.2-rc.1
 - 为什么：托管定义直接写进宿主的配置结构，字段增减不会编译报错，只会在运行时被忽略或拒绝
@@ -94,6 +94,16 @@
 - 为什么：这是本地代码依赖上游的**未文档化行为**。上游哪天改成「父目录不存在就抛」，本地「先 mkdir 再拿锁」的顺序假设就从冗余变成必需；反过来若上游改成自己建父目录，本地那一步也不会坏——但没人会知道可以删
 - 判据：比对 `dsh-atomic-write` 的 `withFileLock` 实现，确认它仍用 `wx` 建锁文件且不 mkdir 父目录
 - 退役：上游在 `withFileLock` 里自己建父目录，或文档化这条顺序要求
+
+### session-header-cwd-immutable
+
+- 包：`@deepseek-ai/dsh-session` / `@deepseek-ai/dsh-workspace`
+- 复刻对象：会话所属工作区取 `SessionHeader.cwd`，并假设它**创建后不可变**。宿主把它声明为 `readonly`，`workspace.attachSession` 按它校验归属，注释原文：both inputs (stored header cwd, workspace path) are immutable
+- 位置：`packages/dsh-pack-core/src/cwd.ts:22`
+- 起始版本：0.2.2-rc.5
+- 为什么：本项目的设计是「工作区由用户决定，模型无权变更」。UI 切换工作区是换到该工作区的 blank 会话或新建一个（`sessions.create({ workspaceId })` → `cwd = workspace.path`），不是改现有会话的 cwd。若上游哪天允许改 `header.cwd`，或把 UI 切换改成改现有会话，这条假设就破了——四个包的清单、绑定与开关会跟着模型的一次 `cd` 换目录
+- 判据：确认 `dsh-session/src/types.ts` 的 `SessionHeader.cwd` 仍是 `readonly`，且 `dsh-workspace/src/entity.ts` 的 `attachSession` 仍按 `header.cwd === workspace.path` 校验
+- 退役：宿主提供官方的「会话所属工作区」只读接口，或明确文档化 `header.cwd` 可变
 
 ## blocked
 

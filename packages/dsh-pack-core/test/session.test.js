@@ -12,17 +12,14 @@ import { resolveSession } from '../lib/session.js'
  * 宿主全程是假的：ctx 只有 `get` 与 `logger`。
  */
 
-/** 带 workingDirectory 投影的会话：投影值就是「现在在哪」。 */
-function sessionWith(projected) {
-  return {
-    header: { cwd: 'C:/created' },
-    projections: {
-      faceOf(key) {
-        if (key !== 'workingDirectory') return null
-        return { getSnapshot: () => projected }
-      },
-    },
-  }
+/**
+ * 带工作区的 Agent。
+ *
+ * 工作区读 `header.cwd`（会话创建时的工作区，创建后不可变）。投影不参与：
+ * 模型 `cd` 不该改变会话所属工作区。
+ */
+function agentWith(cwd) {
+  return { session: { header: { cwd } } }
 }
 
 function ctxOf(services, warnings = [], label = 'test-pack') {
@@ -35,18 +32,15 @@ function ctxOf(services, warnings = [], label = 'test-pack') {
   }
 }
 
-test('live Agent 优先：拿到 agent 本体与投影目录', async () => {
-  const agent = { session: sessionWith('D:/current') }
+test('live Agent 优先：拿到 agent 本体与工作区', async () => {
+  const agent = agentWith('D:/current')
   const ctx = ctxOf({ agents: { get: () => agent } })
   const resolved = await resolveSession(ctx, 's1')
   assert.deepEqual(resolved, { live: true, cwd: 'D:/current', agent })
 })
 
 test('live Agent 抛错时退回观察快照', async () => {
-  const observed = {
-    header: { cwd: 'C:/created' },
-    projections: { values: { workingDirectory: 'D:/observed' } },
-  }
+  const observed = { header: { cwd: 'D:/observed' } }
   const ctx = ctxOf({
     agents: {
       get() {

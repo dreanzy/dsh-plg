@@ -383,6 +383,85 @@ async function main() {
       check('mcp: 视图带 groupRanks', typeof g.json.value?.groupRanks === 'object', typeof g.json.value?.groupRanks)
     }
 
+    // ---------- 会话所属工作区 ----------
+    //
+    // 本项目的设计是「工作区由用户决定」：UI 上切换工作区不是改现有会话的 cwd，
+    // 而是换到该工作区的 blank 会话或新建一个（`sessions.create({ workspaceId })`
+    // → `cwd = workspace.path`）。这里走真实 RPC 建两个工作区各一个会话，验三个包
+    // 的工作区视图读到的是各自会话的 header.cwd。
+    //
+    // 这条路径单包测试覆盖不到：`cwdFromAgent` 读的是宿主 Agent 的
+    // `session.header.cwd`，只有真实装配出来的 Agent 才有这个形状。
+    {
+      const rpc = async (endpoint, args) => {
+        const body = {
+          type: 'client-request',
+          rpcId: crypto.randomUUID(),
+          method: endpoint,
+          payload: { args },
+        }
+        const res = await fetch(`http://127.0.0.1:${PORT}/api/${endpoint}`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', ...(cookie === '' ? {} : { cookie }) },
+          body: JSON.stringify(body),
+        })
+        const text = await res.text()
+        let json
+        try { json = JSON.parse(text) } catch { json = { raw: text.slice(0, 200) } }
+        return { status: res.status, json }
+      }
+
+      const wsA = join(WORKSPACE, 'e2e-ws-a')
+      const wsB = join(WORKSPACE, 'e2e-ws-b')
+      await mkdir(wsA, { recursive: true })
+      await mkdir(wsB, { recursive: true })
+
+      const madeA = await rpc('workspace/create', { request: { path: wsA } })
+      const madeB = await rpc('workspace/create', { request: { path: wsB } })
+      const idA = madeA.json?.result?.value?.workspace?.workspaceId
+      const idB = madeB.json?.result?.value?.workspace?.workspaceId
+      if (idA === undefined || idB === undefined) {
+        skip('工作区: 建不出两个工作区，跳过会话归属断言')
+      } else {
+        const sessA = await rpc('session/create', { request: { workspaceId: idA } })
+        const sessB = await rpc('session/create', { request: { workspaceId: idB } })
+        const sidA = sessA.json?.result?.value?.sessionId
+        const sidB = sessB.json?.result?.value?.sessionId
+        check('工作区: 两个会话都建出来了', typeof sidA === 'string' && typeof sidB === 'string',
+          { a: sessA.json?.result?.error, b: sessB.json?.result?.error })
+
+        if (typeof sidA === 'string' && typeof sidB === 'string') {
+          // 四个包的工作区视图都按会话所属工作区求值。
+          const views = [
+            ['skill', '/api/skill-pack/workspace'],
+            ['plugin', '/api/plugin-pack/workspace'],
+            ['mcp', '/api/mcp-pack/workspace'],
+          ]
+          for (const [pkg, path] of views) {
+            const va = await post(path, { sessionId: sidA })
+            const vb = await post(path, { sessionId: sidB })
+            check(pkg + ': 会话 A 的工作区是 A',
+              typeof va.json.value?.cwd === 'string' && va.json.value.cwd.toLowerCase().endsWith('e2e-ws-a'),
+              va.json.value?.cwd ?? va.json.error)
+            check(pkg + ': 会话 B 的工作区是 B',
+              typeof vb.json.value?.cwd === 'string' && vb.json.value.cwd.toLowerCase().endsWith('e2e-ws-b'),
+              vb.json.value?.cwd ?? vb.json.error)
+          }
+
+          // 两个会话各自读到自己的工作区：验的是真实装配出来的 Agent 上
+          // `cwdFromAgent` 能拿到 header.cwd（单测用的是假对象，验不到这条路径）。
+          //
+          // 「读投影还是读 header」的分歧这里验不到：两个会话都没 cd 过，投影值与
+          // header 相同。那条由 pack-core 单测的「模型 cd 之后 pack 不跟着变」覆盖。
+          const viewA = await post('/api/skill-pack/workspace', { sessionId: sidA })
+          const viewB = await post('/api/skill-pack/workspace', { sessionId: sidB })
+          check('工作区: 两个会话读到各自的工作区',
+            viewA.json.value?.cwd !== viewB.json.value?.cwd,
+            { a: viewA.json.value?.cwd, b: viewB.json.value?.cwd })
+        }
+      }
+    }
+
     // ---------- 三个 manager 的操作序列 ----------
     for (const [pkg, P] of [
       ['skill', '/api/skill-pack'],
