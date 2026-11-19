@@ -9,6 +9,8 @@ export interface ToolDefinitionSpec {
   readonly description: string
   readonly inputSchema: unknown
   readonly outputSchema?: unknown
+  /** 上游声明 task-required 时宿主会直接拒绝调用；不透传就丢了这个判断。 */
+  readonly taskRequired?: boolean
   readonly call: (args: Record<string, unknown>, exec: unknown) => Promise<unknown>
 }
 
@@ -50,6 +52,7 @@ export function buildNativeDefinitions(options: {
       description: tool.description,
       inputSchema: tool.inputSchema,
       ...(tool.outputSchema === undefined ? {} : { outputSchema: tool.outputSchema }),
+      ...(tool.taskSupport === 'required' ? { taskRequired: true } : {}),
       call: async (args, exec) => await options.connection.callTool(tool.name, args, callOptionsFromExec(exec)),
     })
     built.push({ publicName, definition })

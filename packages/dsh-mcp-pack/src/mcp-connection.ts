@@ -25,6 +25,13 @@ export interface McpToolInfo {
   readonly description: string
   readonly inputSchema: unknown
   readonly outputSchema?: unknown
+  /**
+   * 上游声明的任务执行要求（MCP `Tool.execution.taskSupport`）。
+   *
+   * 宿主 `createMcpToolDefinition` 见到 `required` 会直接拒绝，而不是把调用发出去
+   * 等上游挂起；本地不透传就等于把这个判断丢了。
+   */
+  readonly taskSupport?: 'required' | 'optional' | 'forbidden'
 }
 
 /** 一条活连接。 */
@@ -290,6 +297,7 @@ export async function connectMcp(key: string, spec: ConnectionSpec, options: { r
         description: tool.description ?? '',
         inputSchema: tool.inputSchema,
         ...(tool.outputSchema === undefined ? {} : { outputSchema: tool.outputSchema }),
+        ...(tool.execution?.taskSupport === undefined ? {} : { taskSupport: tool.execution.taskSupport }),
       }))
     },
     async callTool(name, args, callOptions = {}) {

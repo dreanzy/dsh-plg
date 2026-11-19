@@ -62,6 +62,35 @@ test('真实 stdio 连接：listTools、callTool、isError 都走得通', async 
   }
 })
 
+/**
+ * 上游 `execution.taskSupport` 必须原样出现在 `McpToolInfo` 上。
+ *
+ * 用低层 `Server` 而不是 `McpServer`：后者拒绝在非 task handler 上声明
+ * `taskSupport: 'required'`（`mcp.js` 抛 `InternalError`），造不出这个现场。
+ */
+test('真实 stdio 连接：execution.taskSupport 透传到 McpToolInfo', async (t) => {
+  if (!(await canSpawn())) {
+    t.skip('当前环境禁止 spawn 子进程')
+    return
+  }
+  const taskFixture = fileURLToPath(new URL('./fixtures/task-server.mjs', import.meta.url))
+  const connection = await connectMcp('task', {
+    transport: 'stdio',
+    serverName: 'task',
+    command: process.execPath,
+    args: [taskFixture],
+  }, { timeoutMs: 15000 })
+  try {
+    const tools = await connection.listTools()
+    const tasky = tools.find((tool) => tool.name === 'tasky')
+    const plain = tools.find((tool) => tool.name === 'plain')
+    assert.equal(tasky?.taskSupport, 'required', 'task-required 必须透传，否则宿主不会拒绝调用')
+    assert.equal(plain?.taskSupport, undefined, '没声明就不该凭空造一个')
+  } finally {
+    await connection.close()
+  }
+})
+
 test('子进程只继承白名单变量，显式 env 照传', () => {
   process.env.MY_TEST_API_KEY = 'secret-value'
   process.env.DSH_SOMETHING = 'internal'
