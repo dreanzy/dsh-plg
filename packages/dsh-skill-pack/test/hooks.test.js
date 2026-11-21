@@ -265,6 +265,68 @@ test('dev 会话建立后保存策略，reapply 让新决定生效', async () =>
   assert.equal(skills.registered.length, 0)
 })
 
+test('落地进行中调用 reapply 会等到这一轮收尾，不提前返回', async () => {
+  const { cwd } = await makeWorkspace({ packs: { default: emptyPack() } })
+  const skills = fakeSkills(rows)
+  const ctx = fakeCtx()
+
+  // 第 1 次 refresh 给「没有遮蔽」，之后给「beta 要关」；第 2 次起挂在 gate 上，
+  // 用来把「另一路落地」固定在进行中。
+  let calls = 0
+  let release = () => {}
+  const gate = new Promise((resolve) => {
+    release = resolve
+  })
+  const snapshot = {
+    async refresh() {
+      calls += 1
+      if (calls > 1) await gate
+      return {
+        rows,
+        complete: true,
+        hidden: calls === 1 ? [] : ['beta'],
+        policy: {
+          packs: { packs: { default: emptyPack() } },
+          ui: { showOfficialSkills: false, showChip: true, defaultTab: 'groups' },
+          binding: null,
+          packId: 'default',
+          pack: null,
+          groups: { groups: [], assignments: {} },
+          bindings: { bindings: {} },
+          warnings: [],
+        },
+        warnings: [],
+      }
+    },
+    invalidate() {},
+  }
+  const hooks = installHooks(ctx, { snapshot })
+  await ctx.emit('agent/created', { agent: agentFor(cwd, skills) })
+  assert.equal(skills.registered.length, 0)
+
+  // 另一路落地（宿主同步派发的 skills/change）进入 guarded 后挂在 gate 上。
+  ctx.emitSync('skills/change', {})
+
+  let done = false
+  const pending = hooks.reapply().then(() => {
+    done = true
+  })
+  await new Promise((resolve) => setTimeout(resolve, 20))
+  // 那一轮还没收尾：reapply 不该已经返回。还原成直接 await onChange() 时这里变红。
+  assert.equal(done, false)
+
+  release()
+  // 硬上限：`settled` 没被结算时这里会一直挂着，挂起比断言红难排查得多。
+  await Promise.race([
+    pending,
+    new Promise((_, reject) => setTimeout(() => reject(new Error('reapply 没有在落地收尾后返回')), 2000)),
+  ])
+  assert.deepEqual(
+    skills.registered.map((skill) => skill.name),
+    ['beta'],
+  )
+})
+
 test('多个会话的重新落地并发执行', async () => {
   const { cwd } = await makeWorkspace({ packs: { default: emptyPack() } })
   const skills = fakeSkills(rows)

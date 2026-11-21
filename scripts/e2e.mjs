@@ -467,6 +467,35 @@ async function main() {
           check('工作区: 两个会话读到各自的工作区',
             viewA.json.value?.cwd !== viewB.json.value?.cwd,
             { a: viewA.json.value?.cwd, b: viewB.json.value?.cwd })
+
+          // 落地进行中保存不许挂住：一路新建会话（触发 agent/created 落地），一路连发
+          // 保存。修复后 reapply 会等落地收尾——若某条落地路径忘了结算 settled，保存会
+          // 一直挂着。每个请求都用硬上限包一层，让失败落在断言上，而不是把整条 e2e
+          // 卡到 runner 超时、只留下「超时」两个字。
+          const P = '/api/skill-pack'
+          const timed = (promise, ms) =>
+            Promise.race([
+              promise,
+              new Promise((resolve) =>
+                setTimeout(() => resolve({ status: 0, json: { error: 'timeout' }, timedOut: true }), ms),
+              ),
+            ])
+          // 并发落地的完成顺序不定，先把开关记下来，收尾还原——否则后面
+          // 「试算不落盘」的基线会被这一轮改掉，那条断言会以看似无关的方式变红。
+          const baseChip = (await post(P + '/global', {})).json.value?.ui?.showChip === true
+          const started = Date.now()
+          const burst = await Promise.all([
+            timed(rpc('session/create', { request: { workspaceId: idA } }), 3000),
+            timed(post(P + '/apply', { commands: [{ op: 'showChip', value: true }] }), 3000),
+            timed(post(P + '/apply', { commands: [{ op: 'showChip', value: false }] }), 3000),
+            timed(post(P + '/apply', { commands: [{ op: 'showChip', value: true }] }), 3000),
+          ])
+          const saves = burst.slice(1)
+          const elapsed = Date.now() - started
+          await post(P + '/apply', { commands: [{ op: 'showChip', value: baseChip }] })
+          check('skill: 并发落地时保存不挂住',
+            saves.every((r) => r.timedOut !== true && r.json?.ok === true) && elapsed < 3000,
+            { elapsed, outcomes: saves.map((r) => r.status) })
         }
       }
     }

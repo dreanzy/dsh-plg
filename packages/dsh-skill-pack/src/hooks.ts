@@ -319,18 +319,38 @@ export function installHooks(
   let applying = 0
   /** 落地期间到达的清单变化。直接丢掉会让遮蔽停在上一个版本，所以记下来补跑。 */
   let dirty = false
+  /**
+   * 当前这一批落地的完成信号：`applying` 从 0 起跑时换一个新的 Promise，归零时结算。
+   *
+   * `onChange` 在 `applying > 0` 时只置 `dirty` 就返回，那个返回值的意思是「排进队列了」，
+   * 不是「落地了」。唯一的等待者 `reapply` 靠它等到真的收尾——否则路由已经按「已生效」
+   * 回包，本会话的遮蔽却还停在旧策略。
+   *
+   * 结算依赖 `guarded` 的 `finally`：任何一条落地路径（成功、抛错、被顶掉）都会走到
+   * 归零，否则 `reapply` 会一直等下去。
+   */
+  let settled: Promise<void> = Promise.resolve()
+  let settle: () => void = () => {}
 
   async function guarded(operation: () => Promise<void>): Promise<void> {
+    if (applying === 0) {
+      settled = new Promise<void>((resolve) => {
+        settle = resolve
+      })
+    }
     applying += 1
     try {
       await operation()
     } finally {
       applying -= 1
-      if (applying === 0 && dirty) {
-        dirty = false
-        void onChange().catch((error: unknown) => {
-          ctx.logger.warn(`dsh-skill-pack: 补跑清单变化失败：${String(error)}`)
-        })
+      if (applying === 0) {
+        settle()
+        if (dirty) {
+          dirty = false
+          void onChange().catch((error: unknown) => {
+            ctx.logger.warn(`dsh-skill-pack: 补跑清单变化失败：${String(error)}`)
+          })
+        }
       }
     }
   }
@@ -465,6 +485,12 @@ export function installHooks(
    * 保存成功后由路由显式调用这里，否则同一会话里改策略要等新会话才生效。
    */
   const reapply = async (): Promise<void> => {
+    // 有落地在跑时 `onChange` 只置 `dirty` 就返回，路由却已按「已生效」回包。
+    // 等到这一批收尾再自己跑，`await reapply()` 才代表「本会话的遮蔽已经换过」。
+    // 循环是必要的：收尾时触发的补跑会把 `applying` 顶起来，那一次同样不是我们这次的
+    // 落地。退出循环到调用 `onChange` 之间没有 `await`，不会有人插进来把 `applying`
+    // 从 0 顶回 1，因此那一次调用必定走「自己跑」的分支。
+    while (applying > 0) await settled
     // 策略刚被写盘：onChange 里的显式失效不靠 mtime 精度。同毫秒内的两次写在
     // Windows 上可能得到同一个时间戳，靠指纹会漏掉第二次。
     await onChange()
