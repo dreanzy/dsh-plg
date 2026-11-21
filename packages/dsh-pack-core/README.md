@@ -14,7 +14,7 @@
 四包对它写真实 semver 依赖：
 
 ```json
-"dependencies": { "@dreanzy/dsh-pack-core": "^0.1.0" }
+"dependencies": { "@dreanzy/dsh-pack-core": "^0.2.0" }
 ```
 
 普通安装会把它放到 `~/.dsh/profiles/<name>/node_modules` 顶层，四个插件都能原生解析。开发期用 pnpm 的 workspace 链接（仓库根 `.npmrc` 已开 `link-workspace-packages`）；宿主认符号链接，但只有包名出现在插件的 `peerDependencies` 里才走拦截路由。
@@ -36,4 +36,4 @@
 
 ## 版本
 
-`0.1.x` 是搬迁期：只收已经逐字相同的实现，不改任何一个包的行为。四个包的 `^0.1.0` 依赖意味着 core 必须先发，否则它们装不上。
+`0.1.x` 是搬迁期：只收已经逐字相同的实现，不改任何一个包的行为。`0.2.0` 起收进会改行为的共享件（会话解析、路由骨架、写事务、命令协议、残留键判定），并删掉 `projectedCwd` 导出。四个包的 `^0.2.0` 依赖意味着 core 必须先发，否则它们装不上。
