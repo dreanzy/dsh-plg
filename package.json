@@ -11,6 +11,7 @@
     "typecheck": "pnpm -r typecheck",
     "test": "node scripts/check-ui-vars.mjs && node scripts/check-panels.mjs && pnpm -r test",
     "e2e": "node scripts/e2e.mjs",
+    "e2e:lens": "node scripts/e2e-lens.mjs",
     "mutation": "node scripts/mutation.mjs",
     "release": "node scripts/release.mjs"
   }
