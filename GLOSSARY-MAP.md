@@ -7,6 +7,7 @@
 - [dsh-plugin-pack](./packages/dsh-plugin-pack/GLOSSARY.md): 按工作区停用插件（工具 + 提示词段）的领域词汇
 - [dsh-mcp-pack](./packages/dsh-mcp-pack/GLOSSARY.md): 按工作区控制 MCP 服务器可见性与加载方式的领域词汇
 - [dsh-model-pack](./packages/dsh-model-pack/GLOSSARY.md): 按工作区决定新建会话模型路由的领域词汇；与三个 manager 同属「按工作区求值」家族，被管理对象从可见性换成了模型路由
+- [dsh-lsp-lens](./packages/dsh-lsp-lens/GLOSSARY.md): 把语言服务器诊断在改完代码后回灌给模型的领域词汇（回灌、脏文件、发现来源、待处理）
 
 ## Relationships
 
