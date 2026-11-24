@@ -2,6 +2,6 @@
 - insert:
     - id: lsp-lens
       name: '@dreanzy/dsh-lsp-lens'
-      inject: [tools, subprocess, jobs]
+      inject: [tools, subprocess]
       config:
         enabled: true

@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto'
+import { appendFileSync } from 'node:fs'
 import { stat } from 'node:fs/promises'
 import { DirtySet } from './dirty.js'
 import { changedFiles } from './git.js'
@@ -7,8 +9,8 @@ import type { DiagnosticLike, FileFeedback } from './render.js'
 
 /** Cordis 插件名。 */
 export const name = 'lsp-lens'
-/** 工具、子进程与作业服务：subprocess 跑 git 差分，jobs 用来结算后台 shell。诊断工具本身仍按次探测。 */
-export const inject = ['tools', 'subprocess', 'jobs']
+/** 工具与子进程：subprocess 跑 git 差分。jobs 用延迟绑定（见 apply），缺席时退回立即差分而不是整插件 pending。 */
+export const inject = ['tools', 'subprocess']
 
 export interface Config {
   enabled?: boolean
@@ -26,6 +28,13 @@ interface ExecutionLike { name?: string; arguments?: unknown; signal?: AbortSign
 const MIN_DIAGNOSIS_MS = 1000
 
 const TIMEOUT = Symbol('lsp-lens:timeout')
+
+/** 临时调试：LSP_LENS_DEBUG 指向文件时逐点记录，验证宿主事件是否到达。 */
+const DEBUG_LOG = process.env.LSP_LENS_DEBUG ?? ''
+export const debug = (message: string): void => {
+  if (DEBUG_LOG === '') return
+  try { appendFileSync(DEBUG_LOG, new Date().toISOString() + ' ' + message + '\n') } catch { /* 忽略 */ }
+}
 
 function timeoutAfter(ms: number): Promise<typeof TIMEOUT> {
   return new Promise((resolve) => { const timer = setTimeout(() => resolve(TIMEOUT), ms); if (typeof timer.unref === 'function') timer.unref() })
@@ -91,11 +100,17 @@ export function apply(ctx: any, config: Config = {}): void {
   const maxCharsPerFile = config.maxCharsPerFile ?? 800
   const diagnosticTimeoutMs = config.diagnosticTimeoutMs ?? 5000
   const stepBudgetMs = config.stepBudgetMs ?? 4000
+  // jobs 走延迟绑定：headless 模板里它会后到，直接写进 inject 会让整个插件 pending。
+  let jobsRegistry: any = null
+  try {
+    ctx.inject?.(['jobs'], (jobsCtx: any) => { jobsRegistry = jobsCtx.get('jobs') ?? null })
+  } catch { jobsRegistry = null }
   const dirty = new DirtySet()
   const pendingShell = new Set<string>()
   const backgroundJobs = new Map<string, string>()
   let warnedMissingMessage = false
 
+  debug('apply')
   const warn = (message: string): void => { try { ctx.logger?.warn?.('lsp-lens: ' + message) } catch { /* 日志失败不影响主流程 */ } }
 
   const diagnose = async (path: string, exec: ExecutionLike | undefined, timeoutMs: number = diagnosticTimeoutMs): Promise<FileFeedback | null> => {
@@ -117,6 +132,7 @@ export function apply(ctx: any, config: Config = {}): void {
     try {
       if (!enabled || decision?.kind !== 'accept' || result?.isError === true) return decision
       const toolName = String(exec?.name ?? '')
+      debug('post ' + toolName + ' kind=' + String(decision?.kind))
 
       if (SHELL_TOOLS.has(toolName)) {
         const value = result?.value as { kind?: unknown; jobId?: unknown } | undefined
@@ -134,6 +150,7 @@ export function apply(ctx: any, config: Config = {}): void {
       const path = normalizePath(rawPath)
       const version = (await fileVersion(path)) ?? 'unknown'
       dirty.mark(path, version)
+      debug('mark ' + path + ' v=' + version + ' size=' + String(dirty.size))
       return decision
     } catch (error) {
       warn('回灌失败，保留原结果：' + String(error))
@@ -155,11 +172,12 @@ export function apply(ctx: any, config: Config = {}): void {
   const offPre = ctx.on('agent/pre-step', async (payload: any, next: () => Promise<DecisionLike>): Promise<DecisionLike> => {
     const decision = await next()
     try {
+      debug('pre-step dirty=' + String(dirty.size) + ' pendingShell=' + String(pendingShell.size) + ' jobs=' + String(backgroundJobs.size))
       if (!enabled) return decision
 
       // 1. 后台作业：结算后再差分。jobs 服务是可选的，取不到就退回"立即差分"。
       if (backgroundJobs.size > 0) {
-        const jobs: any = ctx.jobs ?? null
+        const jobs: any = jobsRegistry
         for (const [jobId, cwd] of [...backgroundJobs]) {
           if (!jobs || typeof jobs.read !== 'function') { pendingShell.add(cwd); backgroundJobs.delete(jobId); continue }
           try {
@@ -186,6 +204,7 @@ export function apply(ctx: any, config: Config = {}): void {
 
       // 3. 汇总回灌。诊断在这里发生：写入与 shell 都只登记，回到下一步再取结果。
       const entries = dirty.take(maxFiles)
+      debug('take ' + String(entries.length))
       if (entries.length === 0) return decision
       const deadline = Date.now() + stepBudgetMs
       const feedback: FileFeedback[] = []
@@ -199,12 +218,15 @@ export function apply(ctx: any, config: Config = {}): void {
           break
         }
         const result = await diagnose(entry.path, { agent: payload?.agent, signal: payload?.signal }, Math.min(diagnosticTimeoutMs, remaining))
+        debug('diag ' + entry.path + ' -> ' + (result === null ? 'null' : 'unconfirmed=' + String(result.unconfirmed) + ' n=' + String(result.diagnostics.length)))
         if (result !== null) feedback.push(result)
       }
       const text = renderFeedback(feedback, { maxFiles, maxCharsPerFile })
+      debug('render len=' + String(text.length))
       if (text === '') return decision
 
       const message = await buildMessage(payload, text)
+      debug('message ' + (message === null ? 'null' : 'ok'))
       if (message === null) {
         if (!warnedMissingMessage) { warnedMissingMessage = true; warn('宿主未提供 createUserMessage，pre-step 汇总跳过') }
         return decision
@@ -238,5 +260,14 @@ async function buildMessage(payload: any, text: string): Promise<unknown | null>
       source: { kind: 'dsh-lsp-lens:feedback', turn: payload?.turn, step: payload?.step },
       content: [{ type: 'text', text }],
     })
-  } catch { return null }
+  } catch (error) {
+    // 宿主工厂拿不到（link 安装时裸包名解析不到）时手造同形状消息。
+    debug('factory unavailable: ' + String(error))
+    return {
+      id: randomUUID(),
+      role: 'user',
+      content: [{ type: 'text', text }],
+      source: { kind: 'dsh-lsp-lens:feedback', turn: payload?.turn, step: payload?.step },
+    }
+  }
 }
