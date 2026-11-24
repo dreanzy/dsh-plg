@@ -166,6 +166,15 @@ importers:
 
   .: {}
 
+  packages/dsh-lsp-lens:
+    devDependencies:
+      '@types/node':
+        specifier: ^22.0.0
+        version: 22.20.5
+      typescript:
+        specifier: ^5.0.0
+        version: 5.9.3
+
   packages/dsh-mcp-pack:
     dependencies:
       '@deepseek-ai/dsh-atomic-write':

@@ -1,0 +1,7 @@
+# 诊断回灌：改完代码后把语言服务器的结果送回模型，不依赖模型主动调用 lsp 工具。
+- insert:
+    - id: lsp-lens
+      name: '@dreanzy/dsh-lsp-lens'
+      inject: [tools, subprocess, jobs]
+      config:
+        enabled: true
