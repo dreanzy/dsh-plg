@@ -32,7 +32,7 @@ const PROFILE = 'e2e-verify'
  * stderr 里，表现是「进程起来了但端口不通」。3300 不在任何保留段内。
  */
 const PORT = 3300
-const PACKAGES = ['dsh-pack-core', 'dsh-skill-pack', 'dsh-plugin-pack', 'dsh-mcp-pack', 'dsh-model-pack']
+const PACKAGES = ['dsh-pack-core', 'dsh-skill-pack', 'dsh-plugin-pack', 'dsh-mcp-pack', 'dsh-model-pack', 'dsh-lsp-lens']
 
 const log = []
 const check = (name, cond, detail) => log.push({ name, pass: !!cond, detail: cond ? undefined : detail })
@@ -653,6 +653,40 @@ async function main() {
         settled.json.value?.pending !== true,
         'pending=' + String(settled.json.value?.pending),
       )
+    }
+
+    // ---------- lsp-lens 装配 ----------
+    //
+    // 这几条抓的是「装上了但没跑起来」：手工复制会被 pnpm 清掉、inject 写了模板里
+    // 没有的服务会让插件 pending、entry 级 inject 覆盖模块导出。真实宿主启动一次
+    // 就能看出来，假 ctx 单测看不出来。
+    {
+      const dump = await run('dsh', ['--profile', PROFILE, '--dump-config'])
+      const occurrences = (dump.stdout.match(/id: lsp-lens/g) ?? []).length
+      check('lsp-lens: dump 里恰好一条 entry', occurrences === 1, 'occurrences=' + String(occurrences))
+
+      let profilePkg = {}
+      try {
+        profilePkg = JSON.parse(await readFile(join(HOME, 'profiles', PROFILE, 'package.json'), 'utf8'))
+      } catch {
+        profilePkg = {}
+      }
+      const bundles = profilePkg?.dsh?.profile?.bundles ?? []
+      check('lsp-lens: 在 profile bundles 里', bundles.includes('@dreanzy/dsh-lsp-lens'), JSON.stringify(bundles))
+
+      const libPath = join(HOME, 'profiles', PROFILE, 'node_modules', '@dreanzy', 'dsh-lsp-lens', 'lib', 'index.js')
+      check('lsp-lens: 包已安装', existsSync(libPath), libPath)
+
+      let serverText = ''
+      try {
+        serverText = await readFile(serverLog, 'utf8')
+      } catch {
+        serverText = ''
+      }
+      const broken = serverText
+        .split('\n')
+        .filter((line) => /lsp-lens/.test(line) && /(missing|error|pending|failed)/i.test(line))
+      check('lsp-lens: 启动无 missing/error', broken.length === 0, broken.slice(0, 3))
     }
 
     // ---------- 原型链 op 不被当成 internal ----------
