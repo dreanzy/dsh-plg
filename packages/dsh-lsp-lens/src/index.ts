@@ -15,11 +15,15 @@ export interface Config {
   maxFilesPerStep?: number
   maxCharsPerFile?: number
   diagnosticTimeoutMs?: number
+  stepBudgetMs?: number
   extensions?: string[]
 }
 
 interface DecisionLike { kind?: string; content?: unknown[]; messages?: unknown[] }
 interface ExecutionLike { name?: string; arguments?: unknown; signal?: AbortSignal; agent?: unknown; workspace?: unknown }
+
+/** 一次诊断至少要给的预算，低于它就不开始（避免只为拿一个超时）。 */
+const MIN_DIAGNOSIS_MS = 1000
 
 const TIMEOUT = Symbol('lsp-lens:timeout')
 
@@ -86,6 +90,7 @@ export function apply(ctx: any, config: Config = {}): void {
   const maxFiles = config.maxFilesPerStep ?? 3
   const maxCharsPerFile = config.maxCharsPerFile ?? 800
   const diagnosticTimeoutMs = config.diagnosticTimeoutMs ?? 5000
+  const stepBudgetMs = config.stepBudgetMs ?? 4000
   const dirty = new DirtySet()
   const pendingShell = new Set<string>()
   const backgroundJobs = new Map<string, string>()
@@ -93,13 +98,13 @@ export function apply(ctx: any, config: Config = {}): void {
 
   const warn = (message: string): void => { try { ctx.logger?.warn?.('lsp-lens: ' + message) } catch { /* 日志失败不影响主流程 */ } }
 
-  const diagnose = async (path: string, exec: ExecutionLike | undefined): Promise<FileFeedback | null> => {
+  const diagnose = async (path: string, exec: ExecutionLike | undefined, timeoutMs: number = diagnosticTimeoutMs): Promise<FileFeedback | null> => {
     const tool = ctx.tools.get('lsp_diagnostics')
     if (!tool || typeof tool.execute !== 'function') return null
     const attempt = async (): Promise<FileFeedback> => {
       const outcome = await Promise.race([
         tool.execute({ file_path: path }, exec as never),
-        timeoutAfter(diagnosticTimeoutMs),
+        timeoutAfter(timeoutMs),
       ])
       if (outcome === TIMEOUT) return { path, diagnostics: [], unconfirmed: true, timedOut: true }
       return { path, diagnostics: toDiagnostics(outcome) }
@@ -182,9 +187,18 @@ export function apply(ctx: any, config: Config = {}): void {
       // 3. 汇总回灌。诊断在这里发生：写入与 shell 都只登记，回到下一步再取结果。
       const entries = dirty.take(maxFiles)
       if (entries.length === 0) return decision
+      const deadline = Date.now() + stepBudgetMs
       const feedback: FileFeedback[] = []
-      for (const entry of entries) {
-        const result = await diagnose(entry.path, { agent: payload?.agent, signal: payload?.signal })
+      for (let index = 0; index < entries.length; index += 1) {
+        const entry = entries[index]
+        if (entry === undefined) continue
+        const remaining = deadline - Date.now()
+        // 剩余预算不够一次最小可行诊断时放回脏表，下一步继续，不产生未确认噪音。
+        if (remaining < MIN_DIAGNOSIS_MS) {
+          for (const rest of entries.slice(index)) dirty.mark(rest.path, rest.version)
+          break
+        }
+        const result = await diagnose(entry.path, { agent: payload?.agent, signal: payload?.signal }, Math.min(diagnosticTimeoutMs, remaining))
         if (result !== null) feedback.push(result)
       }
       const text = renderFeedback(feedback, { maxFiles, maxCharsPerFile })
