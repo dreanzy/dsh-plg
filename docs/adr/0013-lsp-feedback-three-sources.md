@@ -22,3 +22,4 @@
 - 非 git 仓库里的 bash 写入、`.gitignore` 内的文件、工作区外的绝对路径写入覆盖不到，列为已知限制。
 - 每次 shell 调用后多一次 `git status`（本机实测 0.077–0.107s），且只在有 shell 调用后的下一步执行一次。
 - 诊断结果只存在于会话日志，不落盘；同一文件同一版本只回灌一次。
+- 每次诊断会等满 `dsh-lsp-actions` 的 `diagnosticsSettleMs`（默认 2000ms）：tsls 是 push-only，未变更文档不会重新发布，窗口到点才返回缓存或空。异步化因此是必须的而非优化；同一事实也让「空结果」无法区分干净与没等到，上游请求见 [issue #37](https://github.com/PerryLink/dsh-lsp-actions/issues/37)。
