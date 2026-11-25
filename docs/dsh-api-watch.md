@@ -75,6 +75,16 @@
 - 判据：`packages/dsh-model-pack/test/hooks.test.js` 断言 `agentTeams.isEnabled` 返回 true 时 `model-pack.team` 段文本非空、返回 false 或抛错时为空串
 - 退役：官方给 `systemPrompt` 段提供「按团队模式条件注入」的声明式入口，或 `team:policy` 段本身改为引用实际可用的委派工具
 
+### team-policy-carries-claim-flow
+
+- 包：`@deepseek-ai/dsh-tool-agent-team`
+- 复刻对象：官方 `TEAM_POLICY` 文本承担任务板的**流程**（`list → get → claim with the current revision → complete`），本插件 `model-pack.team` 只补**判据**（何时建板、`write_scopes`），不重复流程
+- 位置：`packages/dsh-model-pack/src/prompt.ts`（`TEAM_SECTION_TEXT`）
+- 起始版本：0.2.2-rc.5
+- 为什么：两段同题、进同一份 system prompt，靠「官方讲流程、本地讲判据」的分工避免第二个事实源。官方若删掉 claim/revision 流程（或把它挪进工具描述），本地判据就缺了执行步骤——模型会建板却不会推进
+- 判据：`dsh-tool-agent-team/src/index.ts` 的 `TEAM_POLICY` 仍含 `claim with the current revision` 与 `complete`；`packages/dsh-model-pack/test/prompt.test.js` 断言团队段不含 `claim`
+- 退役：官方把流程改由工具描述或输出 schema 承载（不再依赖段文本），或官方提供可组合的团队段扩展点
+
 ### session-resolve-services
 
 - 包：`@deepseek-ai/dsh-agents` / `@deepseek-ai/dsh-session`（服务名 `agents` 与 `sessionQuery`）
