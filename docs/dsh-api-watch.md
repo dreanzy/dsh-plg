@@ -135,6 +135,16 @@
 - 判据：比对 `ctx.on('fs/observed')` 的回调参数个数与含义（宿主自身的 `WorkspaceChangeFeed` 也只接两个参数）
 - 退役：`fs/observed` 的监听器能拿到触发会话，届时把 `observed` 候选池改为直接按会话标脏
 
+### lsp-fs-observed-target-fields
+
+- 包：`@deepseek-ai/dsh-fs`
+- 复刻对象：`fs/observed` 回调里 `target.displayPath`（回退 `target.targetKey`）是**绝对路径**
+- 位置：`packages/dsh-lsp-lens/src/index.ts:219`
+- 起始版本：0.2.2-rc.5
+- 为什么：拿不到会话，只能靠这个字段拼可达性判定。字段改名、或改成相对会话根的路径时，观测来源会静默失效——不报错，只是少一个发现渠道，表现为「改了文件但没回灌」
+- 判据：开 `LSP_LENS_DEBUG`，读一个受支持文件后看候选池是否收到该路径
+- 退役：宿主把这个字段写进类型声明并导出，本地改为直接引用
+
 ## blocked
 
 当前无条目。
