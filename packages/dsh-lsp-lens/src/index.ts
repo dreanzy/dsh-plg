@@ -286,6 +286,10 @@ export function apply(ctx: any, config: Config = {}): void {
       const slots = maxFiles - state.inFlight.size
       if (slots > 0) {
         for (const entry of state.dirty.take(slots)) {
+          // 根外一律丢弃：lsp-actions 用会话根做 containment，放行只会换来一条
+          // 「unavailable」。写入与差分来源在这里统一拦，因为它们的 exec.agent
+          // 未必属于当前 pre-step 的会话（子代理就是这种情况）。
+          if (root === null || !withinRoot(entry.path, root)) { debug('skip outside ' + entry.path); continue }
           const group = groupOf(entry.path)
           if (busy.has(group)) { state.dirty.putBack(entry); continue }
           busy.add(group)

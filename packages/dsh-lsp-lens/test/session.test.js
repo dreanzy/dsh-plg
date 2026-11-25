@@ -40,6 +40,18 @@ test('脏表按会话隔离：别的会话取不走', async () => {
   assert.equal(asked.length, 1, '只有标脏的那个会话取走')
 })
 
+test('会话根外的写入不进诊断', async () => {
+  const asked = []
+  const handlers = harness(async (args) => { asked.push(args.file_path); return { diagnostics: [] } })
+  const agent = { session: { header: { id: 'outside-write', cwd: 'C:/inside' } } }
+  const post = handlers.get('tools/post-execute')
+  await post({ name: 'write', arguments: { file_path: 'C:/outside/a.ts' }, agent }, { isError: false }, async () => ({ kind: 'accept' }))
+  const pre = handlers.get('agent/pre-step')
+  await pre({ agent, turn: 1, step: 1 }, async () => ({ kind: 'accept', messages: [] }))
+  await sleep(20)
+  assert.deepEqual(asked, [], '根外文件不该发起诊断')
+})
+
 test('观测候选按会话根分流：根外丢弃，根内并入', async () => {
   const asked = []
   const handlers = harness(async (args) => { asked.push(args.file_path); return { diagnostics: [] } })

@@ -6,7 +6,7 @@ import { test } from 'node:test'
 import { apply } from '../lib/index.js'
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
-const agent = { session: { header: { id: 'budget-test' } } }
+const agent = { session: { header: { id: 'budget-test', cwd: tmpdir() } } }
 
 function harness(config, diagnostics) {
   const handlers = new Map()

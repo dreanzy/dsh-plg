@@ -6,7 +6,8 @@ import { test } from 'node:test'
 import { apply } from '../lib/index.js'
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
-const agent = { session: { header: { id: 'plugin-test' } } }
+// 会话根必须覆盖临时目录：发起诊断前会按根过滤，根缺失的条目一律丢弃。
+const agent = { session: { header: { id: 'plugin-test', cwd: tmpdir() } } }
 
 function harness(options) {
   const handlers = new Map()
