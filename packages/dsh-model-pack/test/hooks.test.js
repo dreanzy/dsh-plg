@@ -328,7 +328,7 @@ test('注册成功：restrict 与 section 各一次，deny 只含 subagent', asy
   assert.equal(calls.section[1].text({}), '')
 })
 
-test('团队开启：纠偏段文本非空，且点名 subagent_tier 与 subagent_fork', async (t) => {
+test('团队开启：纠偏段点名可用工具，并给出任务板触发判据', async (t) => {
   const ws = await makeWorkspace()
   t.after(ws.cleanup)
   const { ctx, listeners } = makeContext({ subagents: makeSubagents() })
@@ -348,6 +348,10 @@ test('团队开启：纠偏段文本非空，且点名 subagent_tier 与 subagen
   assert.match(text, /subagent_fork/)
   // 官方 team:policy 让模型用裸名 subagent，而它已被 deny——纠偏段必须说清这一点。
   assert.match(text, /\bsubagent\b(?!_)/)
+  // 任务板判据：只对「多个成员写同一工作区」建板；单发与只读不建。
+  assert.match(text, /team_task_create/)
+  assert.match(text, /write_scopes/)
+  assert.match(text, /read-only work, needs no task/)
   assert.doesNotMatch(text, /deepseek|commandcode|spawn/, '段文本不含 provider / model 名')
 })
 

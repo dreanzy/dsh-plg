@@ -49,10 +49,13 @@ export const TEAM_SECTION_ORDER = 700
  * 与编排段同一条硬约束：不含任何 provider / model 名，也不拼随会话变化的值。
  */
 export const TEAM_SECTION_TEXT = [
-  'Agent Teams is enabled in this session, and the official `subagent` tool is not available: every teammate is started through `subagent_tier`.',
-  'Create teammates with `subagent_tier` and pick the tier by task difficulty. The name it returns is the teammate\'s name — use that name as `owner` on shared tasks and with `send_message`.',
-  'Use `subagent_fork` only when a teammate needs this conversation\'s context; independent tasks must not use it.',
+  'Agent Teams is enabled in this session. Start every teammate with `subagent_tier` and pick the tier by task difficulty; the official `subagent` tool is not available here.',
+  'The name `subagent_tier` returns, or `list_agents` reports, is the teammate\'s name: use it as `owner` on shared tasks and with `send_message`. Use `subagent_fork` only when a teammate needs this conversation\'s context.',
+  'When two or more teammates write the same workspace, put the work on the board first: `team_task_create` with the `write_scopes` each one owns, and complete it when the work lands. A single delegation, or read-only work, needs no task.',
 ].join('\n')
+
+/** 团队纠偏段的 token 上限。比委派段短：它只补判据，不重复官方 `team:policy` 的流程。 */
+export const TEAM_SECTION_MAX_TOKENS = 260
 
 /** 段文本的 token 上限（spec §6.3：段 ≤500，实测占用见 spec 预算表）。 */
 export const DELEGATION_MAX_TOKENS = 500

@@ -6,6 +6,8 @@ import {
   BUILTIN_PROMPT,
   DELEGATION_MAX_TOKENS,
   DELEGATION_SECTION_NAME,
+  TEAM_SECTION_MAX_TOKENS,
+  TEAM_SECTION_TEXT,
   delegationSection,
   estimateTokens,
   resolvePrompt,
@@ -84,6 +86,20 @@ test('工具描述不超 200 token（四档全配的最坏情况）', () => {
     tokens <= TIER_DESCRIPTION_MAX_TOKENS,
     `工具描述估计 ${tokens} token，超过上限 ${TIER_DESCRIPTION_MAX_TOKENS}`,
   )
+})
+
+test('团队段不超 260 token，且只补判据不重复流程', () => {
+  const tokens = estimateTokens(TEAM_SECTION_TEXT)
+  assert.ok(
+    tokens <= TEAM_SECTION_MAX_TOKENS,
+    `团队段估计 ${tokens} token，超过上限 ${TEAM_SECTION_MAX_TOKENS}`,
+  )
+  assert.match(TEAM_SECTION_TEXT, /team_task_create/)
+  assert.match(TEAM_SECTION_TEXT, /write_scopes/)
+  assert.match(TEAM_SECTION_TEXT, /A single delegation, or read-only work, needs no task/)
+  assert.doesNotMatch(TEAM_SECTION_TEXT, /deepseek|commandcode|spawn/)
+  // 官方 team:policy 已写 claim/revision 流程，本段重复它就会变成第二个事实源。
+  assert.doesNotMatch(TEAM_SECTION_TEXT, /claim/)
 })
 
 test('估算函数本身可复现', () => {
