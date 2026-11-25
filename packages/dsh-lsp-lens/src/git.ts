@@ -24,9 +24,30 @@ export function readCollected(handle: unknown): string {
   } catch { return '' }
 }
 
+interface GitRun { readonly ok: boolean; readonly text: string }
+
+/** 跑一条 git 命令。非零退出按失败处理，调用方据此中止差分。 */
+async function runGit(subprocess: any, argv: string[], cwd: string, signal?: AbortSignal): Promise<GitRun> {
+  const handle = subprocess.spawn({
+    argv,
+    cwd,
+    stdio: { stdin: { data: '' }, stdout: { maxBytes: 4_000_000 }, stderr: { maxBytes: 64_000 } },
+    graceMs: 1000,
+    ...(signal === undefined ? {} : { signal }),
+  })
+  const outcome = await handle?.done
+  const exitCode = outcome?.exitCode
+  if (typeof exitCode === 'number' && exitCode !== 0) return { ok: false, text: '' }
+  return { ok: true, text: readCollected(handle) }
+}
+
 /**
  * 跑一次 git 差分，返回仓库内变更的绝对路径。
  * 不是 git 仓库、没有 subprocess 服务、或命令失败时返回 null（调用方按"无差分"处理）。
+ *
+ * git status 输出的路径是相对**仓库根**的，不是相对 `-C` 的那个目录。shell 的
+ * workdir 常是子目录，直接拼 cwd 会得到 `<子目录>/<仓库根相对路径>` 这种不存在的
+ * 路径，诊断必然失败。所以先问一次 `rev-parse --show-toplevel`。
  */
 export async function changedFiles(
   topCtx: any,
@@ -40,19 +61,13 @@ export async function changedFiles(
     const command = typeof subprocess.resolveExecutable === 'function'
       ? await subprocess.resolveExecutable('git', undefined, signal)
       : 'git'
-    const argv = [command, '-C', cwd, 'status', '--porcelain=v1', '-z', '--untracked-files=all']
-    const handle = subprocess.spawn({
-      argv,
-      cwd,
-      stdio: { stdin: { data: '' }, stdout: { maxBytes: 4_000_000 }, stderr: { maxBytes: 64_000 } },
-      graceMs: 1000,
-      ...(signal === undefined ? {} : { signal }),
-    })
-    const outcome = await handle?.done
-    const exitCode = outcome?.exitCode
-    if (typeof exitCode === 'number' && exitCode !== 0) return null
-    const relative = parsePorcelainZ(readCollected(handle))
-    return relative.map((path) => joinPath(cwd, path))
+    const top = await runGit(subprocess, [command, '-C', cwd, 'rev-parse', '--show-toplevel'], cwd, signal)
+    if (!top.ok) return null
+    const text = top.text.trim()
+    const root = text !== '' ? text : cwd
+    const status = await runGit(subprocess, [command, '-C', cwd, 'status', '--porcelain=v1', '-z', '--untracked-files=all'], cwd, signal)
+    if (!status.ok) return null
+    return parsePorcelainZ(status.text).map((path) => joinPath(root, path))
   } catch (error) {
     try { topCtx?.logger?.warn?.('lsp-lens: git 差分失败：' + String(error)) } catch { /* 日志失败不影响主流程 */ }
     return null

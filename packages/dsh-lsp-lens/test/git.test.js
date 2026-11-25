@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { joinPath, parsePorcelainZ, readCollected } from '../lib/git.js'
+import { changedFiles, joinPath, parsePorcelainZ, readCollected } from '../lib/git.js'
 
 test('解析普通变更与未跟踪文件', () => {
   const out = ' M src/a.ts\0?? src/b.ts\0'
@@ -20,6 +20,21 @@ test('空输出与残缺 token 返回空数组', () => {
 test('joinPath 统一分隔符', () => {
   assert.equal(joinPath('D:\\repo\\', 'src/a.ts'), 'D:/repo/src/a.ts')
   assert.equal(joinPath('/repo', './src/b.ts'), '/repo/src/b.ts')
+})
+
+test('差分路径以仓库根为基准，不是 shell 的 cwd', async () => {
+  const seen = []
+  const subprocess = {
+    spawn: (request) => {
+      seen.push(request.argv.join(' '))
+      const isRevParse = request.argv.includes('rev-parse')
+      const text = isRevParse ? 'D:/repo\n' : ' M packages/pkg/a.ts\0'
+      return { done: Promise.resolve({ exitCode: 0 }), collected: { stdout: { readFrom: () => ({ text }) } } }
+    },
+  }
+  const files = await changedFiles({ subprocess }, 'D:/repo/packages/pkg')
+  assert.deepEqual(files, ['D:/repo/packages/pkg/a.ts'])
+  assert.equal(seen.length, 2)
 })
 
 test('readCollected 读取 readFrom 文本', () => {
