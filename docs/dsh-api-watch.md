@@ -115,6 +115,26 @@
 - 判据：确认 `dsh-session/src/types.ts` 的 `SessionHeader.cwd` 仍是 `readonly`，且 `dsh-workspace/src/entity.ts` 的 `attachSession` 仍按 `header.cwd === workspace.path` 校验
 - 退役：宿主提供官方的「会话所属工作区」只读接口，或明确文档化 `header.cwd` 可变
 
+### lsp-session-header-fields
+
+- 包：`@deepseek-ai/dsh-agent`
+- 复刻对象：`agent.session.header.id` 与 `agent.session.header.cwd` —— 前者当脏表键，后者当会话根
+- 位置：`packages/dsh-lsp-lens/src/index.ts:109`（键）、`packages/dsh-lsp-lens/src/index.ts:99`（根）
+- 起始版本：0.2.2-rc.5
+- 为什么：宿主没导出「会话键」与「会话工作目录」的读取入口，插件只能按投影对象的字段名现取。字段改名时读到的都是 `undefined`，表现是脏表退化成一张全局表（串会话），不报错
+- 判据：断言 `agent.session.header.id` 与 `.cwd` 存在；`sessionKeyOf` 三层回退由 `packages/dsh-lsp-lens/test/prestep.test.js` 覆盖
+- 退役：宿主导出会话 id 与当前工作目录的读取入口，或 `agent/pre-step` 的 payload 直接带上两者
+
+### lsp-fs-observed-signature
+
+- 包：`@deepseek-ai/dsh-fs`
+- 复刻对象：`fs/observed` 的监听签名 `(target, observation)` —— 只有目标与观察，**没有会话**
+- 位置：`packages/dsh-lsp-lens/src/index.ts:214`
+- 起始版本：0.2.2-rc.5
+- 为什么：拿不到会话就只能把观测先落进程级候选池，再由 `agent/pre-step` 用当前会话根分流。宿主若给它加上会话参数，这层中转可以整个删掉
+- 判据：比对 `ctx.on('fs/observed')` 的回调参数个数与含义（宿主自身的 `WorkspaceChangeFeed` 也只接两个参数）
+- 退役：`fs/observed` 的监听器能拿到触发会话，届时把 `observed` 候选池改为直接按会话标脏
+
 ## blocked
 
 当前无条目。
