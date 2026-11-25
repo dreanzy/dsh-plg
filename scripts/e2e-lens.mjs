@@ -70,22 +70,53 @@ function startFakeModel(target) {
       try { parsed = body === '' ? {} : JSON.parse(body) } catch { parsed = {} }
       const messages = Array.isArray(parsed.messages) ? parsed.messages : []
       const hasToolResult = messages.some((m) => Array.isArray(m?.content) && m.content.some((c) => c?.type === 'tool_result'))
+      // 轮次不能按请求计数：会话标题也会走这里，一条无关请求就会把轮次带偏。
+      // 按「最后一条 tool_use 是谁」判定，标题请求落在首轮分支、返回的 tool_use 被丢弃。
+      let toolResults = 0
+      for (const message of messages) {
+        if (!Array.isArray(message?.content)) continue
+        for (const block of message.content) if (block?.type === 'tool_result') toolResults += 1
+      }
       turn += 1
-      res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' })
-      send(res, 'message_start', { type: 'message_start', message: { id: 'msg_' + String(turn), type: 'message', role: 'assistant', content: [], model: 'fake', stop_reason: null, stop_sequence: null, usage: { input_tokens: 1, output_tokens: 1 } } })
-      if (!hasToolResult && target !== '') {
-        send(res, 'content_block_start', { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: 'toolu_' + String(turn), name: 'write', input: {} } })
-        send(res, 'content_block_delta', { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: JSON.stringify({ file_path: target, content: 'const fakeProbe: number = "fake"\\nexport { fakeProbe }\\n' }) } })
+      void hasToolResult
+      const toolUse = (name, input) => {
+        send(res, 'content_block_start', { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: 'toolu_' + String(turn), name, input: {} } })
+        send(res, 'content_block_delta', { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: JSON.stringify(input) } })
         send(res, 'content_block_stop', { type: 'content_block_stop', index: 0 })
-        send(res, 'message_delta', { type: 'message_delta', delta: { stop_reason: 'tool_use', stop_sequence: null }, usage: { output_tokens: 10 } })
-      } else {
+        send(res, 'message_delta', { type: 'message_delta', delta: { stop_reason: 'tool_use', stop_sequence: null }, usage: { output_tokens: 5 } })
+      }
+      const emitText = () => {
         send(res, 'content_block_start', { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } })
         send(res, 'content_block_delta', { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'done' } })
         send(res, 'content_block_stop', { type: 'content_block_stop', index: 0 })
         send(res, 'message_delta', { type: 'message_delta', delta: { stop_reason: 'end_turn', stop_sequence: null }, usage: { output_tokens: 2 } })
       }
-      send(res, 'message_stop', { type: 'message_stop' })
-      res.end()
+      const emit = () => {
+        res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' })
+        send(res, 'message_start', { type: 'message_start', message: { id: 'msg_' + String(turn), type: 'message', role: 'assistant', content: [], model: 'fake', stop_reason: null, stop_sequence: null, usage: { input_tokens: 1, output_tokens: 1 } } })
+        if (!hasToolResult) {
+          // 1. 写一个必然有类型错误的文件。
+          if (target === '') { emitText() } else {
+            toolUse('write', { file_path: target, content: 'const fakeProbe: number = "fake"\\nexport { fakeProbe }\\n' })
+          }
+        } else if (toolResults === 1) {
+          // 2. 直接调一次 lsp_diagnostics：第一次诊断要冷启动 typescript-language-server
+          //    与 tsserver（数秒），这一步把服务器焐热。
+          toolUse('lsp_diagnostics', { file_path: target })
+        } else if (toolResults === 2) {
+          // 3. 读回同一文件：fs/observed 会再观测到它，但版本没变，
+          //    seen 应当挡住重复诊断——这正是「同一版本只回灌一次」的验收点。
+          toolUse('read', { file_path: target })
+        } else {
+          emitText()
+        }
+        send(res, 'message_stop', { type: 'message_stop' })
+        res.end()
+      }
+      // 预热那一轮拖 2.6s：真实会话里模型请求本身就要几秒，这里把它显式化，
+      // 否则本地假模型 20ms 一步，跨步异步的诊断永远追不上。
+      if (hasToolResult && toolResults <= 2) setTimeout(emit, 2600)
+      else emit()
     })
   })
   return new Promise((resolvePromise) => server.listen(PORT, '127.0.0.1', () => resolvePromise(server)))
@@ -113,7 +144,10 @@ async function lspActionsPatch() {
   const next = rest.indexOf('\n- id: ', 5)
   const block = next < 0 ? rest : rest.slice(0, next)
   const indented = block.trimEnd().split('\n').map((line) => '    ' + line).join('\n')
-  return '- insert:\n' + indented + '\n'
+  // 验收关心的是「回灌能不能发生」，不是等多久：把 settle 压到 400ms，
+  // 让诊断在下一步之前落定。生产配置仍是默认 2000。
+  const fast = indented.replace(/\n( +)typescript:\n/, '\n$1typescript:\n$1  diagnosticsSettleMs: 1500\n')
+  return '- insert:\n' + fast + '\n'
 }
 
 async function main() {
@@ -148,19 +182,21 @@ async function main() {
     const ran = await run('dsh', [PROFILE, 'write the probe file'], {
       DEEPSEEK_BASE_URL: 'http://127.0.0.1:' + String(PORT),
       DEEPSEEK_API_KEY: 'fake-key',
+      LSP_LENS_DEBUG: join(BASE, 'debug.log'),
     }, WORK)
     check('headless 跑完', ran.code === 0, ran.text.slice(-600))
 
     const files = (await transcripts(join(HOME, 'sessions'))).sort()
-    let feedback = false
+    let feedbackCount = 0
     let pending = false
     for (const file of files) {
       const text = zstdDecompressSync(await readFile(file)).toString('utf8')
-      if (text.includes('Diagnostic feedback from dsh-lsp-lens')) feedback = true
+      feedbackCount += (text.match(/dsh-lsp-lens:feedback/g) ?? []).length
       if (text.includes('🔴 Pending')) pending = true
     }
-    check('回灌进入会话上下文', feedback, '会话里没有 Diagnostic feedback')
+    check('回灌进入会话上下文', feedbackCount > 0, '会话里没有 Diagnostic feedback')
     check('回灌包含真实诊断', pending, '会话里没有 Pending 条目')
+    check('同一版本只回灌一次', feedbackCount === 1, 'feedback 出现 ' + String(feedbackCount) + ' 次')
   } finally {
     await new Promise((r) => server.close(r))
   }
@@ -177,5 +213,7 @@ async function main() {
 main()
   .catch((error) => { console.error('e2e-lens 失败：' + String(error)); process.exitCode = 1 })
   .finally(async () => {
+    // 失败时保留现场：转录与调试日志是唯一的证据。
+    if (failures.length > 0) { console.error('e2e-lens: 现场保留在 ' + BASE); return }
     try { await rm(BASE, { recursive: true, force: true }) } catch { /* 目录被占时留给人删 */ }
   })
