@@ -78,7 +78,6 @@ function startFakeModel(target) {
         for (const block of message.content) if (block?.type === 'tool_result') toolResults += 1
       }
       turn += 1
-      void hasToolResult
       const toolUse = (name, input) => {
         send(res, 'content_block_start', { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: 'toolu_' + String(turn), name, input: {} } })
         send(res, 'content_block_delta', { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: JSON.stringify(input) } })

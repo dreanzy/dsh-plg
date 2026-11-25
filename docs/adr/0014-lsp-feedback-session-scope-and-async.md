@@ -25,7 +25,7 @@
 ## 后果
 
 - `stepBudgetMs` 与 `MIN_DIAGNOSIS_MS` 退役；`diagnosticTimeoutMs` 保留，语义变为「单次飞行的放弃上限」。
-- `maxFilesPerStep` 语义从「每步诊断几个」变成「同时飞行几个」，默认 3；同一台语言服务器同时只飞 1 个，因为服务器本身串行。
+- `maxFilesPerStep` 语义从「每步诊断几个」变成「同时飞行几个」，默认 3；同一扩展名同时只飞 1 个（近似同一台语言服务器，服务器本身串行），跨扩展名可以并行。
 - `fs/observed` 的回调签名是 `(target, observation)`，拿不到会话（宿主自身的 `WorkspaceChangeFeed` 也只用这两个参数）。观测因此先进一个进程级候选池，pre-step 用当前会话根分流；根外条目直接丢弃，不保留给别的会话。
 - 未确认分两档措辞：真超时，与调用失败（containment、服务器未就绪、工具抛错）。
 - git 差分的路径基准是**仓库根**，由 `git rev-parse --show-toplevel` 取得。`git status` 输出的路径相对仓库根，而 shell 的 `workdir` 常是子目录；直接拼 `cwd` 会得到 `<子目录>/<仓库根相对路径>` 这种不存在的路径，诊断必然失败。代价是每次 shell 后多一次 git 调用。

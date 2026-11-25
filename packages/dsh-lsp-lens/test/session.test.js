@@ -52,7 +52,7 @@ test('会话根外的写入不进诊断', async () => {
   assert.deepEqual(asked, [], '根外文件不该发起诊断')
 })
 
-test('观测候选按会话根分流：根外丢弃，根内并入', async () => {
+test('观测候选按会话根分流：根外跳过，根内并入', async () => {
   const asked = []
   const handlers = harness(async (args) => { asked.push(args.file_path); return { diagnostics: [] } })
   const observed = handlers.get('fs/observed')

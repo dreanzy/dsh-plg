@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { argumentPath, isSupportedPath, normalizePath, WRITE_TOOLS } from '../lib/paths.js'
+import { argumentPath, isSupportedPath, normalizePath, resolvePath, withinRoot, WRITE_TOOLS } from '../lib/paths.js'
 
 test('argumentPath 读 file_path，也接受 path', () => {
   assert.equal(argumentPath({ file_path: 'a.ts' }), 'a.ts')
@@ -27,4 +27,21 @@ test('写入工具名单覆盖原生与 PTC 版本', () => {
   for (const name of ['write', 'edit', 'ops_write_file', 'ops_edit_file', 'ops_replace']) {
     assert.equal(WRITE_TOOLS.has(name), true, name)
   }
+})
+
+test('resolvePath 折叠 . 与 ..，绝对路径原样返回', () => {
+  assert.equal(resolvePath('C:/a', 'b/c.ts'), 'C:/a/b/c.ts')
+  assert.equal(resolvePath('C:/a', './b/c.ts'), 'C:/a/b/c.ts')
+  assert.equal(resolvePath('C:/a', '../b/c.ts'), 'C:/b/c.ts')
+  assert.equal(resolvePath('C:/a', 'D:/x/y.ts'), 'D:/x/y.ts')
+  assert.equal(resolvePath(null, 'rel.ts'), 'rel.ts')
+})
+
+test('withinRoot 认子路径，拒绝同前缀的兄弟目录与 .. 逃逸', () => {
+  assert.equal(withinRoot('C:/a/b.ts', 'C:/a'), true)
+  assert.equal(withinRoot('C:/a/b/c.ts', 'C:/a'), true)
+  assert.equal(withinRoot('C:/a', 'C:/a'), true)
+  assert.equal(withinRoot('C:/ab/c.ts', 'C:/a'), false)
+  assert.equal(withinRoot('C:/a/../x.ts', 'C:/a'), false)
+  assert.equal(withinRoot('c:/A/b.ts', 'C:/a'), true)
 })

@@ -48,12 +48,30 @@ export function normalizePath(path: string): string {
   return stripped.replace(/\\/g, '/')
 }
 
+/**
+ * 折叠 `.` 与 `..`：`/a/b/../c` → `/a/c`。
+ *
+ * 靠前缀比较判可达性时，含 `..` 的路径会把判定骗过去：`C:/a/../x.ts` 的字符串
+ * 以 `C:/a/` 开头，实际却在 `C:/x.ts`。所有进入判定的路径都先折叠。
+ */
+export function collapsePath(path: string): string {
+  const parts = path.split('/')
+  const out: string[] = []
+  for (const part of parts) {
+    if (part === '' || part === '.') continue
+    if (part === '..') { if (out.length > 0) out.pop(); continue }
+    out.push(part)
+  }
+  return (path.startsWith('/') ? '/' : '') + out.join('/')
+}
+
 /** 把相对路径挂到会话根上。写入类工具的 file_path 常是相对会话目录的。 */
 export function resolvePath(root: string | null, path: string): string {
+  // 相对路径要先拼到根上再折叠：单独折叠 `../b` 会把开头的 `..` 直接吃掉。
   const raw = normalizePath(path).replace(/^\.\//, '')
-  if (/^[a-zA-Z]:\//.test(raw) || raw.startsWith('/')) return raw
-  if (root === null) return raw
-  return normalizePath(root).replace(/\/+$/, '') + '/' + raw
+  if (/^[a-zA-Z]:\//.test(raw) || raw.startsWith('/')) return collapsePath(raw)
+  if (root === null) return collapsePath(raw)
+  return collapsePath(normalizePath(root).replace(/\/+$/, '') + '/' + raw)
 }
 
 /**
@@ -64,9 +82,9 @@ export function resolvePath(root: string | null, path: string): string {
  * 不同的目录会被误判为同一根，升级条件是出现这种布局。
  */
 export function withinRoot(path: string, root: string): boolean {
-  const base = normalizePath(root).replace(/\/+$/, '')
+  const base = collapsePath(normalizePath(root).replace(/\/+$/, ''))
   if (base === '') return true
-  const candidate = normalizePath(path).toLowerCase()
+  const candidate = collapsePath(normalizePath(path)).toLowerCase()
   const prefix = base.toLowerCase()
   return candidate === prefix || candidate.startsWith(prefix + '/')
 }

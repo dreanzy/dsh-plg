@@ -43,6 +43,8 @@ interface SessionState {
 
 /** 观测候选的存活时间：过了这么久还没被任何会话认领，就没必要留着。 */
 const OBSERVED_TTL_MS = 10 * 60_000
+/** 候选池上限，防止大量读文件把进程内存堆起来。 */
+const OBSERVED_LIMIT = 500
 /** 飞行结果的最长生命周期：超过 2 步或 30s 就放弃并落墓碑。 */
 const FLIGHT_MAX_STEPS = 2
 const FLIGHT_MAX_MS = 30_000
@@ -145,6 +147,9 @@ export function apply(ctx: any, config: Config = {}): void {
   debug('apply')
   const warn = (message: string): void => { try { ctx.logger?.warn?.('lsp-lens: ' + message) } catch { /* 日志失败不影响主流程 */ } }
 
+  // shortcut: 没有可靠的会话销毁事件，这张表只增不减。一个会话一张 DirtySet（含
+  // 最多 2000 条锁定记忆），长跑进程里会话极多时会累积；升级条件是宿主提供 agent
+  // 释放钩子。
   const stateOf = (key: string): SessionState => {
     let state = sessions.get(key)
     if (state === undefined) {
@@ -216,6 +221,11 @@ export function apply(ctx: any, config: Config = {}): void {
       const raw = String(target?.displayPath ?? target?.targetKey ?? '')
       if (raw === '' || !isSupportedPath(raw, extensions)) return
       observed.set(normalizePath(raw), { version: String(observation.version ?? 'observed'), at: Date.now() })
+      while (observed.size > OBSERVED_LIMIT) {
+        const oldest = observed.keys().next().value
+        if (typeof oldest !== 'string') break
+        observed.delete(oldest)
+      }
     })
   } catch { offObserved = null }
 
@@ -259,7 +269,9 @@ export function apply(ctx: any, config: Config = {}): void {
       // 3. git 差分：一次拿到 shell 写下的全部受支持文件。
       for (const cwdKey of [...state.pendingShell]) {
         state.pendingShell.delete(cwdKey)
-        const cwd = cwdKey === '' ? root : cwdKey
+        // shell 的 workdir 可能是相对路径，必须挂到会话根上：git -C <相对> 是相对
+        // 进程 cwd 解析的，跑错仓库会拿到一份完全无关的变更列表。
+        const cwd = cwdKey === '' ? root : resolvePath(root, cwdKey)
         if (cwd === null) continue
         const files = await changedFiles(ctx, cwd, payload?.signal)
         if (files === null) continue
@@ -275,7 +287,9 @@ export function apply(ctx: any, config: Config = {}): void {
       for (const [path, record] of [...observed]) {
         if (now - record.at > OBSERVED_TTL_MS) { observed.delete(path); continue }
         const absolute = resolvePath(root, path)
-        if (root === null || !withinRoot(absolute, root)) { observed.delete(path); continue }
+        // 根外不删：池是进程级的，条目可能属于别的会话；删掉等于替它丢掉一次诊断。
+        // 留在池里等 TTL 过期，代价是每个 pre-step 多扫几条。
+        if (root === null || !withinRoot(absolute, root)) continue
         observed.delete(path)
         state.dirty.mark(absolute, record.version)
       }
