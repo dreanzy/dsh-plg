@@ -28,3 +28,22 @@ test('take 按登记顺序且取走后不再重复', () => {
   assert.equal(set.size, 1)
   assert.deepEqual(set.take(5).map((entry) => entry.path), ['c.lua'])
 })
+
+test('取走之后同一版本不再登记（git 差分重标不该复活）', () => {
+  const set = new DirtySet()
+  set.mark('a.ts', 'v1', 1)
+  assert.equal(set.take(1).length, 1)
+  set.mark('a.ts', 'v1', 2)
+  assert.equal(set.size, 0)
+})
+
+test('锁定之后新版本仍可登记', () => {
+  const set = new DirtySet()
+  set.mark('a.ts', 'v1', 1)
+  set.take(1)
+  set.mark('a.ts', 'v1', 2)
+  assert.equal(set.size, 0)
+  assert.equal(set.seenSize, 1)
+  set.mark('a.ts', 'v2', 3)
+  assert.equal(set.size, 1)
+})

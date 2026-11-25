@@ -6,12 +6,15 @@ export interface DiagnosticLike {
   readonly source?: string
 }
 
+/** 没拿到可信结果的原因：超时，或调用失败（containment、服务器未就绪、工具抛错）。 */
+export type UnconfirmedReason = 'timeout' | 'failed'
+
 /** 一个文件的诊断结果。unconfirmed 表示没拿到可信结果，不等于干净。 */
 export interface FileFeedback {
   readonly path: string
   readonly diagnostics: readonly DiagnosticLike[]
   readonly unconfirmed?: boolean
-  readonly timedOut?: boolean
+  readonly reason?: UnconfirmedReason
 }
 
 export interface RenderOptions {
@@ -35,6 +38,17 @@ export function formatDiagnostic(diagnostic: DiagnosticLike): string {
 }
 
 /**
+ * 未确认的两档措辞：超时是「可能有问题，别当干净」，调用失败是
+ * 「这套诊断在这里不可用，重试没用」。合并成一句模型只能猜。
+ */
+export function unconfirmedLine(file: FileFeedback): string {
+  const why = file.reason === 'timeout'
+    ? 'timed out — treat as unknown, not clean'
+    : 'unavailable — not checked, do not retry'
+  return '⚠️ ' + file.path + ': diagnostics ' + why
+}
+
+/**
  * 渲染回灌文本。预算：每文件最多 maxCharsPerFile 字符、最多 maxFiles 个文件，
  * 超出部分只给汇总，不静默丢弃。
  */
@@ -55,8 +69,7 @@ export function renderFeedback(files: readonly FileFeedback[], options: RenderOp
 
   for (const file of shown) {
     if (file.unconfirmed) {
-      const why = file.timedOut ? 'timed out' : 'unconfirmed'
-      lines.push('⚠️ ' + file.path + ': diagnostics ' + why + ' — treat as unknown, not clean')
+      lines.push(unconfirmedLine(file))
       continue
     }
     if (file.diagnostics.length === 0) continue

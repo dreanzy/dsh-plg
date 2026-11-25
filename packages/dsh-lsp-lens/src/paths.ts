@@ -47,3 +47,26 @@ export function normalizePath(path: string): string {
   const stripped = path.trim().replace(/^["']|["']$/g, '')
   return stripped.replace(/\\/g, '/')
 }
+
+/** 把相对路径挂到会话根上。写入类工具的 file_path 常是相对会话目录的。 */
+export function resolvePath(root: string | null, path: string): string {
+  const raw = normalizePath(path).replace(/^\.\//, '')
+  if (/^[a-zA-Z]:\//.test(raw) || raw.startsWith('/')) return raw
+  if (root === null) return raw
+  return normalizePath(root).replace(/\/+$/, '') + '/' + raw
+}
+
+/**
+ * 路径是否在会话根之内。基准必须与 `dsh-lsp-actions` 的 `sessionCwd` 同源
+ * （`agent.session.header.cwd`），否则过滤放行、执行被拒。
+ *
+ * shortcut: Windows 大小写不敏感，这里统一小写比较；POSIX 上两个仅大小写
+ * 不同的目录会被误判为同一根，升级条件是出现这种布局。
+ */
+export function withinRoot(path: string, root: string): boolean {
+  const base = normalizePath(root).replace(/\/+$/, '')
+  if (base === '') return true
+  const candidate = normalizePath(path).toLowerCase()
+  const prefix = base.toLowerCase()
+  return candidate === prefix || candidate.startsWith(prefix + '/')
+}

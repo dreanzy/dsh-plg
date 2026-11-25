@@ -26,10 +26,14 @@ test('有待处理错误时带收尾指令', () => {
   assert.match(text, /not a user request/)
 })
 
-test('未确认不等于干净', () => {
-  const text = renderFeedback([{ path: 'a.ts', diagnostics: [], unconfirmed: true, timedOut: true }])
-  assert.match(text, /timed out/)
-  assert.match(text, /not clean/)
+test('未确认分两档：超时与调用失败', () => {
+  const timeout = renderFeedback([{ path: 'a.ts', diagnostics: [], unconfirmed: true, reason: 'timeout' }])
+  assert.match(timeout, /timed out/)
+  assert.match(timeout, /not clean/)
+  const failed = renderFeedback([{ path: 'a.ts', diagnostics: [], unconfirmed: true, reason: 'failed' }])
+  assert.match(failed, /unavailable/)
+  assert.match(failed, /not clean|not checked/)
+  assert.doesNotMatch(failed, /timed out/)
 })
 
 test('文件数与字符数都受预算约束', () => {

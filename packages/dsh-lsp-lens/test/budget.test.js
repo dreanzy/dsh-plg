@@ -6,6 +6,7 @@ import { test } from 'node:test'
 import { apply } from '../lib/index.js'
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+const agent = { session: { header: { id: 'budget-test' } } }
 
 function harness(config, diagnostics) {
   const handlers = new Map()
@@ -24,11 +25,11 @@ function harness(config, diagnostics) {
 async function markFiles(handlers, files) {
   const post = handlers.get('tools/post-execute')
   for (const file of files) {
-    await post({ name: 'write', arguments: { file_path: file } }, { isError: false }, async () => ({ kind: 'accept' }))
+    await post({ name: 'write', arguments: { file_path: file }, agent }, { isError: false }, async () => ({ kind: 'accept' }))
   }
 }
 
-test('预算用尽时把剩余脏文件放回，下一步继续', async () => {
+test('同扩展名一次飞一个，跨步推进且不阻塞 pre-step', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'lens-budget-'))
   const files = []
   for (const name of ['a', 'b', 'c']) {
@@ -37,17 +38,19 @@ test('预算用尽时把剩余脏文件放回，下一步继续', async () => {
     files.push(file)
   }
   let calls = 0
-  const handlers = harness({ stepBudgetMs: 1000, maxFilesPerStep: 3 }, async () => {
+  const handlers = harness({ maxFilesPerStep: 3 }, async () => {
     calls += 1
-    await sleep(150)
+    await sleep(30)
     return { diagnostics: [] }
   })
   await markFiles(handlers, files)
   const pre = handlers.get('agent/pre-step')
-  await pre({ agent: {}, turn: 1, step: 1 }, async () => ({ kind: 'accept', messages: [] }))
-  assert.equal(calls, 1, '预算只允许一次诊断')
-  await pre({ agent: {}, turn: 1, step: 2 }, async () => ({ kind: 'accept', messages: [] }))
-  assert.equal(calls, 2, '被放回的脏文件在下一步继续')
-  await pre({ agent: {}, turn: 1, step: 3 }, async () => ({ kind: 'accept', messages: [] }))
+  await pre({ agent, turn: 1, step: 1 }, async () => ({ kind: 'accept', messages: [] }))
+  assert.equal(calls, 1, '同扩展名只飞一个，其余留在脏表')
+  await sleep(60)
+  await pre({ agent, turn: 1, step: 2 }, async () => ({ kind: 'accept', messages: [] }))
+  assert.equal(calls, 2, '第二步结算并推进下一个')
+  await sleep(60)
+  await pre({ agent, turn: 1, step: 3 }, async () => ({ kind: 'accept', messages: [] }))
   assert.equal(calls, 3, '最后一份也会被处理')
 })
