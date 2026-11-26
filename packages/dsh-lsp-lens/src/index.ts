@@ -5,6 +5,7 @@ import { DirtySet } from './dirty.js'
 import { changedFiles } from './git.js'
 import { argumentPath, DEFAULT_EXTENSIONS, isSupportedPath, normalizePath, resolvePath, SHELL_TOOLS, withinRoot, WRITE_TOOLS } from './paths.js'
 import { renderFeedback } from './render.js'
+import { settleFlight, type Flight } from './flight.js'
 import type { DiagnosticLike, FileFeedback } from './render.js'
 
 /** Cordis 插件名。 */
@@ -23,16 +24,6 @@ export interface Config {
 interface DecisionLike { kind?: string; content?: unknown[]; messages?: unknown[] }
 interface ExecutionLike { name?: string; arguments?: unknown; signal?: AbortSignal; agent?: unknown; workspace?: unknown }
 
-/** 一次诊断在飞行表里的行程。结果写回这里，下一步 pre-step 结算。 */
-interface Flight {
-  readonly path: string
-  readonly version: string
-  readonly step: number
-  readonly startedAt: number
-  done: boolean
-  result: FileFeedback | null
-}
-
 /** 一个会话的脏表与待结算项。键见 sessionKeyOf。 */
 interface SessionState {
   readonly dirty: DirtySet
@@ -45,10 +36,6 @@ interface SessionState {
 const OBSERVED_TTL_MS = 10 * 60_000
 /** 候选池上限，防止大量读文件把进程内存堆起来。 */
 const OBSERVED_LIMIT = 500
-/** 飞行结果的最长生命周期：超过 2 步或 30s 就放弃并落墓碑。 */
-const FLIGHT_MAX_STEPS = 2
-const FLIGHT_MAX_MS = 30_000
-
 /** 临时调试：LSP_LENS_DEBUG 指向文件时逐点记录，验证宿主事件是否到达。 */
 const DEBUG_LOG = process.env.LSP_LENS_DEBUG ?? ''
 export const debug = (message: string): void => {
@@ -243,15 +230,14 @@ export function apply(ctx: any, config: Config = {}): void {
       // 1. 结算飞行：落定的取走并落墓碑；过期的直接放弃（同样落墓碑，避免无限重试）。
       const feedback: FileFeedback[] = []
       for (const [flightKey, flight] of [...state.inFlight]) {
-        if (!flight.done) {
-          const stale = step - flight.step > FLIGHT_MAX_STEPS || Date.now() - flight.startedAt > FLIGHT_MAX_MS
-          if (!stale) continue
-          state.inFlight.delete(flightKey)
+        const settlement = settleFlight(flight, step, Date.now())
+        if (settlement.kind === 'pending') continue
+        state.inFlight.delete(flightKey)
+        if (settlement.kind === 'stale') {
           debug('drop stale ' + flight.path)
           continue
         }
-        state.inFlight.delete(flightKey)
-        if (flight.result !== null) feedback.push(flight.result)
+        if (settlement.kind === 'take') feedback.push(settlement.result)
       }
 
       // 2. 后台作业：结算后再差分。jobs 服务是可选的，取不到就退回「立即差分」。
