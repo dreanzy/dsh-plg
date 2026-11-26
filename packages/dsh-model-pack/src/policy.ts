@@ -429,6 +429,21 @@ function clonePack(pack: Pack): Pack {
 }
 
 /**
+ * 取一张 pack。
+ *
+ * 不能直接下标取：`packs['__proto__']` 拿到的是 `Object.prototype`，不是
+ * `undefined`，会让「未知 pack」的判断失效，后续展开时把原型当成一张 pack。
+ */
+function readPack(packs: Readonly<Record<string, Pack>>, packId: string): Pack | undefined {
+  return Object.hasOwn(packs, packId) ? packs[packId] : undefined
+}
+
+/** 写一张 pack。赋值改的是原型，键被静默丢弃，序列化时消失且没有 warning。 */
+function writePack(packs: Record<string, Pack>, packId: string, pack: Pack): void {
+  Object.defineProperty(packs, packId, { value: pack, enumerable: true, writable: true, configurable: true })
+}
+
+/**
  * 写 packs.json。
  *
  * `seed` 是文件缺席时的初值：它来自兼容读的旧配置。没有这个 seed，
@@ -476,7 +491,7 @@ function applyToPacks(
         break
       }
       case 'duplicatePack': {
-        const source = packs[command.packId]
+        const source = readPack(packs, command.packId)
         if (source === undefined) {
           warnings.push(`pack「${command.packId}」不存在，复制已忽略`)
           break
@@ -500,7 +515,7 @@ function applyToPacks(
         // 捕获成 { ok: false }，路由回错误信封。记 warning 后继续会让面板显示成功、
         // 实际什么都没发生。
         if (command.packId === DEFAULT_PACK_ID) throw new Error('默认 pack 不可改名')
-        const pack = packs[command.packId]
+        const pack = readPack(packs, command.packId)
         if (pack === undefined) throw new Error(`未知 pack：${command.packId}`)
         const name = command.name.trim()
         if (name === '') {
@@ -511,7 +526,7 @@ function applyToPacks(
           warnings.push(`pack 名已存在：${name}`)
           break
         }
-        packs[command.packId] = { ...pack, name }
+        writePack(packs, command.packId, { ...pack, name })
         break
       }
       case 'deletePack': {
@@ -537,25 +552,25 @@ function applyToPacks(
         const pack = parsePack(command.pack, id, warnings)
         if (pack === null) break
         // default 的显示名固定：它不可改名，整体替换也不能把它改掉。
-        packs[id] = id === DEFAULT_PACK_ID ? { ...pack, name: DEFAULT_PACK.name } : pack
+        writePack(packs, id, id === DEFAULT_PACK_ID ? { ...pack, name: DEFAULT_PACK.name } : pack)
         break
       }
       case 'packSession': {
-        const pack = packs[command.packId]
+        const pack = readPack(packs, command.packId)
         if (pack === undefined) {
           warnings.push(`pack「${command.packId}」不存在，session 未写入`)
           break
         }
         if (command.session === null) {
-          packs[command.packId] = { name: pack.name, tiers: pack.tiers }
+          writePack(packs, command.packId, { name: pack.name, tiers: pack.tiers })
           break
         }
         const route = parseRoute(command.session, `pack「${command.packId}」的 session`, warnings)
-        if (route !== undefined) packs[command.packId] = { ...pack, session: route }
+        if (route !== undefined) writePack(packs, command.packId, { ...pack, session: route })
         break
       }
       case 'packTier': {
-        const pack = packs[command.packId]
+        const pack = readPack(packs, command.packId)
         if (pack === undefined) {
           warnings.push(`pack「${command.packId}」不存在，档未写入`)
           break
@@ -568,11 +583,11 @@ function applyToPacks(
         if (command.tier === null) {
           const tiers = { ...pack.tiers }
           delete tiers[tierId]
-          packs[command.packId] = { ...pack, tiers }
+          writePack(packs, command.packId, { ...pack, tiers })
           break
         }
         const tier = parseTier(command.tier, tierId, command.packId, warnings)
-        if (tier !== undefined) packs[command.packId] = { ...pack, tiers: { ...pack.tiers, [tierId]: tier } }
+        if (tier !== undefined) writePack(packs, command.packId, { ...pack, tiers: { ...pack.tiers, [tierId]: tier } })
         break
       }
       case 'showChip':

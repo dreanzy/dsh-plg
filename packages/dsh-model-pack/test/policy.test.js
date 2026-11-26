@@ -910,3 +910,14 @@ test('写盘失败时 applyCommands 报 written: false', async () => {
   const state = await applyCommands(null, [{ op: 'createPack', name: '标准' }], { home })
   assert.equal(state.written, false, '写盘被跳过时必须报 false')
 })
+
+test('__proto__ 作为 packId：报未知 pack，不把它当一张 pack', async () => {
+  const home = await tempRoot()
+  await seedPacks(home, { version: 1, packs: { default: MINIMAL } })
+  // 裸取 `packs['__proto__']` 拿到的是 Object.prototype，不是 undefined：「未知 pack」
+  // 的报错随之消失，接着把原型当成一张 pack 展开、再写回原型。
+  const state = await applyCommands(null, [{ op: 'renamePack', packId: '__proto__', name: 'x' }], { home })
+  assert.equal(state.written, false, '必须是「没写成」，不能当成改名成功')
+  assert.ok(state.warnings.some((w) => /未知 pack/u.test(w)), state.warnings)
+  assert.deepEqual(Object.keys((await readPacks(home)).packs), ['default'])
+})

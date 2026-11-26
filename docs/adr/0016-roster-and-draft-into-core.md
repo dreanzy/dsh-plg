@@ -50,7 +50,7 @@
 - `assertPackRoom(packs)` 变成 `assertPackRoom(packs, maxNames)`，调用点各加一个实参。
 - 新增两个术语：**名册框架**与**草稿操作**，见 [GLOSSARY.md](../../GLOSSARY.md)。
 - core 升 `0.3.0`（新增导出为 minor），三个调用方包升中版本；`model-pack` 不使用这两组导出，不动。
-- 已知局限：`model-pack` 的 `packs[id]` 写入同样是裸赋值（`policy.ts` 六处），本次未改——它的写侧是另一套 `applyTo*`，不在本候选的证据范围内。下次动它时按同一张表处理。
+- `model-pack` 的裸键读写随后按同一张表修掉（`readPack` / `writePack` 两个本地辅助，十处调用点）：它的写侧是另一套 `applyTo*`，没进 core，但防护口径与三包相同。
 
 ## 参考
 
