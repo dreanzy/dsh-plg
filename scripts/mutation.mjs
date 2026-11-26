@@ -92,19 +92,19 @@ const CLIENT = [
   },
   {
     name: '排序档位顺序对调（follow-on / follow-off）',
-    file: 'scripts/client-shared/panel-core.js',
+    file: 'scripts/client-shared/panel-base.js',
     from: "  'follow-on': 2,\n  'follow-off': 3,",
     to: "  'follow-on': 3,\n  'follow-off': 2,",
   },
   {
     name: '三态按钮把「关」传成 null',
-    file: 'scripts/client-shared/panel-core.js',
+    file: 'scripts/client-shared/panel-base.js',
     from: "option.value === 'on' ? true : option.value === 'off' ? false : null",
     to: "option.value === 'on' ? true : null",
   },
   {
     name: '待保存期间不冻结 pack 序',
-    file: 'scripts/client-shared/panel-core.js',
+    file: 'scripts/client-shared/panel-protocol.js',
     from: 'if (!frozen) return packs',
     to: 'return packs',
   },

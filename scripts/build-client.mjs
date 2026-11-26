@@ -20,7 +20,8 @@ import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const ROOT = resolve(fileURLToPath(new URL('..', import.meta.url)))
-const SHARED = join(ROOT, 'scripts', 'client-shared', 'panel-core.js')
+const SHARED_BASE = join(ROOT, 'scripts', 'client-shared', 'panel-base.js')
+const SHARED_PROTOCOL = join(ROOT, 'scripts', 'client-shared', 'panel-protocol.js')
 
 /** 约定被破坏时立刻失败：宁可不出产物，也不出一个加载即崩的 client.js。 */
 function assert(condition, message) {
@@ -36,30 +37,44 @@ function assert(condition, message) {
 export async function buildOne(pkgDir, options = {}) {
   const pkgRoot = join(ROOT, 'packages', pkgDir)
   const manifest = JSON.parse(await readFile(join(pkgRoot, 'package.json'), 'utf8'))
-  const core = await readFile(SHARED, 'utf8')
+  const base = await readFile(SHARED_BASE, 'utf8')
   const prelude = await readFile(join(pkgRoot, 'client', 'prelude.js'), 'utf8')
+  // 包可以带自己的协议层；没有就用共享的那份（skill 与 plugin 同形）。
+  let protocol
+  try {
+    protocol = await readFile(join(pkgRoot, 'client', 'protocol.js'), 'utf8')
+  } catch {
+    protocol = await readFile(SHARED_PROTOCOL, 'utf8')
+  }
   const panel = await readFile(join(pkgRoot, 'client', 'panel.js'), 'utf8')
 
-  assert(!/^\s*import\s/mu.test(core), 'panel-core.js 不能含 import')
-  assert(!/^\s*export\s/mu.test(core), 'panel-core.js 不能含 export')
+  assert(!/^\s*import\s/mu.test(base), 'panel-base.js 不能含 import')
+  assert(!/^\s*export\s/mu.test(base), 'panel-base.js 不能含 export')
+  assert(!/^\s*import\s/mu.test(protocol), '协议层不能含 import')
+  assert(!/^\s*export\s/mu.test(protocol), '协议层不能含 export')
   assert(!/^\s*export\s/mu.test(panel), pkgDir + '/panel.js 不能含 export')
 
   // 源文件行尾不统一（历史遗留的 CRLF 与新增的 LF 并存），产物一律出 LF。
   const normalize = (text) => text.replaceAll('\r\n', '\n')
   const short = pkgDir.replace(/^dsh-/u, '')
-  const filled = normalize(core).replaceAll('__PREFIX__', pkgDir).replaceAll('__PACK__', short)
+  const fill = (text) => normalize(text).replaceAll('__PREFIX__', pkgDir).replaceAll('__PACK__', short)
+  const filled = fill(base)
+  const filledProtocol = fill(protocol)
 
   const out = [
     '/**',
     ' * 由 scripts/build-client.mjs 生成，不要手改。',
-    ' * 源码：packages/' + pkgDir + '/client/prelude.js + scripts/client-shared/panel-core.js + packages/' + pkgDir + '/client/panel.js',
+    ' * 源码：packages/' + pkgDir + '/client/prelude.js + scripts/client-shared/panel-base.js',
+    ' *      + 协议层（包的 client/protocol.js 或共享的 panel-protocol.js）+ packages/' + pkgDir + '/client/panel.js',
     ' */',
     'window.__ModuleLoader__.load({',
     "  id: '" + manifest.name + "',",
     '  factory(require) {',
-    normalize(prelude),
+    fill(prelude),
     '',
     filled,
+    '',
+    filledProtocol,
     '',
     normalize(panel),
     '  },',

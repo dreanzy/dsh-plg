@@ -19,7 +19,8 @@ import vm from 'node:vm'
 const root = fileURLToPath(new URL('..', import.meta.url))
 const packagesDir = join(root, 'packages')
 /** 面板共享层：纪律检查的一半对象（另一半是各包的 panel.js）。 */
-const sharedCore = join(root, 'scripts', 'client-shared', 'panel-core.js')
+const sharedBase = join(root, 'scripts', 'client-shared', 'panel-base.js')
+const sharedProtocol = join(root, 'scripts', 'client-shared', 'panel-protocol.js')
 
 const fakeReact = {
   createElement: () => null,
@@ -287,12 +288,19 @@ for (const dir of dirs) {
   }
 
   // 纪律查源码。未迁移到共享层的包还没有 panel.js，回退到产物本身。
-  // 三段源码一起查：prelude 里也有 S_EXTRA / T_EXTRA 这类样式键定义。
+  // 四段源码一起查：prelude 里有 S_EXTRA / T_EXTRA，协议层可能被本包覆盖。
   let source
   try {
+    let protocolPath = join(clientDir, 'protocol.js')
+    try {
+      readFileSync(protocolPath, 'utf8')
+    } catch {
+      protocolPath = sharedProtocol
+    }
     source = [
       readFileSync(join(clientDir, 'prelude.js'), 'utf8'),
-      readFileSync(sharedCore, 'utf8'),
+      readFileSync(sharedBase, 'utf8'),
+      readFileSync(protocolPath, 'utf8'),
       readFileSync(join(clientDir, 'panel.js'), 'utf8'),
     ].join('\n')
   } catch {

@@ -1,6 +1,7 @@
 /**
  * 由 scripts/build-client.mjs 生成，不要手改。
- * 源码：packages/dsh-plugin-pack/client/prelude.js + scripts/client-shared/panel-core.js + packages/dsh-plugin-pack/client/panel.js
+ * 源码：packages/dsh-plugin-pack/client/prelude.js + scripts/client-shared/panel-base.js
+ *      + 协议层（包的 client/protocol.js 或共享的 panel-protocol.js）+ packages/dsh-plugin-pack/client/panel.js
  */
 window.__ModuleLoader__.load({
   id: '@dreanzy/dsh-plugin-pack',
@@ -109,19 +110,13 @@ const S_EXTRA = () => ({
 
 
 /**
- * 面板共享层：四个 pack 面板共用的传输、样式、基础组件与宿主接线。
+ * 面板的基础层：React、样式、基础组件、以及不依赖条目形状的工具。
  *
- * 这份文件不是模块，它在构建期被内联进每个包的 `client.js`（见 scripts/build-client.mjs 与
- * ADR-0017）。两个占位符由构建器替换：`dsh-plugin-pack` 是 CSS 类名前缀（`dsh-skill-pack`），
- * `plugin-pack` 是 API 路径段（`skill-pack`）。
+ * 这些在四个包里真的相同（`Switch` 不会因为管的是 MCP 行而变形）。协议相关的部分
+ * （路径、传输、待保存键、求值对象）在 `panel-protocol.js` 或各包的 `client/protocol.js`。
  *
- * 约定：不含 import/export，只声明本文件内部使用的 const 与 function；业务页面留在各包的
- * `client/panel.js` 里。拼接顺序是 `client/prelude.js` → 本文件 → `panel.js`：
- * prelude 提供各包唯一有意不同的几个值（chip 缩写、残留键种类名、官方项字段名、
- * `T` / `S` 的追加样式键）。追加样式键是函数而不是对象：prelude 在本文件之前，
- * 写成对象会在引用 `T` 时撞上 TDZ。
+ * 拼接顺序：`client/prelude.js` → 本文件 → 协议层 → `client/panel.js`。
  */
-
     const React = require('react')
     const h = React.createElement
     const { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } = React
@@ -213,62 +208,6 @@ const RANK_ORDER = {
       '.dsh-plugin-pack-row[data-state="current"] { background: rgba(127,127,127,0.16) }' +
       '.dsh-plugin-pack-row[data-state="pending"] { background: ' + PENDING_BG + ' }'
 
-
-    const PATHS = {
-      global: '/api/plugin-pack/global',
-      workspace: '/api/plugin-pack/workspace',
-      apply: '/api/plugin-pack/apply',
-    }
-
-    async function post(path, body) {
-      let response
-      try {
-        response = await fetch(path, {
-          method: 'POST',
-          cache: 'no-store',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify(body || {}),
-        })
-      } catch (error) {
-        throw new Error('网络请求失败：' + String(error))
-      }
-      let payload
-      try {
-        payload = await response.json()
-      } catch {
-        throw new Error('响应不是合法 JSON（HTTP ' + response.status + '）')
-      }
-      if (payload && payload.ok === true) return payload.value
-      const message = payload && payload.error && payload.error.message ? payload.error.message : '请求失败'
-      throw new Error(message)
-    }
-
-    const api = {
-      // 带上当前会话：服务端优先用它的 scope 读清单，否则会退回到「恰好排第一的那个会话」。
-      global: (sessionId) => post(PATHS.global, sessionId ? { sessionId: sessionId } : {}),
-      workspace: (sessionId) => post(PATHS.workspace, { sessionId: sessionId }),
-      /**
-       * `dryRun` 只把命令应用在内存里、返回同一份视图，不写盘——待保存改动靠它渲染。
-       */
-      apply: (commands, sessionId, dryRun) => {
-        const body = { commands: commands }
-        if (sessionId) body.sessionId = sessionId
-        if (dryRun === true) body.dryRun = true
-        return post(PATHS.apply, body)
-      },
-    }
-
-    // ---------- 样式 ----------
-
-    /**
-     * 颜色一律取宿主主题 token。
-     *
-     * 宿主的真实前缀是 `--dsw-`（不是 `--dsh-`），且全部 token 都要求浅色与深色两套取值，
-     * 底色用 `--dsw-alias-bg-layer-1`，不用 `--dsw-alias-bg-overlay`：后者在暗色主题下
- * 绑定的是 neutral-bluish-700（中灰），弹窗会比页面亮一大截；后者是给「半透明浮层」
- * 用的，语义也不是卡片底。layer-1 与页面同色，界线交给边框与阴影。
-     * 弹窗优先用它，弹层才与它自绘的浮层同色。
-     */
     const T = {
       text: 'var(--dsw-alias-label-primary, CanvasText)',
       dim: 'var(--dsw-alias-label-secondary, GrayText)',
@@ -975,46 +914,6 @@ const RANK_ORDER = {
       return map
     }
 
-    function pendingKey(command) {
-      switch (command.op) {
-        case 'packItem':
-          return 'packItem:' + command.packId + ':' + command.name
-        case 'packGroup':
-          return 'packGroup:' + command.packId + ':' + command.groupId
-        case 'bind':
-          // 与渲染处的查询键同源：服务端按归一化后的 cwd 落盘，渲染也按归一化后的
-          // cwd 查。两边各写一遍时 Windows 上必然不等，待保存标记永不出现。
-          return bindKeyOf(command.cwd)
-        case 'assign':
-          return 'assign:' + command.name
-        case 'renamePack':
-          return 'renamePack:' + command.packId
-        case 'renameGroup':
-          return 'renameGroup:' + command.groupId
-        default:
-          // 新建、复制与删除没有可覆盖的目标：每条都是独立一次决定。
-          return null
-      }
-    }
-
-    /**
-     * 待保存改动（见 ADR 0006）。
-     *
-     * 点一下只入队，不发写请求；队列非空时每次变化都用 `dryRun` 试算一次，
-     * 拿服务端算好的视图来渲染——浏览器不复制求值链（根术语表「生效视图」）。
-     * 点「保存」才把整批命令写盘。
-     *
-     * 队列活在这一次挂载里：关闭面板即丢。跨面板保留会被「我到底存了没」拖住，
-     * 而用户关掉面板再回来时通常已经不记得点过什么了。
-     */
-    /**
-     * 待保存队列的纯部分：只有条目数组与键规则，不碰 React（见 ADR 0006）。
-     *
-     * `keyOf` 决定「同键后写覆盖」：键不为 null 时先删掉同键的旧条目再追加；新建与
-     * 删除这类没有可覆盖目标的命令键为 null，每条都独立存在。
-     *
-     * 每次变更都换一个新数组：试算 effect 靠引用变化重跑。
-     */
     function createQueue(keyOf) {
       let entries = []
       let uid = 0
@@ -1328,7 +1227,6 @@ const RANK_ORDER = {
       )
     }
 
-
     // ---------- 宿主与求值 ----------
 
     /**
@@ -1449,29 +1347,10 @@ const RANK_ORDER = {
      * 同一条规则。新建的 pack 不在改动前的序里，落到末尾，同档沿用服务端的名字序
      * （`Array.prototype.sort` 稳定）。
      */
-    function orderPacks(packs, basePacks, frozen) {
-      if (!frozen) return packs
-      const rank = new Map()
-      for (const pack of basePacks || []) rank.set(pack.id, rank.size)
-      if (rank.size === 0) return packs
-      const out = packs.slice()
-      out.sort((a, b) => {
-        const left = rank.has(a.id) ? rank.get(a.id) : rank.size
-        const right = rank.has(b.id) ? rank.get(b.id) : rank.size
-        return left - right
-      })
-      return out
-    }
-
-    /** 内置 pack 的显示名。数据里仍是 `default`，不写盘，也不参与重名校验。 */
     function packLabel(pack) {
       if (pack === null || pack === undefined) return ''
       return pack.builtin === true || pack.id === DEFAULT_PACK_ID ? '默认' : pack.name
     }
-
-
-
-
 
     /**
      * 分包页读的是**选中那张 pack 的原始记录**，不是工作区求值链。
@@ -1484,45 +1363,6 @@ const RANK_ORDER = {
      * 这里只做「读原始记录 + 算档位」，不碰求值链：链（`pack.items ?? pack.groups ??
      * default.items ?? default.groups ?? true`）仍由服务端算，行上的 `open` 就是它。
      */
-    function packItemOf(pack, name) {
-      if (pack === null || pack === undefined || !pack.items) return null
-      // hasOwn：`items['toString']` 会拿到原型上的函数，被当成「用户设过这个键」。
-      if (!Object.hasOwn(pack.items, name)) return null
-      const value = pack.items[name]
-      return typeof value === 'boolean' ? value : null
-    }
-
-    /** 选中 pack 里这一组的显式值；没有键返回 null（跟随）。 */
-    function packGroupOf(pack, groupId) {
-      if (pack === null || pack === undefined || !pack.groups || groupId === null || groupId === undefined) return null
-      if (!Object.hasOwn(pack.groups, groupId)) return null
-      const value = pack.groups[groupId]
-      return typeof value === 'boolean' ? value : null
-    }
-
-    /**
-     * 这一项在选中 pack 里「跟随」时会落到哪。
-     *
-     * 与 `effective.ts` 的 `landing` 同一条规则，只是把「工作区绑定的 pack」换成
-     * 「选中的 pack」：先看这张 pack 的组记录，再走 default 层的项、组，最后内置缺省开。
-     */
-    function landingOf(pack, defaultPack, name, groupId) {
-      const byGroup = packGroupOf(pack, groupId)
-      if (byGroup !== null) return byGroup
-      const byItem = packItemOf(defaultPack, name)
-      if (byItem !== null) return byItem
-      const defaultGroup = packGroupOf(defaultPack, groupId)
-      if (defaultGroup !== null) return defaultGroup
-      return true
-    }
-
-    /**
-     * 分包页的排序档位。
-     *
-     * 与 core 的 `rankOf` 同一条规则，输入换成「选中 pack 的显式记录」。名字带 `pack`
-     * 前缀是为了与工作区那条链区分：`scripts/check-panels.mjs` 禁止客户端再写一遍
-     * `rankOf`，挡的是工作区求值链回潮，不是这里。
-     */
     function packRankOf(explicit, isDefault, landing) {
       if (explicit === true) return 'explicit-on'
       if (explicit === false) return 'explicit-off'
@@ -1533,8 +1373,6 @@ const RANK_ORDER = {
     function groupIdOf(row) {
       return row.groupId || null
     }
-
-
 
     function groupNameOf(groups, groupId) {
       for (const group of groups || []) {
@@ -1547,18 +1385,6 @@ const RANK_ORDER = {
      * `ui` 段。
      *
      * 服务端一定有 `ui`；旧面板靠 `policy` 投影兜底的那条分支随兼容层一起删掉了。
-     */
-    function uiOf(view) {
-      if (!view) return null
-      if (view.ui) return view.ui
-      return { [SHOW_OFFICIAL_FIELD]: false, ...UI_DEFAULTS }
-    }
-
-    /**
-     * 工作区清单的比较键：归一化后的路径。大小写不敏感、数字按自然序
-     * （`proj2` 在 `proj10` 前），中文目录按拼音。
-     *
-     * 清单是全局的：排序与当前会话、当前目录无关，同一批目录每次排成同一个序。
      */
     function compareCwd(left, right) {
       const order = left.localeCompare(right, 'zh', { numeric: true, sensitivity: 'base' })
@@ -1599,6 +1425,181 @@ const RANK_ORDER = {
       return cwds.sort((a, b) => compareCwd(normalizeCwd(a), normalizeCwd(b)))
     }
 
+
+/**
+ * 面板的协议层：路径、传输、待保存键、求值对象。
+ *
+ * 这一层是各包**本来就不一样**的地方——API 路径、命令集、被管理的条目形状。
+ * 四包真正相同的是组件与展示逻辑，那在 `panel-base.js` 里（见 ADR-0017）。
+ *
+ * 包可以提供自己的 `client/protocol.js` 覆盖这一份；构建器优先用它。
+ */
+
+    const PATHS = {
+      global: '/api/plugin-pack/global',
+      workspace: '/api/plugin-pack/workspace',
+      apply: '/api/plugin-pack/apply',
+    }
+
+    async function post(path, body) {
+      let response
+      try {
+        response = await fetch(path, {
+          method: 'POST',
+          cache: 'no-store',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(body || {}),
+        })
+      } catch (error) {
+        throw new Error('网络请求失败：' + String(error))
+      }
+      let payload
+      try {
+        payload = await response.json()
+      } catch {
+        throw new Error('响应不是合法 JSON（HTTP ' + response.status + '）')
+      }
+      if (payload && payload.ok === true) return payload.value
+      const message = payload && payload.error && payload.error.message ? payload.error.message : '请求失败'
+      throw new Error(message)
+    }
+
+    const api = {
+      // 带上当前会话：服务端优先用它的 scope 读清单，否则会退回到「恰好排第一的那个会话」。
+      global: (sessionId) => post(PATHS.global, sessionId ? { sessionId: sessionId } : {}),
+      workspace: (sessionId) => post(PATHS.workspace, { sessionId: sessionId }),
+      /**
+       * `dryRun` 只把命令应用在内存里、返回同一份视图，不写盘——待保存改动靠它渲染。
+       */
+      apply: (commands, sessionId, dryRun) => {
+        const body = { commands: commands }
+        if (sessionId) body.sessionId = sessionId
+        if (dryRun === true) body.dryRun = true
+        return post(PATHS.apply, body)
+      },
+    }
+
+    // ---------- 样式 ----------
+
+    /**
+     * 颜色一律取宿主主题 token。
+     *
+     * 宿主的真实前缀是 `--dsw-`（不是 `--dsh-`），且全部 token 都要求浅色与深色两套取值，
+     * 底色用 `--dsw-alias-bg-layer-1`，不用 `--dsw-alias-bg-overlay`：后者在暗色主题下
+ * 绑定的是 neutral-bluish-700（中灰），弹窗会比页面亮一大截；后者是给「半透明浮层」
+ * 用的，语义也不是卡片底。layer-1 与页面同色，界线交给边框与阴影。
+     * 弹窗优先用它，弹层才与它自绘的浮层同色。
+     */
+
+    function pendingKey(command) {
+      switch (command.op) {
+        case 'packItem':
+          return 'packItem:' + command.packId + ':' + command.name
+        case 'packGroup':
+          return 'packGroup:' + command.packId + ':' + command.groupId
+        case 'bind':
+          // 与渲染处的查询键同源：服务端按归一化后的 cwd 落盘，渲染也按归一化后的
+          // cwd 查。两边各写一遍时 Windows 上必然不等，待保存标记永不出现。
+          return bindKeyOf(command.cwd)
+        case 'assign':
+          return 'assign:' + command.name
+        case 'renamePack':
+          return 'renamePack:' + command.packId
+        case 'renameGroup':
+          return 'renameGroup:' + command.groupId
+        default:
+          // 新建、复制与删除没有可覆盖的目标：每条都是独立一次决定。
+          return null
+      }
+    }
+
+    /**
+     * 待保存改动（见 ADR 0006）。
+     *
+     * 点一下只入队，不发写请求；队列非空时每次变化都用 `dryRun` 试算一次，
+     * 拿服务端算好的视图来渲染——浏览器不复制求值链（根术语表「生效视图」）。
+     * 点「保存」才把整批命令写盘。
+     *
+     * 队列活在这一次挂载里：关闭面板即丢。跨面板保留会被「我到底存了没」拖住，
+     * 而用户关掉面板再回来时通常已经不记得点过什么了。
+     */
+    /**
+     * 待保存队列的纯部分：只有条目数组与键规则，不碰 React（见 ADR 0006）。
+     *
+     * `keyOf` 决定「同键后写覆盖」：键不为 null 时先删掉同键的旧条目再追加；新建与
+     * 删除这类没有可覆盖目标的命令键为 null，每条都独立存在。
+     *
+     * 每次变更都换一个新数组：试算 effect 靠引用变化重跑。
+     */
+
+    function orderPacks(packs, basePacks, frozen) {
+      if (!frozen) return packs
+      const rank = new Map()
+      for (const pack of basePacks || []) rank.set(pack.id, rank.size)
+      if (rank.size === 0) return packs
+      const out = packs.slice()
+      out.sort((a, b) => {
+        const left = rank.has(a.id) ? rank.get(a.id) : rank.size
+        const right = rank.has(b.id) ? rank.get(b.id) : rank.size
+        return left - right
+      })
+      return out
+    }
+
+    /** 内置 pack 的显示名。数据里仍是 `default`，不写盘，也不参与重名校验。 */
+
+    function packItemOf(pack, name) {
+      if (pack === null || pack === undefined || !pack.items) return null
+      // hasOwn：`items['toString']` 会拿到原型上的函数，被当成「用户设过这个键」。
+      if (!Object.hasOwn(pack.items, name)) return null
+      const value = pack.items[name]
+      return typeof value === 'boolean' ? value : null
+    }
+
+    /** 选中 pack 里这一组的显式值；没有键返回 null（跟随）。 */
+    function packGroupOf(pack, groupId) {
+      if (pack === null || pack === undefined || !pack.groups || groupId === null || groupId === undefined) return null
+      if (!Object.hasOwn(pack.groups, groupId)) return null
+      const value = pack.groups[groupId]
+      return typeof value === 'boolean' ? value : null
+    }
+
+    /**
+     * 这一项在选中 pack 里「跟随」时会落到哪。
+     *
+     * 与 `effective.ts` 的 `landing` 同一条规则，只是把「工作区绑定的 pack」换成
+     * 「选中的 pack」：先看这张 pack 的组记录，再走 default 层的项、组，最后内置缺省开。
+     */
+    function landingOf(pack, defaultPack, name, groupId) {
+      const byGroup = packGroupOf(pack, groupId)
+      if (byGroup !== null) return byGroup
+      const byItem = packItemOf(defaultPack, name)
+      if (byItem !== null) return byItem
+      const defaultGroup = packGroupOf(defaultPack, groupId)
+      if (defaultGroup !== null) return defaultGroup
+      return true
+    }
+
+    /**
+     * 分包页的排序档位。
+     *
+     * 与 core 的 `rankOf` 同一条规则，输入换成「选中 pack 的显式记录」。名字带 `pack`
+     * 前缀是为了与工作区那条链区分：`scripts/check-panels.mjs` 禁止客户端再写一遍
+     * `rankOf`，挡的是工作区求值链回潮，不是这里。
+     */
+
+    function uiOf(view) {
+      if (!view) return null
+      if (view.ui) return view.ui
+      return { [SHOW_OFFICIAL_FIELD]: false, ...UI_DEFAULTS }
+    }
+
+    /**
+     * 工作区清单的比较键：归一化后的路径。大小写不敏感、数字按自然序
+     * （`proj2` 在 `proj10` 前），中文目录按拼音。
+     *
+     * 清单是全局的：排序与当前会话、当前目录无关，同一批目录每次排成同一个序。
+     */
 
 /**
  * 本包的面板业务面：三页的内容、chip 的内容、以及 `apply` 的装配。

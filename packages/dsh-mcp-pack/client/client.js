@@ -1,33 +1,90 @@
 /**
- * 浏览器半边。手写单文件：宿主用 `require('react')` 提供 React，
- * 因此不引入 JSX、CSS Modules 或打包器，避免给这个仓库加第二套构建链。
- *
- * 结构照抄 `dsh-plugin-pack`：设置页三页（分组 | 分包 | 工作区），chip 是当前工作区
- * 绑定 pack 的摘要与切换入口。本包的差异集中在「分包」页：
- *
- *   1. 一行不是一个布尔，而是一组字段（enabled / mode / tools / description），
- *      所以行默认折叠，展开后才出现四个字段的编辑器；
- *   2. 组级只决定开合，不设 mode——「组说 dynamic、行说 disabled」的合并规则没有
- *      廉价答案，四个字段只留在行级。
- *
- * 求值链全部在服务端；这里只负责把 pack 的决定读出来、画出来、按命令写回去：
- *
- *   pack.rows[行][字段] ?? pack.groups[组] ?? default.rows[行][字段] ?? 内置默认
- *
- * 「跟随」与「写了个同值」是两件事：跟随看的是 pack 里有没有这条键，不是值比没比平。
- * 回到跟随的写法是给 `packRow` 的那一个字段发 `null`。
+ * 由 scripts/build-client.mjs 生成，不要手改。
+ * 源码：packages/dsh-mcp-pack/client/prelude.js + scripts/client-shared/panel-base.js
+ *      + 协议层（包的 client/protocol.js 或共享的 panel-protocol.js）+ packages/dsh-mcp-pack/client/panel.js
  */
 window.__ModuleLoader__.load({
   id: '@dreanzy/dsh-mcp-pack',
   factory(require) {
+/**
+ * 本包给共享层的取值（见 ADR-0017）。
+ *
+ * 拼接顺序：本文件 → panel-base.js → client/protocol.js → panel.js。
+ */
+
+/** 未绑定 pack 时 chip 上的字：mcp 本就是念字母的专名，恰好同形。 */
+const CHIP_LABEL = 'mcp'
+
+/** 残留键里「能力项」这一类的名字：mcp 关的是一行服务器配置。 */
+const STALE_ITEM_LABEL = '服务器'
+
+/** `ui` 段里「显示官方项」的字段名。mcp 没有这个开关。 */
+const SHOW_OFFICIAL_FIELD = 'showOfficialServers'
+
+/** `ui` 段缺席时的缺省值。 */
+const UI_DEFAULTS = { showChip: true, defaultTab: 'groups' }
+
+/** 本包在共享样式表 `T` 上追加的键。 */
+const T_EXTRA = () => ({
+
+})
+
+/** 本包在共享样式表 `S` 上追加的键。 */
+const S_EXTRA = () => ({
+      settingRow: {
+        display: 'flex',
+        alignItems: 'center',
+        gap: '12px',
+        padding: '10px 0',
+        borderTop: '1px solid ' + T.border,
+      },
+      /** 分包页的一行：行头常驻，点开才出现四个字段的编辑器。 */
+      mono: { fontFamily: 'ui-monospace, monospace' },
+      stat: {
+        fontSize: '12px',
+        color: T.text,
+        padding: '2px 8px',
+        borderRadius: '999px',
+        border: '1px solid ' + T.border,
+        whiteSpace: 'nowrap',
+      },
+      lineHead: {
+        display: 'flex',
+        alignItems: 'center',
+        gap: '8px',
+        padding: '6px 4px',
+        borderTop: '1px solid ' + T.border,
+        cursor: 'pointer',
+      },
+      rowMeta: { color: T.dim, fontSize: '11px', marginTop: '2px' },
+      lineBody: { display: 'grid', gap: '8px', padding: '2px 4px 10px 22px' },
+      field: { display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' },
+      fieldLabel: { flex: '0 0 84px', color: T.dim, fontSize: '12px' },
+      toolInput: {
+        flex: '1 1 320px',
+        minWidth: '180px',
+        padding: '5px 8px',
+        border: '1px solid ' + T.border,
+        borderRadius: '6px',
+        background: 'transparent',
+        color: T.text,
+        fontSize: '12px',
+      },
+})
+
+
+/**
+ * 面板的基础层：React、样式、基础组件、以及不依赖条目形状的工具。
+ *
+ * 这些在四个包里真的相同（`Switch` 不会因为管的是 MCP 行而变形）。协议相关的部分
+ * （路径、传输、待保存键、求值对象）在 `panel-protocol.js` 或各包的 `client/protocol.js`。
+ *
+ * 拼接顺序：`client/prelude.js` → 本文件 → 协议层 → `client/panel.js`。
+ */
     const React = require('react')
     const h = React.createElement
     const { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } = React
 
-    const PANEL_ID = 'mcp-pack'
-    const CHIP_ID = 'mcp-pack-chip'
-    const MODAL_ID = 'mcp-pack-chip-modal'
-    const TITLE = 'MCP Pack'
     /** 内置 pack 的 id。未绑定的工作区按它求值。 */
     const DEFAULT_PACK_ID = 'default'
 
@@ -43,40 +100,18 @@ const RANK_ORDER = {
 }
     /** 工作区清单上限：会话一多，绑定表会变成一堵墙。 */
     const MAX_WORKSPACES = 30
-
-    /** 三档加载方式。取值与服务端 `types.ts` 的 `MODES` 一致，顺序即 UI 顺序。 */
-    const MODES = ['eager', 'dynamic', 'lazy']
-    const MODE_LABELS = { eager: '全部加载', dynamic: '动态插入', lazy: '延迟加载' }
-    const DEFAULT_MODE = 'dynamic'
-
-    /** 三档的一句话说明。分包页常驻，用户不必猜这三项的差别。 */
-    const MODE_HELP = [
-      {
-        mode: 'eager',
-        label: '全部加载',
-        text: '启动就挂载，工具常驻上下文。最省事，但每轮都带着全部 schema。',
-      },
-      {
-        mode: 'dynamic',
-        label: '动态插入',
-        text: '默认不加载；mcp_load 之后把可见工具原生注册进本会话。推荐。',
-      },
-      {
-        mode: 'lazy',
-        label: '延迟加载',
-        text: '默认不加载；mcp_load 只返回参数表，调用走 mcp_call。工具列表永不变，请求前缀缓存不失效。',
-      },
-    ]
-
     /**
-     * chip 文字隐藏的断点。
+     * chip 的容器查询断点与两态交互样式。
      *
      * 宿主输入框底栏 `.row` 声明了 `container-type: inline-size`，并用
-     * `@container (width <= 560px)` 控制这一带按钮的间距。跟随同一个断点，
-     * chip 就和官方那几个按钮同步折叠，而不是各自算一套阈值。
+     * `@container (width <= 560px)` 控制这一带按钮的间距。chip 的字号与图标
+     * 对齐官方控件后整体变宽，断点相应上调到 640px，仍与官方同步折叠。
      *
      * 用 CSS 容器查询而不是 JS 量宽：插槽把 chip 包在一个与它等宽的容器里，
      * 量父级永远偏小；往上找祖先又依赖具体层级，两种做法都会误判。
+     *
+     * hover 与 focus 只能写在 CSS 里：内联 style 表达不了伪类。两态各抄官方
+     * 对应控件——默认态用 ModelSelect trigger 的 hover，绑定态用 PlanChip 的。
      */
     const CHIP_CSS =
       '.dsh-mcp-pack-chip { border: 1px solid var(--dsw-alias-border-l1, rgba(127,127,127,0.35)); background: transparent; color: var(--dsw-alias-label-secondary, GrayText); font-weight: 400 }' +
@@ -85,16 +120,6 @@ const RANK_ORDER = {
       '.dsh-mcp-pack-chip[data-bound="true"]:hover { background: color-mix(in srgb, var(--dsw-alias-state-business-tertiary), var(--dsw-alias-state-business-primary) 6%) }' +
       '.dsh-mcp-pack-chip:focus-visible { outline: var(--dsw-focus-ring-width, 2px) solid var(--dsw-alias-state-business-primary); outline-offset: 2px }' +
       '@container (max-width: 640px) { .dsh-mcp-pack-chip-text { display: none } }'
-
-    /**
-     * 待保存行的底色。
-     *
-     * 原先用左侧 `inset` 竖条，真机上它紧贴行首的箭头与文字，`inset` 阴影又没法
-     * 给文字让出间距，压字比不标更糟。改成整行浅底：与官方标记「当前项」同一套
-     * 做法（pack 行就是浅底），也不会和任何文字抢位置。
-     */
-    const PENDING_BG =
-      'color-mix(in srgb, var(--dsw-alias-state-business-tertiary, rgba(65,118,230,0.16)) 55%, transparent)'
 
     /**
      * 面板按钮与待保存标记的样式。
@@ -107,6 +132,16 @@ const RANK_ORDER = {
      * `--dsw-alias-interactive-bg-hover-danger`。官方二次确认是弹窗，这里压成行内两段，
      * 所以只换底色与字重、不加描边；加重靠底色，靠描边会像被框住的一块错误。
      */
+    /**
+     * 待保存行的底色。
+     *
+     * 原先用左侧 `inset` 竖条，真机上它紧贴行首的箭头与文字，`inset` 阴影又没法
+     * 给文字让出间距，压字比不标更糟。改成整行浅底：与官方标记「当前项」同一套
+     * 做法（pack 行就是浅底），也不会和任何文字抢位置。
+     */
+    const PENDING_BG =
+      'color-mix(in srgb, var(--dsw-alias-state-business-tertiary, rgba(65,118,230,0.16)) 55%, transparent)'
+
     const PANEL_CSS =
       '.dsh-mcp-pack-btn { transition: background 120ms ease, border-color 120ms ease, color 120ms ease }' +
       '.dsh-mcp-pack-btn-secondary { border-color: var(--dsw-alias-border-l1, rgba(127,127,127,0.3)); background: transparent; color: var(--dsw-alias-label-primary, inherit) }' +
@@ -137,82 +172,21 @@ const RANK_ORDER = {
       '.dsh-mcp-pack-row[data-state="current"] { background: rgba(127,127,127,0.16) }' +
       '.dsh-mcp-pack-row[data-state="pending"] { background: ' + PENDING_BG + ' }'
 
-    // ---------- 传输 ----------
-
-    const PATHS = {
-      global: '/api/mcp-pack/global',
-      workspace: '/api/mcp-pack/workspace',
-      apply: '/api/mcp-pack/apply',
-      diag: '/api/mcp-pack/diag',
-      servers: '/api/mcp-pack/servers',
-    }
-
-    /**
-     * 五个路由共用一套信封：{ ok: true, value } 或 { ok: false, error }。
-     * HTTP 状态恒为 200，所以判定只能看 ok 字段，不能看 response.ok。
-     */
-    async function post(path, body) {
-      let response
-      try {
-        response = await fetch(path, {
-          method: 'POST',
-          cache: 'no-store',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify(body || {}),
-        })
-      } catch (error) {
-        throw new Error('网络请求失败：' + String(error))
-      }
-      let payload
-      try {
-        payload = await response.json()
-      } catch {
-        throw new Error('响应不是合法 JSON（HTTP ' + response.status + '）')
-      }
-      if (payload && payload.ok === true) return payload.value
-      const message = payload && payload.error && payload.error.message ? payload.error.message : '请求失败'
-      throw new Error(message)
-    }
-
-    const api = {
-      // 带上当前会话：服务端优先用它的 scope 读清单，否则会退回到「恰好排第一的那个会话」。
-      global: (sessionId) => post(PATHS.global, sessionId ? { sessionId: sessionId } : {}),
-      workspace: (sessionId) => post(PATHS.workspace, { sessionId: sessionId }),
-      /**
-       * `dryRun` 只把命令应用在内存里、返回同一份视图，不写盘——待保存改动靠它渲染。
-       */
-      apply: (commands, sessionId, dryRun) => {
-        const body = { commands: commands }
-        if (sessionId) body.sessionId = sessionId
-        if (dryRun === true) body.dryRun = true
-        return post(PATHS.apply, body)
-      },
-      diag: () => post(PATHS.diag, {}),
-      servers: (payload) => post(PATHS.servers, payload),
-    }
-
-    // ---------- 样式 ----------
-
-    /**
-     * 颜色一律取宿主主题 token。
-     *
-     * 宿主的真实前缀是 `--dsw-`（不是 `--dsh-`），且全部 token 都要求浅色与深色两套取值，
-     * 底色用 `--dsw-alias-bg-layer-1`，不用 `--dsw-alias-bg-overlay`：后者在暗色主题下
-     * 绑定的是 neutral-bluish-700（中灰），弹窗会比页面亮一大截；它的语义是「半透明
-     * 浮层」，本来也不该当卡片底。layer-1 与页面同色，界线交给边框与阴影。
-     */
     const T = {
       text: 'var(--dsw-alias-label-primary, CanvasText)',
       dim: 'var(--dsw-alias-label-secondary, GrayText)',
       faint: 'var(--dsw-alias-label-tertiary, GrayText)',
-      surface: 'var(--dsw-alias-bg-layer-1, Canvas)',
+      surface:
+        'var(--dsw-alias-bg-layer-1, Canvas)',
       border: 'var(--dsw-alias-border-l1, rgba(127,127,127,0.35))',
       borderStrong: 'var(--dsw-alias-border-l2, rgba(127,127,127,0.55))',
       // 不用 --dsw-alias-state-idle-primary：暗色主题下它解析成接近白色，
       // 与白色圆点叠成一条纯白胶囊，开/关完全看不出来。这里用固定的半透明灰，
       // 再给轨道加一圈内描边，暗色与亮色下都有轮廓。
+      idle: 'rgba(127, 127, 127, 0.38)',
       error: 'var(--dsw-alias-state-error-primary, #c0392b)',
       warn: 'var(--dsw-alias-state-warning-primary, #b7791f)',
+      onAccent: '#ffffff',
       /*
        * 开关配色照官方「反色」风格：开态轨道取前景色（暗色主题下是亮白），圆点取底色
        * （近黑）；关态轨道是中灰、圆点是浅圆点。反色在亮暗两套主题里都成立，
@@ -230,6 +204,8 @@ const RANK_ORDER = {
        * 做法（pack 行就是浅底），也不会和任何文字抢位置。
        */
       pendingBg: PENDING_BG,
+      // 各包追加的样式键（见 client/prelude.js 的 T_EXTRA）。
+      ...T_EXTRA(),
     }
 
     const S = {
@@ -261,6 +237,73 @@ const RANK_ORDER = {
         lineHeight: 1.4,
         whiteSpace: 'nowrap',
         transition: 'background 120ms ease, color 120ms ease, border-color 120ms ease',
+      }),
+      group: { borderRadius: '8px', border: '1px solid ' + T.border, marginBottom: '8px' },
+      groupHead: { display: 'flex', alignItems: 'center', gap: '8px', padding: '8px 10px', cursor: 'pointer' },
+      groupName: { fontWeight: 600, flex: '1 1 auto', color: T.text },
+      badge: {
+        fontSize: '11px',
+        padding: '1px 6px',
+        borderRadius: '999px',
+        background: 'transparent',
+        border: '1px solid ' + T.border,
+        color: T.dim,
+        whiteSpace: 'nowrap',
+      },
+      row: {
+        display: 'flex',
+        alignItems: 'center',
+        gap: '10px',
+        padding: '6px 10px 6px 22px',
+        borderTop: '1px solid ' + T.border,
+      },
+      rowMain: { flex: '1 1 auto', minWidth: 0 },
+      rowName: { fontFamily: 'ui-monospace, monospace', fontSize: '12px', color: T.text },
+      origin: {
+        marginLeft: '6px',
+        padding: '0 4px',
+        fontSize: '10px',
+        fontFamily: 'inherit',
+        color: T.dim,
+        border: '1px solid ' + T.border,
+        borderRadius: '3px',
+        whiteSpace: 'nowrap',
+      },
+      groupInput: {
+        flex: '1 1 auto',
+        minWidth: '80px',
+        fontWeight: 600,
+        fontSize: '13px',
+        color: T.text,
+        background: 'transparent',
+        border: '1px solid ' + T.border,
+        borderRadius: '4px',
+        padding: '2px 6px',
+      },
+      rowDesc: { color: T.dim, fontSize: '11px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+      sw: (on, disabled) => ({
+        width: '36px',
+        height: '20px',
+        borderRadius: '999px',
+        border: 0,
+        padding: 0,
+        cursor: disabled ? 'not-allowed' : 'pointer',
+        opacity: disabled ? 0.45 : 1,
+        background: on ? T.track : T.trackOff,
+        position: 'relative',
+        flex: '0 0 auto',
+        transition: 'background 140ms ease',
+      }),
+      knob: (on) => ({
+        position: 'absolute',
+        top: '2px',
+        left: on ? '18px' : '2px',
+        width: '16px',
+        height: '16px',
+        borderRadius: '999px',
+        background: on ? T.knob : T.knobOff,
+        boxShadow: '0 1px 2px rgba(0, 0, 0, 0.28)',
+        transition: 'left 140ms ease, background 140ms ease',
       }),
       /**
        * 行内操作按钮的尺寸与排布。颜色、hover、危险态全部在 `PANEL_CSS` 里——
@@ -328,83 +371,6 @@ const RANK_ORDER = {
         paddingTop: '10px',
         borderTop: '1px solid var(--dsw-alias-border-l2, rgba(127,127,127,0.55))',
       },
-      group: { borderRadius: '8px', border: '1px solid ' + T.border, marginBottom: '8px' },
-      groupHead: { display: 'flex', alignItems: 'center', gap: '8px', padding: '8px 10px', cursor: 'pointer' },
-      groupName: { fontWeight: 600, flex: '1 1 auto', color: T.text },
-      badge: {
-        fontSize: '11px',
-        padding: '1px 6px',
-        borderRadius: '999px',
-        background: 'transparent',
-        border: '1px solid ' + T.border,
-        color: T.dim,
-        whiteSpace: 'nowrap',
-      },
-      stat: {
-        fontSize: '12px',
-        color: T.text,
-        padding: '2px 8px',
-        borderRadius: '999px',
-        border: '1px solid ' + T.border,
-        whiteSpace: 'nowrap',
-      },
-      row: {
-        display: 'flex',
-        alignItems: 'center',
-        gap: '10px',
-        padding: '6px 10px 6px 22px',
-        borderTop: '1px solid ' + T.border,
-      },
-      rowMain: { flex: '1 1 auto', minWidth: 0 },
-      rowName: {
-        fontFamily: 'ui-monospace, monospace',
-        fontSize: '12px',
-        color: T.text,
-        display: 'flex',
-        alignItems: 'center',
-        gap: '6px',
-        flexWrap: 'wrap',
-        // server 名是开关的键，必须完整显示：own:x 与 global:x 同名的场景真实存在，
-        // 短名会让人分不清关的是哪一个。长名允许折行，不做省略号。
-        wordBreak: 'break-all',
-      },
-      rowDesc: { color: T.dim, fontSize: '11px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
-      rowMeta: { color: T.dim, fontSize: '11px', marginTop: '2px' },
-      groupInput: {
-        flex: '1 1 auto',
-        minWidth: '80px',
-        fontWeight: 600,
-        fontSize: '13px',
-        color: T.text,
-        background: 'transparent',
-        border: '1px solid ' + T.border,
-        borderRadius: '4px',
-        padding: '2px 6px',
-      },
-      sw: (on, disabled) => ({
-        width: '36px',
-        height: '20px',
-        borderRadius: '999px',
-        border: 0,
-        padding: 0,
-        cursor: disabled ? 'not-allowed' : 'pointer',
-        opacity: disabled ? 0.45 : 1,
-        background: on ? T.track : T.trackOff,
-        position: 'relative',
-        flex: '0 0 auto',
-        transition: 'background 140ms ease',
-      }),
-      knob: (on) => ({
-        position: 'absolute',
-        top: '2px',
-        left: on ? '18px' : '2px',
-        width: '16px',
-        height: '16px',
-        borderRadius: '999px',
-        background: on ? T.knob : T.knobOff,
-        boxShadow: '0 1px 2px rgba(0, 0, 0, 0.28)',
-        transition: 'left 140ms ease, background 140ms ease',
-      }),
       /*
        * 自绘下拉。原生 <select> 的弹出层由系统绘制，不跟主题：暗色下一点开是一块
        * 蓝底浮层，与官方设置页的语言选择器完全不是一个观感。这里改成按钮 + 浮层。
@@ -452,6 +418,14 @@ const RANK_ORDER = {
         cursor: 'pointer',
         background: active || hover ? 'rgba(127, 127, 127, 0.18)' : 'transparent',
       }),
+      error: { color: T.error, fontSize: '12px', marginBottom: '8px' },
+      empty: { color: T.faint, padding: '12px 4px', fontSize: '12px' },
+      /**
+       * 需要用户注意但不阻断的提示（残留键、宿主能力缺失）。
+       *
+       * 与另外两包同形：浅黄底 + 黄字 + 描边。用 `S.hint` 代替它会让这类提示
+       * 与普通说明文字长得一样，用户扫过去不会停。
+       */
       probeWarn: {
         marginTop: '8px',
         padding: '6px 10px',
@@ -462,8 +436,6 @@ const RANK_ORDER = {
         fontSize: '12px',
         lineHeight: 1.6,
       },
-      error: { color: T.error, fontSize: '12px', marginTop: '8px' },
-      empty: { color: T.faint, padding: '12px 4px', fontSize: '12px' },
       modalBack: {
         position: 'fixed',
         inset: 0,
@@ -476,7 +448,7 @@ const RANK_ORDER = {
       modal: {
         width: 'min(560px, 92vw)',
         maxHeight: '78vh',
-        // 下拉浮层要溢出弹层边缘，裁切会把它切掉一半；内容长了由内层自己滚。
+        // 下拉浮层要溢出弹层边缘，裁切会把它切掉一半；内容本来就短，不需要滚动。
         overflow: 'visible',
         background: T.surface,
         color: T.text,
@@ -549,36 +521,253 @@ const RANK_ORDER = {
        * 必须落在真正被裁的那个 flex item 上，且 `min-width: 0` 才肯缩。
        */
       chipText: { minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
-      settingRow: {
-        display: 'flex',
-        alignItems: 'center',
-        gap: '12px',
-        padding: '10px 0',
-        borderTop: '1px solid ' + T.border,
-      },
-      /** 分包页的一行：行头常驻，点开才出现四个字段的编辑器。 */
-      lineHead: {
-        display: 'flex',
-        alignItems: 'center',
-        gap: '8px',
-        padding: '6px 4px',
-        borderTop: '1px solid ' + T.border,
-        cursor: 'pointer',
-      },
-      lineBody: { display: 'grid', gap: '8px', padding: '2px 4px 10px 22px' },
-      field: { display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' },
-      fieldLabel: { flex: '0 0 84px', color: T.dim, fontSize: '12px' },
-      mono: { fontFamily: 'ui-monospace, monospace' },
-      toolInput: {
-        flex: '1 1 320px',
-        minWidth: '180px',
-        padding: '5px 8px',
-        border: '1px solid ' + T.border,
-        borderRadius: '6px',
-        background: 'transparent',
-        color: T.text,
-        fontSize: '12px',
-      },
+      // 各包追加的样式键（见 client/prelude.js 的 S_EXTRA）。
+      ...S_EXTRA(),
+    }
+
+    /**
+     * 极小的可观测量。
+     *
+     * 设置页改的是持久化配置，槽位注册却发生在 `apply` 里，两者在 React 上没有
+     * 父子关系，改完不会自动重挂；chip 在会话页、设置页在设置弹层里，同理。
+     * 一个 set/subscribe 就够了，不引任何状态库。
+     */
+    function createSignal(initial) {
+      let value = initial
+      const listeners = new Set()
+      return {
+        read: () => value,
+        set: (next) => {
+          if (value === next) return
+          value = next
+          for (const listener of listeners) listener()
+        },
+        subscribe: (listener) => {
+          listeners.add(listener)
+          return () => listeners.delete(listener)
+        },
+      }
+    }
+
+    /**
+     * 跨组件共享的界面状态。
+     *
+     * `showChip` 由 `apply` 订阅：设置页拨动后立刻挂上或摘下槽位。
+     * `chipName` 是 chip 上显示的 pack 名。
+     */
+    const env = {
+      onChipChange: null,
+      sessionId: undefined,
+    }
+    const chipName = createSignal(null)
+
+    // CHIP_LABEL 来自 `client/prelude.js`：chip 上的缩写是各包对外的口径。
+
+    // ---------- 基础组件 ----------
+
+    /**
+     * 策略文件的告警。
+     *
+     * 写入失败不再是错误信封：它和既有的读告警一样，跟着视图的 `warnings` 回来，
+     * 所以面板得有一处能看见。默认折起只显示条数——正常情况一条都没有，出现时才
+     * 占位置；展开才列出全文。
+     */
+    function Warnings(props) {
+      const [open, setOpen] = useState(false)
+      const list = Array.isArray(props.warnings) ? props.warnings : []
+      if (list.length === 0) return null
+      return h(
+        'div',
+        { style: { marginTop: '8px' } },
+        h(
+          'button',
+          {
+            type: 'button',
+            'aria-expanded': open,
+            style: { ...S.badge, cursor: 'pointer' },
+            onClick: () => setOpen(!open),
+          },
+          (open ? '▾ ' : '▸ ') + list.length + ' 条告警',
+        ),
+        open
+          ? h(
+              'div',
+              { style: { ...S.hint, marginTop: '4px' } },
+              list.map((warning, index) => h('div', { key: index }, warning)),
+            )
+          : null,
+      )
+    }
+
+    /** 残留键的种类标签。键空间不同，混着显示用户分不清是能力项还是组。 */
+    const STALE_KIND_LABEL = { item: STALE_ITEM_LABEL, group: '分组', assignment: '归属' }
+
+    /**
+     * 残留键的提示与清理入口。
+     *
+     * 与 plugin-pack 同形：默认折叠，展开后每个键一行，带种类与「出现在哪些 pack 里」，
+     * 并给清理按钮。清理走待保存改动，用户能先试算看到要删多少条再决定落盘。
+     */
+    function StaleKeys(props) {
+      const [open, setOpen] = useState(false)
+      const entries = Array.isArray(props.entries) ? props.entries : []
+      if (entries.length === 0) return null
+
+      /** 一个残留键对应的清理命令：按种类发不同的 op，键空间不同不能合并。 */
+      const commandsFor = (entry) => {
+        if (entry.kind === 'assignment') return [{ op: 'assign', name: entry.key, groupId: null }]
+        if (entry.kind === 'group') {
+          return (entry.packs || []).map((packId) => ({ op: 'packGroup', packId: packId, groupId: entry.key, value: null }))
+        }
+        return (entry.packs || []).map((packId) => ({ op: 'packItem', packId: packId, name: entry.key, value: null }))
+      }
+
+      const collapsed = entries.length > 6
+      const shown = open || !collapsed ? entries : entries.slice(0, 6)
+
+      return h(
+        'div',
+        { style: S.probeWarn },
+        h(
+          'div',
+          null,
+          entries.length + ' 个键在策略里、当前名册里没有。已保留不删（重新装回来时决定还在），也可以现在清掉：',
+        ),
+        h(
+          'div',
+          { style: { marginTop: '6px' } },
+          shown.map((entry) =>
+            h(
+              'div',
+              {
+                key: entry.kind + ':' + entry.key,
+                style: { display: 'flex', alignItems: 'center', gap: '6px', marginTop: '2px' },
+              },
+              h('span', { style: S.badge }, STALE_KIND_LABEL[entry.kind] || entry.kind),
+              h(
+                'span',
+                { style: { fontFamily: 'ui-monospace, monospace', wordBreak: 'break-word', flex: '1 1 auto' } },
+                entry.key,
+              ),
+              h(
+                'span',
+                { style: { ...S.hint, flex: '0 0 auto' } },
+                Array.isArray(entry.packs) && entry.packs.length > 0 ? entry.packs.join('、') : '全局',
+              ),
+              h(Button, { variant: 'secondary', onClick: () => props.onClear(commandsFor(entry)) }, '清理'),
+            ),
+          ),
+        ),
+        h(
+          'div',
+          { style: { marginTop: '6px', display: 'flex', gap: '8px' } },
+          collapsed
+            ? h(Button, { variant: 'quiet', onClick: () => setOpen(!open) }, open ? '收起' : '展开全部 ' + entries.length + ' 个')
+            : null,
+          h(Button, { variant: 'quiet', onClick: () => props.onClear(entries.flatMap(commandsFor)) }, '清理全部 ' + entries.length + ' 个'),
+        ),
+      )
+    }
+
+    function Switch(props) {
+      return h(
+        'button',
+        {
+          type: 'button',
+          'aria-pressed': props.on,
+          title: props.title || (props.on ? '已开启' : '已关闭'),
+          disabled: props.disabled,
+          style: S.sw(props.on, props.disabled),
+          onClick: props.disabled ? undefined : () => props.onChange(!props.on),
+        },
+        h('span', { style: S.knob(props.on) }),
+      )
+    }
+
+    function Segmented(props) {
+      return h(
+        'div',
+        { style: S.segment },
+        props.options.map((option) =>
+          h(
+            'button',
+            {
+              key: option.value,
+              type: 'button',
+              style: S.segItem(props.value === option.value),
+              onClick: () => props.onChange(option.value),
+            },
+            option.label,
+          ),
+        ),
+      )
+    }
+
+    /**
+     * 三态开关：开 / 关 / 跟随。
+     *
+     * 「跟随」必须是独立可点的第三个选项：显式关掉与「不表态」是两件事，
+     * 用「点两次循环」或和「开」共用一个按钮都表达不出来。选中态沿用分段控件的
+     * 浅底样式，不引新样式。
+     */
+    const TRI_STATE = [
+      { value: 'on', label: '开', title: '显式打开（压过组）' },
+      { value: 'off', label: '关', title: '显式关闭（压过组）' },
+      { value: 'follow', label: '跟随', title: '不记录，按组与默认求值' },
+    ]
+
+    function triStateOf(value, allowInherit) {
+      if (value === true) return 'on'
+      if (value === false) return 'off'
+      // default pack 没有上一层：未记录就是取内置缺省（开），显示成「开」而不是「跟随」。
+      return allowInherit === false ? 'on' : 'follow'
+    }
+
+    function TriState(props) {
+      // `default` 是求值链的终点，没有「跟随」可言；两态就够，多一个按钮反而让人
+      // 以为还能往上找。
+      const allowInherit = props.allowInherit !== false
+      const active = triStateOf(props.value, allowInherit)
+      const options = allowInherit ? TRI_STATE : TRI_STATE.filter((option) => option.value !== 'follow')
+      return h(
+        'div',
+        { style: { display: 'inline-flex', gap: '4px', alignItems: 'center', flex: '0 0 auto' } },
+        options.map((option) =>
+          h(
+            'button',
+            {
+              key: option.value,
+              type: 'button',
+              title: option.title,
+              'aria-pressed': active === option.value,
+              disabled: props.disabled,
+              style: {
+                ...S.segItem(active === option.value),
+                /*
+                 * 三态是这个面板里点得最多的控件。原来是 11px 字 + 2px 7px 内距，
+                 * 热区只有 19px 高——比被抱怨"太小"的删除按钮还小一截。
+                 * 高度按官方控件档位取 24px（一排三个，28 会显得笨重）。
+                 */
+                display: 'inline-flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                boxSizing: 'border-box',
+                height: '24px',
+                padding: '0 10px',
+                fontSize: '12px',
+                lineHeight: '18px',
+                opacity: props.disabled ? 0.45 : 1,
+                cursor: props.disabled ? 'not-allowed' : 'pointer',
+              },
+              onClick: () => {
+                if (props.disabled) return
+                props.onChange(option.value === 'on' ? true : option.value === 'off' ? false : null)
+              },
+            },
+            option.label,
+          ),
+        ),
+      )
     }
 
     /**
@@ -613,7 +802,7 @@ const RANK_ORDER = {
      * 行内二次确认把成本压到一次点击，误点的代价只是多看一眼。
      * 进入确认态后 4 秒自动撤销，点别处也撤销，避免一直停在危险状态。
      *
-     * 删除是唯一「点了就没了」的动作（不进待保存队列），
+     * 删除是唯一「点了就没了」的动作（不进待保存队列，见 ADR 0006），
      * 所以确认态必须比常态明显：文案换成「确认」、红字、浅红底。
      */
     function ConfirmButton(props) {
@@ -642,6 +831,7 @@ const RANK_ORDER = {
           armed: armed,
           disabled: disabled,
           innerRef: boxRef,
+          style: props.style,
           title: armed ? '再点一次确认删除' : props.title || '',
           onClick: (event) => {
             event.stopPropagation()
@@ -688,46 +878,6 @@ const RANK_ORDER = {
       return map
     }
 
-    function pendingKey(command) {
-      switch (command.op) {
-        case 'packRow':
-          return 'packRow:' + command.packId + ':' + command.rowKey
-        case 'packGroup':
-          return 'packGroup:' + command.packId + ':' + command.groupId
-        case 'bind':
-          // 与渲染处的查询键同源：服务端按归一化后的 cwd 落盘，渲染也按归一化后的
-          // cwd 查。两边各写一遍时 Windows 上必然不等，待保存标记永不出现。
-          return bindKeyOf(command.cwd)
-        case 'assign':
-          return 'assign:' + command.rowKey
-        case 'renamePack':
-          return 'renamePack:' + command.packId
-        case 'renameGroup':
-          return 'renameGroup:' + command.groupId
-        default:
-          // 新建、复制与删除没有可覆盖的目标：每条都是独立一次决定。
-          return null
-      }
-    }
-
-    /**
-     * 待保存改动。
-     *
-     * 点一下只入队，不发写请求；队列非空时每次变化都用 `dryRun` 试算一次，
-     * 拿服务端算好的视图来渲染——浏览器不复制求值链（根术语表「生效视图」）。
-     * 点「保存」才把整批命令写盘。
-     *
-     * 队列活在这一次挂载里：关闭面板即丢。跨面板保留会被「我到底存了没」拖住，
-     * 而用户关掉面板再回来时通常已经不记得点过什么了。
-     */
-    /**
-     * 待保存队列的纯部分：只有条目数组与键规则，不碰 React（见 ADR 0006）。
-     *
-     * `keyOf` 决定「同键后写覆盖」：键不为 null 时先删掉同键的旧条目再追加；新建与
-     * 删除这类没有可覆盖目标的命令键为 null，每条都独立存在。
-     *
-     * 每次变更都换一个新数组：试算 effect 靠引用变化重跑。
-     */
     function createQueue(keyOf) {
       let entries = []
       let uid = 0
@@ -937,157 +1087,7 @@ const RANK_ORDER = {
       )
     }
 
-    /**
-     * 极小的可观测量。
-     *
-     * 设置页改的是持久化配置，槽位注册却发生在 `apply` 里，两者在 React 上没有
-     * 父子关系，改完不会自动重挂；chip 在会话页、设置页在设置弹层里，同理。
-     * 一个 set/subscribe 就够了，不引任何状态库。
-     */
-    function createSignal(initial) {
-      let value = initial
-      const listeners = new Set()
-      return {
-        read: () => value,
-        set: (next) => {
-          if (value === next) return
-          value = next
-          for (const listener of listeners) listener()
-        },
-        subscribe: (listener) => {
-          listeners.add(listener)
-          return () => listeners.delete(listener)
-        },
-      }
-    }
-
-    /**
-     * 跨组件共享的界面状态。
-     *
-     * `onChipChange` 由 `apply` 订阅：设置页拨动后立刻挂上或摘下槽位。
-     * `chipName` 是 chip 上显示的 pack 名。
-     */
-    const env = {
-      onChipChange: null,
-      sessionId: undefined,
-    }
-    const chipName = createSignal(null)
-    /**
-     * 未绑定 pack 时 chip 上的字。
-     *
-     * 固定英文小写、三字母、去元音（skill→skl、plugin→plg、model→mdl；mcp 本就是
-     * 念字母的专名，恰好同形）。不随宿主语言：这四个是领域标识符，不是句子，
-     * 中文界面下缩写比中文译名更准，四个 chip 也等长。全名留在 title 里。
-     */
-    const CHIP_LABEL = 'mcp'
-    /** chip 弹层订阅的会话 id：弹层只订阅 chipOpen 时，切会话后它仍绑着旧目录。 */
-    const chipSessionId = createSignal(undefined)
-
-    // ---------- 基础组件 ----------
-
-    function Switch(props) {
-      return h(
-        'button',
-        {
-          type: 'button',
-          'aria-pressed': props.on,
-          title: props.title || (props.on ? '已开启' : '已关闭'),
-          disabled: props.disabled,
-          style: S.sw(props.on, props.disabled),
-          onClick: props.disabled ? undefined : () => props.onChange(!props.on),
-        },
-        h('span', { style: S.knob(props.on) }),
-      )
-    }
-
-    function Segmented(props) {
-      return h(
-        'div',
-        { style: S.segment },
-        props.options.map((option) =>
-          h(
-            'button',
-            {
-              key: option.value,
-              type: 'button',
-              style: S.segItem(props.value === option.value),
-              onClick: () => props.onChange(option.value),
-            },
-            option.label,
-          ),
-        ),
-      )
-    }
-
-    /**
-     * 三态开关：开 / 关 / 跟随。
-     *
-     * 「跟随」必须是独立可点的第三个选项：显式关掉与「不表态」是两件事，
-     * 用「点两次循环」或和「开」共用一个按钮都表达不出来。选中态沿用分段控件的
-     * 浅底样式，不引新样式。
-     */
-    const TRI_STATE = [
-      { value: 'on', label: '开', title: '显式打开（压过组与 default）' },
-      { value: 'off', label: '关', title: '显式关闭（压过组与 default）' },
-      { value: 'follow', label: '跟随', title: '不记录，按组与 default 求值' },
-    ]
-
-    function triStateOf(value, allowInherit) {
-      if (value === true) return 'on'
-      if (value === false) return 'off'
-      // default pack 没有上一层：未记录就是取内置缺省（开），显示成「开」而不是「跟随」。
-      return allowInherit === false ? 'on' : 'follow'
-    }
-
-    function TriState(props) {
-      // `default` 是求值链的终点，没有「跟随」可言；两态就够，多一个按钮反而让人
-      // 以为还能往上找。
-      const allowInherit = props.allowInherit !== false
-      const active = triStateOf(props.value, allowInherit)
-      const options = allowInherit ? TRI_STATE : TRI_STATE.filter((option) => option.value !== 'follow')
-      return h(
-        'div',
-        { style: { display: 'inline-flex', gap: '4px', alignItems: 'center', flex: '0 0 auto' } },
-        options.map((option) =>
-          h(
-            'button',
-            {
-              key: option.value,
-              type: 'button',
-              title: option.title,
-              'aria-pressed': active === option.value,
-              disabled: props.disabled,
-              style: {
-                ...S.segItem(active === option.value),
-                /*
-                 * 三态是这个面板里点得最多的控件。原来是 11px 字 + 2px 7px 内距，
-                 * 热区只有 19px 高——比被抱怨"太小"的删除按钮还小一截。
-                 * 高度按官方控件档位取 24px（一排三个，28 会显得笨重）。
-                 */
-                display: 'inline-flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                boxSizing: 'border-box',
-                height: '24px',
-                padding: '0 10px',
-                fontSize: '12px',
-                lineHeight: '18px',
-                opacity: props.disabled ? 0.45 : 1,
-                cursor: props.disabled ? 'not-allowed' : 'pointer',
-              },
-              onClick: () => {
-                if (props.disabled) return
-                props.onChange(option.value === 'on' ? true : option.value === 'off' ? false : null)
-              },
-            },
-            option.label,
-          ),
-        ),
-      )
-    }
-
-    function Chevron(props) {
-      const open = props && props.open === true
+    function Chevron() {
       return h(
         'svg',
         {
@@ -1095,12 +1095,7 @@ const RANK_ORDER = {
           height: 10,
           viewBox: '0 0 10 10',
           'aria-hidden': true,
-          style: {
-            flex: '0 0 auto',
-            opacity: 0.65,
-            transform: open ? 'rotate(180deg)' : 'none',
-            transition: 'transform 120ms ease',
-          },
+          style: { flex: '0 0 auto', opacity: 0.65 },
         },
         h('path', {
           d: 'M2.5 4L5 6.5L7.5 4',
@@ -1116,7 +1111,7 @@ const RANK_ORDER = {
     /**
      * 下拉选择器。
      *
-     * `options` 是 `[{ value, label, disabled? }]`。点外部或按 Esc 关闭：监听挂在文档上，
+     * `options` 是 `[{ value, label }]`。点外部或按 Esc 关闭：监听挂在文档上，
      * 不依赖父级的点击处理，所以嵌在可点击的列表行里也不会误触。
      */
     function Picker(props) {
@@ -1165,7 +1160,7 @@ const RANK_ORDER = {
             },
           },
           h('span', { style: S.pickerLabel }, label),
-          h(Chevron, { open: open }),
+          h(Chevron),
         ),
         open
           ? h(
@@ -1178,17 +1173,11 @@ const RANK_ORDER = {
                     key: option.value,
                     role: 'option',
                     'aria-selected': option.value === props.value,
-                    'aria-disabled': option.disabled === true,
-                    style:
-                      option.disabled === true
-                        ? { ...S.pickerItem(option.value === props.value, hover === option.value), opacity: 0.45, cursor: 'not-allowed' }
-                        : S.pickerItem(option.value === props.value, hover === option.value),
+                    style: S.pickerItem(option.value === props.value, hover === option.value),
                     onMouseEnter: () => setHover(option.value),
                     onMouseLeave: () => setHover(null),
                     onClick: (event) => {
                       event.stopPropagation()
-                      // 禁用项只是「还没选」的提示：点了不关闭浮层，也不回传值。
-                      if (option.disabled === true) return
                       setOpen(false)
                       props.onChange(option.value)
                     },
@@ -1202,81 +1191,6 @@ const RANK_ORDER = {
       )
     }
 
-    /**
-     * 文本字段：失焦或按 Enter 才提交。
-     *
-     * 逐字符发请求会把服务器打满，也会让每次响应把正在输入的光标顶掉。本地草稿在
-     * 未聚焦时跟随外部值，聚焦时只认用户输入。
-     */
-    function TextField(props) {
-      const [text, setText] = useState(props.value)
-      const focused = useRef(false)
-      // Esc 是「放弃这一格」：blur 会紧跟着触发，得先立一个标记让那次 blur 不提交。
-      const skip = useRef(false)
-      useEffect(() => {
-        if (!focused.current) setText(props.value)
-      }, [props.value])
-      const commit = () => {
-        if (text === props.value) return
-        // 提交被拒时把输入框退回外部值：否则被拒的文本留在框里，看着像已保存。
-        const settled = props.onCommit(text)
-        if (settled && typeof settled.then === 'function') {
-          void settled.then((ok) => {
-            if (ok === false) setText(props.value)
-          })
-        }
-      }
-      return h('input', {
-        style: props.style || S.input,
-        value: text,
-        placeholder: props.placeholder,
-        'aria-label': props.label,
-        onChange: (event) => setText(event.target.value),
-        onFocus: () => {
-          focused.current = true
-        },
-        onBlur: () => {
-          focused.current = false
-          if (skip.current) {
-            skip.current = false
-            return
-          }
-          commit()
-        },
-        onKeyDown: (event) => {
-          if (event.key === 'Enter') event.target.blur()
-          if (event.key === 'Escape') {
-            skip.current = true
-            setText(props.value)
-            event.target.blur()
-          }
-        },
-      })
-    }
-
-    /**
-     * MCP 用的图标：两条横排 + 左侧圆点，与 skill / plugin 的图标区分开。
-     *
-     * 输入的右侧一排 chip 只靠图标辨认，用同一组宫格会把「找 MCP 设置」变成逐个读文字。
-     */
-    function McpiIcon(props) {
-      const size = props && props.size ? props.size : 16
-      return h(
-        'svg',
-        {
-          width: size,
-          height: size,
-          viewBox: '0 0 16 16',
-          'aria-hidden': true,
-          style: { display: 'block' },
-        },
-        h('rect', { x: 2, y: 2.5, width: 12, height: 4, rx: 1, stroke: 'currentColor', strokeWidth: 1.4, fill: 'none' }),
-        h('rect', { x: 2, y: 9.5, width: 12, height: 4, rx: 1, stroke: 'currentColor', strokeWidth: 1.4, fill: 'none' }),
-        h('circle', { cx: 4.6, cy: 4.5, r: 1, fill: 'currentColor' }),
-        h('circle', { cx: 4.6, cy: 11.5, r: 1, fill: 'currentColor' }),
-      )
-    }
-
     // ---------- 宿主与求值 ----------
 
     /**
@@ -1285,7 +1199,8 @@ const RANK_ORDER = {
      * 服务是否在 `ctx` 上由 `inject` 决定：声明了才可能有值。但 `ctx.get` 对取不到
      * 的已声明服务是**抛错**而不是返回 undefined，所以探测必须包 try/catch——
      * 这一行漏了会让整个 client 模块加载失败，桌面端直接起不来。
-     * 取不到就退化成 `remote: null`，工作区页会空着，其它功能照常。
+     * 取不到就退化成 `remote: null`：工作区页会空着（目录清单就来自 `remote`），
+     * 其它页照常工作。
      */
     function createHost(ctx) {
       let remote = null
@@ -1304,8 +1219,6 @@ const RANK_ORDER = {
       }
       return { ctx: ctx, remote: remote }
     }
-
-    // ---------- 数据读取 ----------
 
     /**
      * 工作区键归一，必须与服务端 `normalizeCwd` 逐字节一致：
@@ -1375,13 +1288,12 @@ const RANK_ORDER = {
       return false
     }
 
-    /** 查不到就返回 null：回退到第一个包会让编辑目标悄悄换成另一张 pack。 */
     function packById(packs, id) {
       if (!Array.isArray(packs)) return null
       for (const pack of packs) {
         if (pack.id === id) return pack
       }
-      return null
+      return packs.length > 0 ? packs[0] : null
     }
 
     function defaultPackOf(packs) {
@@ -1399,6 +1311,195 @@ const RANK_ORDER = {
      * 同一条规则。新建的 pack 不在改动前的序里，落到末尾，同档沿用服务端的名字序
      * （`Array.prototype.sort` 稳定）。
      */
+    function packLabel(pack) {
+      if (pack === null || pack === undefined) return ''
+      return pack.builtin === true || pack.id === DEFAULT_PACK_ID ? '默认' : pack.name
+    }
+
+    /**
+     * 分包页读的是**选中那张 pack 的原始记录**，不是工作区求值链。
+     *
+     * 两者不是一回事：服务端行上的 `itemWorkspace` / `rank` 按**工作区绑定的** pack
+     * 算，而分包页让用户逐张编辑 pack——选中哪张由本地状态决定，服务端不知道。
+     * 拿绑定 pack 的结论渲染分包页，结果是每张 pack 都显示成同一份值：默认 pack 里
+     * 显式关掉的项显示成「开」，其余 pack 全部显示成「跟随」，排序也退化成按名字。
+     *
+     * 这里只做「读原始记录 + 算档位」，不碰求值链：链（`pack.items ?? pack.groups ??
+     * default.items ?? default.groups ?? true`）仍由服务端算，行上的 `open` 就是它。
+     */
+    function packRankOf(explicit, isDefault, landing) {
+      if (explicit === true) return 'explicit-on'
+      if (explicit === false) return 'explicit-off'
+      if (isDefault) return 'explicit-on'
+      return landing ? 'follow-on' : 'follow-off'
+    }
+
+    function groupIdOf(row) {
+      return row.groupId || null
+    }
+
+    function groupNameOf(groups, groupId) {
+      for (const group of groups || []) {
+        if (group.id === groupId) return group.name
+      }
+      return '未分组'
+    }
+
+    /**
+     * `ui` 段。
+     *
+     * 服务端一定有 `ui`；旧面板靠 `policy` 投影兜底的那条分支随兼容层一起删掉了。
+     */
+    function compareCwd(left, right) {
+      const order = left.localeCompare(right, 'zh', { numeric: true, sensitivity: 'base' })
+      return order !== 0 ? order : left < right ? -1 : left > right ? 1 : 0
+    }
+
+    /**
+     * 已知工作区：从会话列表里取 cwd，排除子代理会话，按路径去重排序。
+     *
+     * 截断仍按最近使用取舍：先按 `updatedAt` 倒序取前 MAX_WORKSPACES 条，
+     * 展示序只由路径决定。取不到会话时返回空列表——面板仍能编辑 pack，
+     * 只是工作区清单读不到，其它页照常。
+     */
+    async function listWorkspaceCwds(host) {
+      const session = host && host.remote ? host.remote.session : null
+      if (!session || typeof session.list !== 'function') return []
+      let result
+      try {
+        result = await session.list({})
+      } catch {
+        return []
+      }
+      if (!result || result.ok !== true) return []
+      const items = result.value && Array.isArray(result.value.items) ? result.value.items : []
+      const roots = items.filter(
+        (item) => item && typeof item.cwd === 'string' && item.cwd !== '' && item.origin !== 'subagent',
+      )
+      roots.sort((a, b) => (Number(b.updatedAt) || 0) - (Number(a.updatedAt) || 0))
+      const cwds = []
+      const seen = {}
+      for (const item of roots) {
+        const key = normalizeCwd(item.cwd)
+        if (key === null || seen[key] === true) continue
+        seen[key] = true
+        cwds.push(item.cwd)
+        if (cwds.length >= MAX_WORKSPACES) break
+      }
+      return cwds.sort((a, b) => compareCwd(normalizeCwd(a), normalizeCwd(b)))
+    }
+
+
+/**
+
+ * mcp 的协议层：五条路径、四字段行模型、以及它们各自的求值。
+
+ *
+
+ * 覆盖共享的 `scripts/client-shared/panel-protocol.js`——mcp 管的不是布尔项，
+
+ * 而是一行四个字段（enabled / mode / tools / description），求值链与待保存键都不同
+
+ * （见 ADR-0017）。组件与展示逻辑仍来自 `panel-base.js`。
+
+ */
+
+
+
+    const PATHS = {
+      global: '/api/mcp-pack/global',
+      workspace: '/api/mcp-pack/workspace',
+      apply: '/api/mcp-pack/apply',
+      diag: '/api/mcp-pack/diag',
+      servers: '/api/mcp-pack/servers',
+    }
+
+    /**
+     * 五个路由共用一套信封：{ ok: true, value } 或 { ok: false, error }。
+     * HTTP 状态恒为 200，所以判定只能看 ok 字段，不能看 response.ok。
+     */
+    async function post(path, body) {
+      let response
+      try {
+        response = await fetch(path, {
+          method: 'POST',
+          cache: 'no-store',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(body || {}),
+        })
+      } catch (error) {
+        throw new Error('网络请求失败：' + String(error))
+      }
+      let payload
+      try {
+        payload = await response.json()
+      } catch {
+        throw new Error('响应不是合法 JSON（HTTP ' + response.status + '）')
+      }
+      if (payload && payload.ok === true) return payload.value
+      const message = payload && payload.error && payload.error.message ? payload.error.message : '请求失败'
+      throw new Error(message)
+    }
+
+    const api = {
+      // 带上当前会话：服务端优先用它的 scope 读清单，否则会退回到「恰好排第一的那个会话」。
+      global: (sessionId) => post(PATHS.global, sessionId ? { sessionId: sessionId } : {}),
+      workspace: (sessionId) => post(PATHS.workspace, { sessionId: sessionId }),
+      /**
+       * `dryRun` 只把命令应用在内存里、返回同一份视图，不写盘——待保存改动靠它渲染。
+       */
+      apply: (commands, sessionId, dryRun) => {
+        const body = { commands: commands }
+        if (sessionId) body.sessionId = sessionId
+        if (dryRun === true) body.dryRun = true
+        return post(PATHS.apply, body)
+      },
+      diag: () => post(PATHS.diag, {}),
+      servers: (payload) => post(PATHS.servers, payload),
+    }
+
+
+    function pendingKey(command) {
+      switch (command.op) {
+        case 'packRow':
+          return 'packRow:' + command.packId + ':' + command.rowKey
+        case 'packGroup':
+          return 'packGroup:' + command.packId + ':' + command.groupId
+        case 'bind':
+          // 与渲染处的查询键同源：服务端按归一化后的 cwd 落盘，渲染也按归一化后的
+          // cwd 查。两边各写一遍时 Windows 上必然不等，待保存标记永不出现。
+          return bindKeyOf(command.cwd)
+        case 'assign':
+          return 'assign:' + command.rowKey
+        case 'renamePack':
+          return 'renamePack:' + command.packId
+        case 'renameGroup':
+          return 'renameGroup:' + command.groupId
+        default:
+          // 新建、复制与删除没有可覆盖的目标：每条都是独立一次决定。
+          return null
+      }
+    }
+
+    /**
+     * 待保存改动。
+     *
+     * 点一下只入队，不发写请求；队列非空时每次变化都用 `dryRun` 试算一次，
+     * 拿服务端算好的视图来渲染——浏览器不复制求值链（根术语表「生效视图」）。
+     * 点「保存」才把整批命令写盘。
+     *
+     * 队列活在这一次挂载里：关闭面板即丢。跨面板保留会被「我到底存了没」拖住，
+     * 而用户关掉面板再回来时通常已经不记得点过什么了。
+     */
+    /**
+     * 待保存队列的纯部分：只有条目数组与键规则，不碰 React（见 ADR 0006）。
+     *
+     * `keyOf` 决定「同键后写覆盖」：键不为 null 时先删掉同键的旧条目再追加；新建与
+     * 删除这类没有可覆盖目标的命令键为 null，每条都独立存在。
+     *
+     * 每次变更都换一个新数组：试算 effect 靠引用变化重跑。
+     */
+
     function orderPacks(packs, basePacks, frozen) {
       if (!frozen) return packs
       const rank = new Map()
@@ -1530,6 +1631,7 @@ const RANK_ORDER = {
      * 宿主求值时已校验注册表：悬空引用在那里按未分组处理，这里直接信 `groupId`，
      * 不再读 `assignments` 复核——两套规则必然分叉。
      */
+
     function groupIdOf(row) {
       const gid = row && row.groupId
       return typeof gid === 'string' && gid !== '' ? gid : null
@@ -1552,6 +1654,7 @@ const RANK_ORDER = {
      *
      * 这里只做「读原始记录 + 算档位」，不碰求值链：链仍由服务端算，行上的 `open` 就是它。
      */
+
     function packEnabledOf(pack, rowKey) {
       return entryField(policyOf(pack, rowKey), 'enabled')
     }
@@ -1587,67 +1690,234 @@ const RANK_ORDER = {
      * 前缀是为了与工作区那条链区分：`scripts/check-panels.mjs` 禁止客户端再写一遍
      * `rankOf`，挡的是工作区求值链回潮，不是这里。
      */
-    function packRankOf(explicit, isDefault, landing) {
-      if (explicit === true) return 'explicit-on'
-      if (explicit === false) return 'explicit-off'
-      if (isDefault) return 'explicit-on'
-      return landing ? 'follow-on' : 'follow-off'
-    }
 
+    const PANEL_ID = 'mcp-pack'
+    const CHIP_ID = 'mcp-pack-chip'
+    const MODAL_ID = 'mcp-pack-chip-modal'
+    const TITLE = 'MCP Pack'
+
+    const MODES = ['eager', 'dynamic', 'lazy']
+    const MODE_LABELS = { eager: '全部加载', dynamic: '动态插入', lazy: '延迟加载' }
+    const DEFAULT_MODE = 'dynamic'
+
+    /** 三档的一句话说明。分包页常驻，用户不必猜这三项的差别。 */
+    const MODE_HELP = [
+      {
+        mode: 'eager',
+        label: '全部加载',
+        text: '启动就挂载，工具常驻上下文。最省事，但每轮都带着全部 schema。',
+      },
+      {
+        mode: 'dynamic',
+        label: '动态插入',
+        text: '默认不加载；mcp_load 之后把可见工具原生注册进本会话。推荐。',
+      },
+      {
+        mode: 'lazy',
+        label: '延迟加载',
+        text: '默认不加载；mcp_load 只返回参数表，调用走 mcp_call。工具列表永不变，请求前缀缓存不失效。',
+      },
+    ]
 
     /**
-     * 工作区清单的比较键：归一化后的路径。大小写不敏感、数字按自然序
-     * （`proj2` 在 `proj10` 前），中文目录按拼音。
+     * chip 文字隐藏的断点。
      *
-     * 清单是全局的：排序与当前会话、当前目录无关，同一批目录每次排成同一个序。
+     * 宿主输入框底栏 `.row` 声明了 `container-type: inline-size`，并用
+     * `@container (width <= 560px)` 控制这一带按钮的间距。跟随同一个断点，
+     * chip 就和官方那几个按钮同步折叠，而不是各自算一套阈值。
+     *
+     * 用 CSS 容器查询而不是 JS 量宽：插槽把 chip 包在一个与它等宽的容器里，
+     * 量父级永远偏小；往上找祖先又依赖具体层级，两种做法都会误判。
      */
-    function compareCwd(left, right) {
-      const order = left.localeCompare(right, 'zh', { numeric: true, sensitivity: 'base' })
-      return order !== 0 ? order : left < right ? -1 : left > right ? 1 : 0
-    }
 
-    /**
-     * 已知工作区：从会话列表里取 cwd，排除子代理会话，按路径去重排序。
-     *
-     * 截断仍按最近使用取舍：先按 `updatedAt` 倒序取前 MAX_WORKSPACES 条，
-     * 展示序只由路径决定。取不到会话时返回空列表——面板仍能编辑 pack，
-     * 只是工作区页会空着。
-     */
-    async function listWorkspaceCwds(host) {
-      const session = host && host.remote ? host.remote.session : null
-      if (!session || typeof session.list !== 'function') return []
-      let result
-      try {
-        result = await session.list({})
-      } catch {
-        return []
-      }
-      if (!result || result.ok !== true) return []
-      const items = result.value && Array.isArray(result.value.items) ? result.value.items : []
-      const roots = items.filter(
-        (item) => item && typeof item.cwd === 'string' && item.cwd !== '' && item.origin !== 'subagent',
+    const chipSessionId = createSignal(undefined)
+
+    function McpChevron(props) {
+      const open = props && props.open === true
+      return h(
+        'svg',
+        {
+          width: 10,
+          height: 10,
+          viewBox: '0 0 10 10',
+          'aria-hidden': true,
+          style: {
+            flex: '0 0 auto',
+            opacity: 0.65,
+            transform: open ? 'rotate(180deg)' : 'none',
+            transition: 'transform 120ms ease',
+          },
+        },
+        h('path', {
+          d: 'M2.5 4L5 6.5L7.5 4',
+          stroke: 'currentColor',
+          strokeWidth: 1.3,
+          fill: 'none',
+          strokeLinecap: 'round',
+          strokeLinejoin: 'round',
+        }),
       )
-      roots.sort((a, b) => (Number(b.updatedAt) || 0) - (Number(a.updatedAt) || 0))
-      const cwds = []
-      const seen = {}
-      for (const item of roots) {
-        const key = normalizeCwd(item.cwd)
-        if (key === null || seen[key] === true) continue
-        seen[key] = true
-        cwds.push(item.cwd)
-        if (cwds.length >= MAX_WORKSPACES) break
-      }
-      return cwds.sort((a, b) => compareCwd(normalizeCwd(a), normalizeCwd(b)))
     }
 
-    // ---------- 面板 ----------
+    /**
+     * 下拉选择器。
+     *
+     * `options` 是 `[{ value, label, disabled? }]`。点外部或按 Esc 关闭：监听挂在文档上，
+     * 不依赖父级的点击处理，所以嵌在可点击的列表行里也不会误触。
+     */
+    function McpPicker(props) {
+      const [open, setOpen] = useState(false)
+      const [hover, setHover] = useState(null)
+      const boxRef = useRef(null)
+      const options = Array.isArray(props.options) ? props.options : []
+      let current = null
+      for (const option of options) {
+        if (option.value === props.value) current = option
+      }
+      const label = current === null ? props.placeholder || '' : current.label
+
+      useEffect(() => {
+        if (!open) return undefined
+        const onDown = (event) => {
+          const node = boxRef.current
+          if (node && node.contains(event.target)) return
+          setOpen(false)
+        }
+        const onKey = (event) => {
+          if (event.key === 'Escape') setOpen(false)
+        }
+        document.addEventListener('mousedown', onDown, true)
+        document.addEventListener('keydown', onKey, true)
+        return () => {
+          document.removeEventListener('mousedown', onDown, true)
+          document.removeEventListener('keydown', onKey, true)
+        }
+      }, [open])
+
+      return h(
+        'div',
+        { ref: boxRef, style: { position: 'relative', minWidth: props.minWidth || '120px' } },
+        h(
+          'button',
+          {
+            type: 'button',
+            style: { ...S.pickerTrigger, ...(props.triggerStyle || {}) },
+            title: props.title || label,
+            'aria-haspopup': 'listbox',
+            'aria-expanded': open,
+            onClick: (event) => {
+              event.stopPropagation()
+              setOpen(!open)
+            },
+          },
+          h('span', { style: S.pickerLabel }, label),
+          h(McpChevron, { open: open }),
+        ),
+        open
+          ? h(
+              'div',
+              { style: S.pickerMenu, role: 'listbox' },
+              options.map((option) =>
+                h(
+                  'div',
+                  {
+                    key: option.value,
+                    role: 'option',
+                    'aria-selected': option.value === props.value,
+                    'aria-disabled': option.disabled === true,
+                    style:
+                      option.disabled === true
+                        ? { ...S.pickerItem(option.value === props.value, hover === option.value), opacity: 0.45, cursor: 'not-allowed' }
+                        : S.pickerItem(option.value === props.value, hover === option.value),
+                    onMouseEnter: () => setHover(option.value),
+                    onMouseLeave: () => setHover(null),
+                    onClick: (event) => {
+                      event.stopPropagation()
+                      // 禁用项只是「还没选」的提示：点了不关闭浮层，也不回传值。
+                      if (option.disabled === true) return
+                      setOpen(false)
+                      props.onChange(option.value)
+                    },
+                  },
+                  h('span', { style: S.pickerLabel }, option.label),
+                  option.value === props.value ? h('span', { style: { opacity: 0.9 } }, '✓') : null,
+                ),
+              ),
+            )
+          : null,
+      )
+    }
+
+    function TextField(props) {
+      const [text, setText] = useState(props.value)
+      const focused = useRef(false)
+      // Esc 是「放弃这一格」：blur 会紧跟着触发，得先立一个标记让那次 blur 不提交。
+      const skip = useRef(false)
+      useEffect(() => {
+        if (!focused.current) setText(props.value)
+      }, [props.value])
+      const commit = () => {
+        if (text === props.value) return
+        // 提交被拒时把输入框退回外部值：否则被拒的文本留在框里，看着像已保存。
+        const settled = props.onCommit(text)
+        if (settled && typeof settled.then === 'function') {
+          void settled.then((ok) => {
+            if (ok === false) setText(props.value)
+          })
+        }
+      }
+      return h('input', {
+        style: props.style || S.input,
+        value: text,
+        placeholder: props.placeholder,
+        'aria-label': props.label,
+        onChange: (event) => setText(event.target.value),
+        onFocus: () => {
+          focused.current = true
+        },
+        onBlur: () => {
+          focused.current = false
+          if (skip.current) {
+            skip.current = false
+            return
+          }
+          commit()
+        },
+        onKeyDown: (event) => {
+          if (event.key === 'Enter') event.target.blur()
+          if (event.key === 'Escape') {
+            skip.current = true
+            setText(props.value)
+            event.target.blur()
+          }
+        },
+      })
+    }
 
     /**
-     * 单调递增的请求号：晚到的旧响应不许落回界面。
+     * MCP 用的图标：两条横排 + 左侧圆点，与 skill / plugin 的图标区分开。
      *
-     * 写失败后会自动重读一次，两条请求同时在飞；没有这个号，旧响应会把新视图顶掉。
+     * 输入的右侧一排 chip 只靠图标辨认，用同一组宫格会把「找 MCP 设置」变成逐个读文字。
      */
-    let requestSeq = 0
+    function McpiIcon(props) {
+      const size = props && props.size ? props.size : 16
+      return h(
+        'svg',
+        {
+          width: size,
+          height: size,
+          viewBox: '0 0 16 16',
+          'aria-hidden': true,
+          style: { display: 'block' },
+        },
+        h('rect', { x: 2, y: 2.5, width: 12, height: 4, rx: 1, stroke: 'currentColor', strokeWidth: 1.4, fill: 'none' }),
+        h('rect', { x: 2, y: 9.5, width: 12, height: 4, rx: 1, stroke: 'currentColor', strokeWidth: 1.4, fill: 'none' }),
+        h('circle', { cx: 4.6, cy: 4.5, r: 1, fill: 'currentColor' }),
+        h('circle', { cx: 4.6, cy: 11.5, r: 1, fill: 'currentColor' }),
+      )
+    }
+
+
     const nextRequestId = () => {
       requestSeq += 1
       return requestSeq
@@ -1783,117 +2053,7 @@ const RANK_ORDER = {
      * 所以面板得有一处能看见。默认折起只显示条数——正常情况一条都没有，出现时才
      * 占位置；展开才列出全文。
      */
-    function Warnings(props) {
-      const [open, setOpen] = useState(false)
-      const list = Array.isArray(props.warnings) ? props.warnings : []
-      if (list.length === 0) return null
-      return h(
-        'div',
-        { style: { marginTop: '8px' } },
-        h(
-          'button',
-          {
-            type: 'button',
-            'aria-expanded': open,
-            style: { ...S.badge, cursor: 'pointer' },
-            onClick: () => setOpen(!open),
-          },
-          (open ? '▾ ' : '▸ ') + list.length + ' 条告警',
-        ),
-        open
-          ? h(
-              'div',
-              { style: { ...S.hint, marginTop: '4px' } },
-              list.map((warning, index) => h('div', { key: index }, warning)),
-            )
-          : null,
-      )
-    }
 
-    /** 残留键的种类标签。行键形如 `own:unityMCP`，与组 id 的键空间不同。 */
-    const STALE_KIND_LABEL = { item: '服务器', group: '分组', assignment: '归属' }
-
-    /**
-     * 残留键的提示与清理入口。
-     *
-     * 与另外两包同形：默认折叠，展开后每个键一行，带种类与「出现在哪些 pack 里」，
-     * 并给清理按钮。清理走待保存改动，用户能先试算看到要删多少条再决定落盘。
-     */
-    function StaleKeys(props) {
-      const [open, setOpen] = useState(false)
-      const entries = Array.isArray(props.entries) ? props.entries : []
-      if (entries.length === 0) return null
-
-      /**
-       * 一个残留键对应的清理命令。
-       *
-       * 行级删的是**整个行键条目**，不是单个字段：`rows` 是逐字段的
-       * （enabled / mode / tools / description），只删一个字段会留下半条记录。
-       */
-      const commandsFor = (entry) => {
-        if (entry.kind === 'assignment') return [{ op: 'assign', rowKey: entry.key, groupId: null }]
-        if (entry.kind === 'group') {
-          return (entry.packs || []).map((packId) => ({ op: 'packGroup', packId: packId, groupId: entry.key, value: null }))
-        }
-        // 四个字段全设 null：applyPatch 在结果为空时整条删掉行键条目。
-        // 只删一个字段会留下半条记录，那仍然是残留键。
-        const clear = { enabled: null, mode: null, tools: null, description: null }
-        return (entry.packs || []).map((packId) => ({ op: 'packRow', packId: packId, rowKey: entry.key, patch: clear }))
-      }
-
-      const collapsed = entries.length > 6
-      const shown = open || !collapsed ? entries : entries.slice(0, 6)
-
-      return h(
-        'div',
-        { style: S.probeWarn },
-        h(
-          'div',
-          null,
-          entries.length + ' 个键在策略里、当前名册里没有。已保留不删（重新加回来时决定还在），也可以现在清掉：',
-        ),
-        h(
-          'div',
-          { style: { marginTop: '6px' } },
-          shown.map((entry) =>
-            h(
-              'div',
-              {
-                key: entry.kind + ':' + entry.key,
-                style: { display: 'flex', alignItems: 'center', gap: '6px', marginTop: '2px' },
-              },
-              h('span', { style: S.badge }, STALE_KIND_LABEL[entry.kind] || entry.kind),
-              h(
-                'span',
-                { style: { fontFamily: 'ui-monospace, monospace', wordBreak: 'break-word', flex: '1 1 auto' } },
-                entry.key,
-              ),
-              h(
-                'span',
-                { style: { ...S.hint, flex: '0 0 auto' } },
-                Array.isArray(entry.packs) && entry.packs.length > 0 ? entry.packs.join('、') : '全局',
-              ),
-              h(Button, { variant: 'secondary', onClick: () => props.onClear(commandsFor(entry)) }, '清理'),
-            ),
-          ),
-        ),
-        h(
-          'div',
-          { style: { marginTop: '6px', display: 'flex', gap: '8px' } },
-          collapsed
-            ? h(Button, { variant: 'quiet', onClick: () => setOpen(!open) }, open ? '收起' : '展开全部 ' + entries.length + ' 个')
-            : null,
-          h(Button, { variant: 'quiet', onClick: () => props.onClear(entries.flatMap(commandsFor)) }, '清理全部 ' + entries.length + ' 个'),
-        ),
-      )
-    }
-
-    /**
-     * chip 的弹层：这张 pack 与默认差在哪，就地切换。
-     *
-     * 选「默认」发 `packId: null`（解除绑定），不是写一个 default 的 id——
-     * 未绑定与悬空引用在服务端是同一种状态。
-     */
     function ChipModal(props) {
       const open = props.open === true
       const sessionId = props.sessionId
@@ -2277,7 +2437,7 @@ const RANK_ORDER = {
           h(
             'div',
             { style: { flex: '0 0 auto', minWidth: '120px' } },
-            h(Picker, {
+            h(McpPicker, {
               value: ui.defaultTab,
               options: TABS.map((entry) => ({ value: entry.value, label: entry.label })),
               onChange: (next) => run([{ op: 'defaultTab', value: next }]),
@@ -2549,7 +2709,7 @@ const RANK_ORDER = {
           h(
             'div',
             { style: { flex: '0 0 auto', minWidth: '130px' } },
-            h(Picker, {
+            h(McpPicker, {
               value: bulkGroup === null ? BULK_NONE : bulkGroup,
               options: [
                 { value: BULK_NONE, label: '选择分组…', disabled: true },
@@ -2681,7 +2841,7 @@ const RANK_ORDER = {
                       h(
                         'div',
                         { style: { flex: '0 0 auto', minWidth: '128px' } },
-                        h(Picker, {
+                        h(McpPicker, {
                           value: bucket.id === null ? '' : bucket.id,
                           options: [
                             { value: '', label: '未分组' },
@@ -2805,7 +2965,7 @@ const RANK_ORDER = {
         h(
           'div',
           { style: S.lineHead, onClick: () => setOpen(!open) },
-          h(Chevron, { open: open }),
+          h(McpChevron, { open: open }),
           h(
             'div',
             { style: S.rowMain },
@@ -2854,7 +3014,7 @@ const RANK_ORDER = {
                 h(
                   'div',
                   { style: { flex: '0 0 auto', minWidth: '150px' } },
-                  h(Picker, {
+                  h(McpPicker, {
                     value: mode === null ? '' : mode,
                     options: [{ value: '', label: '跟随' }].concat(
                       MODES.map((item) => ({ value: item, label: MODE_LABELS[item] })),
@@ -2946,7 +3106,7 @@ const RANK_ORDER = {
             'data-state': pending.keys.has('packRow:' + pack.id + ':' + rowKey) ? 'pending' : undefined,
             onClick: () => setOpen(!open),
           },
-          h(Chevron, { open: open }),
+          h(McpChevron, { open: open }),
           h(
             'div',
             { style: S.rowMain },
@@ -3088,7 +3248,7 @@ const RANK_ORDER = {
                 h(
                   'div',
                   { style: { flex: '0 0 auto', minWidth: '120px' } },
-                  h(Picker, {
+                  h(McpPicker, {
                     value: transport,
                     options: [
                       { value: 'stdio', label: 'stdio' },
@@ -3626,7 +3786,7 @@ const RANK_ORDER = {
                   h(
                     'div',
                     { style: { flex: '0 0 auto', minWidth: '150px' } },
-                    h(Picker, {
+                    h(McpPicker, {
                       value: value,
                       options: [
                         { value: '', label: '默认' },
@@ -3643,6 +3803,7 @@ const RANK_ORDER = {
               }),
       )
     }
+
 
     // ---------- 注册 ----------
 
@@ -3858,5 +4019,6 @@ const RANK_ORDER = {
         }
       },
     }
+
   },
 })
