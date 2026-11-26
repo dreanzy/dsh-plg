@@ -266,9 +266,8 @@ for (const dir of dirs) {
     const path = join(clientDir, file)
     const label = dir.name + '/client/' + file
     checked += 1
-    let loaded
     try {
-      loaded = loadFactory(path)
+      loadFactory(path)
     } catch (error) {
       failures += 1
       console.error(label + ': 无法作为宿主模块加载 —— ' + String(error && error.message ? error.message : error))
@@ -278,6 +277,12 @@ for (const dir of dirs) {
     // 计数前先剥注释：`dryRun` 这类词在注释里出现 3-6 次，把代码里的用法删掉
     // 计数仍然达标，断言形同虚设。
     const code = stripComments(source)
+    // 界面基调红线：与结构断言共用同一次目录遍历（见 docs/ui-baseline.md）。
+    for (const rule of BASELINE) {
+      if (rule.check(source)) continue
+      failures += 1
+      console.error(label + ': ' + rule.name + ' —— ' + rule.detail)
+    }
     const rules = RULES[dir.name]
     if (rules === undefined) continue
     for (const [needle, count] of Object.entries(rules.must ?? {})) {
@@ -292,29 +297,6 @@ for (const dir of dirs) {
         failures += 1
         console.error(label + ': 不应再出现 `' + needle + '`（派生已被预计算取代）')
       }
-    }
-  }
-}
-
-// 界面基调红线：对每个面板文件跑一遍。
-for (const dir of dirs) {
-  if (!dir.isDirectory()) continue
-  const clientDir = join(packagesDir, dir.name, 'client')
-  let files
-  try {
-    files = await readdir(clientDir)
-  } catch {
-    continue
-  }
-  for (const file of files) {
-    if (!file.endsWith('.js')) continue
-    const path = join(clientDir, file)
-    const label = dir.name + '/client/' + file
-    const source = readFileSync(path, 'utf8')
-    for (const rule of BASELINE) {
-      if (rule.check(source)) continue
-      failures += 1
-      console.error(label + ': ' + rule.name + ' —— ' + rule.detail)
     }
   }
 }

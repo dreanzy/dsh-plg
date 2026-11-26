@@ -15,6 +15,10 @@
  * 改坏的文件。服务端变异要先 `tsc`，因为 e2e 与单测跑的是 `lib/` 产物。
  *
  * 判据：每个变异至少被一层抓住。全被抓 = 退出 0；有漏网 = 退出 1 并列出是哪几个。
+ *
+ * 变异可以标 `expect: 'missed'`：它注入的改动**本就不该被抓住**。对照组有两个方向——
+ * 改注释里的一个词（被抓住说明规则在误报）、改一行没有覆盖的代码（被抓住说明认知错了）。
+ * 缺了这两条，「全抓」无法区分「测试真的守住了」与「判定逻辑写反了仍然全绿」。
  */
 
 import { readFileSync, renameSync, writeFileSync } from 'node:fs'
@@ -120,6 +124,14 @@ const CLIENT = [
     from: '      if (!frozen) return packs',
     to: '      return packs',
   },
+  {
+    // 对照：只改注释里的一个词。不该被任何一层抓住——被抓说明规则在数注释，或断言过宽。
+    name: '对照：只改注释里的一个词',
+    expect: 'missed',
+    file: 'packages/dsh-skill-pack/client/client.js',
+    from: '工作区清单上限：会话一多，绑定表会变成一堵墙。',
+    to: '工作区清单上限：会话一多，绑定表会变成一堵很长的墙。',
+  },
 ]
 
 /** 服务端变异：求值链与显示态。 */
@@ -168,6 +180,15 @@ const SERVER = [
     file: 'packages/dsh-plugin-pack/src/catalog.ts',
     from: '  if (profileDirHint !== null && (await isProfileDir(profileDirHint))) {\n    return { dirs: [profileDirHint], certain: true }\n  }',
     to: '  // 变异：忽略 profileContext，退回全扫',
+  },
+  {
+    // 对照：改一行不可达的防御分支。不该被任何一层抓住——被抓住说明这条分支
+    // 其实可达（认知错了），或者有测试在断言一件没人能触发的事。
+    name: '对照：改不可达的防御分支',
+    expect: 'missed',
+    file: 'packages/dsh-pack-core/src/roster.ts',
+    from: '    if (row === undefined) continue',
+    to: '    if (row === undefined) break',
   },
 ]
 
@@ -234,7 +255,7 @@ async function runGroup(label, mutations, layers, needsBuild) {
       for (const layer of layers) {
         caught[layer.name] = (await layer.run(pkg)) !== 0
       }
-      results.push({ name: mutation.name, caught })
+      results.push({ name: mutation.name, expect: mutation.expect ?? 'caught', caught })
     } finally {
       writeAtomic(path, original)
       if (needsBuild) await run('node', [TSC, '-p', 'packages/' + pkg + '/tsconfig.json'], ROOT)
@@ -253,7 +274,7 @@ if (groups.length === 0) {
   process.exit(1)
 }
 
-let missed = 0
+let problems = 0
 let total = 0
 for (const [label, mutations, layers, needsBuild] of groups) {
   console.log('== ' + label + ' ==')
@@ -261,13 +282,24 @@ for (const [label, mutations, layers, needsBuild] of groups) {
   for (const result of results) {
     total += 1
     if (result.error !== undefined) {
-      missed += 1
+      problems += 1
       console.error('✖ ' + result.name + '：' + result.error)
       continue
     }
     const caughtBy = Object.entries(result.caught).filter(([, hit]) => hit).map(([name]) => name)
-    if (caughtBy.length === 0) {
-      missed += 1
+    const caught = caughtBy.length > 0
+    if (result.expect === 'missed') {
+      // 对照组：注入的改动本就不该被抓住。被抓住说明判定条件比预期宽。
+      if (caught) {
+        problems += 1
+        console.error('✖ ' + result.name + '：本该不被抓住，却被 ' + caughtBy.join(' + ') + ' 抓住')
+      } else {
+        console.log('✔ ' + result.name + '（如预期未被抓住）')
+      }
+      continue
+    }
+    if (!caught) {
+      problems += 1
       console.error('✖ ' + result.name + '：没有一层抓住（' + Object.keys(result.caught).join(' / ') + ' 全绿）')
     } else {
       console.log('✔ ' + result.name + '（' + caughtBy.join(' + ') + '）')
@@ -276,8 +308,8 @@ for (const [label, mutations, layers, needsBuild] of groups) {
 }
 
 console.log('')
-if (missed > 0) {
-  console.error('mutation: ' + String(missed) + '/' + String(total) + ' 个变异没被抓住——测试对这类错误没有防线')
+if (problems > 0) {
+  console.error('mutation: ' + String(problems) + '/' + String(total) + ' 个变异不符合预期——见上面的逐条说明')
   process.exit(1)
 }
-console.log('mutation: ' + String(total) + '/' + String(total) + ' 个变异全部被抓住')
+console.log('mutation: ' + String(total) + '/' + String(total) + ' 个变异全部符合预期')
