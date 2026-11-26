@@ -1,6 +1,14 @@
 import {
+  assertNameFree,
+  assertPackRoom,
+  copyName,
   filesOf as filesOfTable,
+  findPack,
+  nextGroupId,
+  nextPackId,
   parseCommands as parseCommandsTable,
+  requireName,
+  setKey,
   type OpSpec,
   type OpTable,
   type StoreFile,
@@ -95,94 +103,16 @@ function readTab(record: Record<string, unknown>): SettingsTab | null {
  * 应用：命令 → 草稿
  * ------------------------------------------------------------------ */
 
-function setKey(
-  map: Readonly<Record<string, boolean>>,
-  key: string,
-  value: boolean | null,
-): Record<string, boolean> {
-  const next = { ...map }
-  if (value === null) delete next[key]
-  else next[key] = value
-  return next
-}
-
-/** 名字上限：超长名字会撑破面板布局，含控制字符的名字会在日志里伪造行。 */
-const MAX_NAME_CHARS = 64
-
-function requireName(raw: string): string {
-  const name = raw.trim()
-  if (name === '') throw new Error('pack 名不能为空')
-  if (name.length > MAX_NAME_CHARS) throw new Error(`pack 名过长（上限 ${String(MAX_NAME_CHARS)} 字符）`)
-  if (/[\u0000-\u001f]/u.test(name)) throw new Error('pack 名不能含控制字符')
-  return name
-}
-
-function findPack(packs: Readonly<Record<string, Pack>>, packId: string): Pack {
-  const pack = packs[packId]
-  if (pack === undefined) throw new Error(`未知 pack：${packId}`)
-  return pack
-}
-
-function assertNameFree(packs: Readonly<Record<string, Pack>>, name: string, exceptId?: string): void {
-  for (const [id, pack] of Object.entries(packs)) {
-    if (id !== exceptId && pack.name === name) throw new Error(`pack 名已存在：${name}`)
-  }
-}
-
-/** 造一个短且稳定的 pack id，与名字脱钩。 */
-function nextPackId(packs: Readonly<Record<string, Pack>>): string {
-  for (let index = 1; ; index += 1) {
-    const candidate = `p${String(index)}`
-    if (packs[candidate] === undefined) return candidate
-  }
-}
-
-/**
- * 副本的显示名：原名 + 空格 + 序号，从 2 起，撞名就往后数。
- *
- * 不做尾部数字识别：「前端 2」的副本叫「前端 2 2」。规则只有一条，用户看一眼就能
- * 预测下一个叫什么；识别尾部数字会让「前端 2 3」这类名字产生歧义。
- */
-function copyName(packs: Readonly<Record<string, Pack>>, base: string): string {
-  for (let index = 2; ; index += 1) {
-    const candidate = `${base} ${String(index)}`
-    let taken = false
-    for (const pack of Object.values(packs)) {
-      if (pack.name === candidate) {
-        taken = true
-        break
-      }
-    }
-    if (!taken) return candidate
-  }
-}
 
 /** 深拷贝一张 pack：副本与原 pack 之后各改各的，共享任何一层对象都会串味。 */
 function clonePack(pack: Pack): Pack {
   return { name: pack.name, items: { ...pack.items }, groups: { ...pack.groups } }
 }
 
-/** 写侧也按读侧的上限拒绝：写得进去、读不回来是最难排查的一类问题。 */
-function assertPackRoom(packs: Readonly<Record<string, Pack>>): void {
-  if (Object.keys(packs).length >= MAX_NAMES) throw new Error(`pack 已达上限 ${String(MAX_NAMES)} 个`)
-}
 
-/** 造一个短且稳定的分组 id，与名字脱钩。 */
-function nextGroupId(groups: readonly { id: string }[]): string {
-  const taken = new Set(groups.map((group) => group.id))
-  for (let index = groups.length + 1; ; index += 1) {
-    const candidate = `g${String(index)}`
-    if (!taken.has(candidate)) return candidate
-  }
-}
-
-const groupNameOf = (command: Extract<Command, { op: 'createGroup' | 'renameGroup' }>): string => {
-  const name = command.name.trim()
-  if (name === '') throw new Error('分组名不能为空')
-  if (name.length > MAX_NAME_CHARS) throw new Error(`分组名过长（上限 ${String(MAX_NAME_CHARS)} 字符）`)
-  if (/[\u0000-\u001f]/u.test(name)) throw new Error('分组名不能含控制字符')
-  return name
-}
+/** 分组名只是从命令里取一个字段，校验与 pack 名共用同一条（见 draft 的 requireName）。 */
+const groupNameOf = (command: Extract<Command, { op: 'createGroup' | 'renameGroup' }>): string =>
+  requireName(command.name, '分组')
 
 /* ------------------------------------------------------------------ *
  * 表
@@ -238,7 +168,7 @@ const CREATE_PACK: SkillOpSpec = {
     if (command.op !== 'createPack') return
     const name = requireName(command.name)
     assertNameFree(draft.packs, name)
-    assertPackRoom(draft.packs)
+    assertPackRoom(draft.packs, MAX_NAMES)
     const id = nextPackId(draft.packs)
     draft.packs[id] = { name, items: {}, groups: {} }
   },
@@ -265,7 +195,7 @@ const DUPLICATE_PACK: SkillOpSpec = {
   applyPacks(draft, command) {
     if (command.op !== 'duplicatePack') return
     const source = findPack(draft.packs, command.packId)
-    assertPackRoom(draft.packs)
+    assertPackRoom(draft.packs, MAX_NAMES)
     const given = command.name === undefined ? '' : requireName(command.name)
     if (given !== '') assertNameFree(draft.packs, given)
     const id = nextPackId(draft.packs)

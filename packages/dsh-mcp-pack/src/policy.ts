@@ -1,5 +1,6 @@
+/** 求值链、cwd 归一、名册框架与落盘规则同其余包（见 ADR-0007 与 ADR-0016）。 */
 export { normalizeCwd }
-import { normalizeCwd, rankOf } from '@dreanzy/dsh-pack-core'
+import { normalizeCwd, parseRoster, rankOf, readJson, type RosterConfig } from '@dreanzy/dsh-pack-core'
 import {
   DEFAULT_MODE,
   DEFAULT_PACK_ID,
@@ -36,7 +37,10 @@ function sortMap(map: Readonly<Record<string, boolean>>): Record<string, boolean
   const out: Record<string, boolean> = {}
   for (const key of Object.keys(map).sort()) {
     const value = map[key]
-    if (value !== undefined) out[key] = value
+    // defineProperty 而不是赋值：`out['__proto__'] = value` 改的是原型，键在序列化时消失。
+    if (value !== undefined) {
+      Object.defineProperty(out, key, { value, enumerable: true, writable: true, configurable: true })
+    }
   }
   return out
 }
@@ -68,25 +72,9 @@ function parseBoolMap(raw: unknown, label: string, warnings: string[]): Record<s
       warnings.push(`${label}.${name} 不是布尔值，已忽略`)
       continue
     }
-    out[name] = value
+    Object.defineProperty(out, name, { value, enumerable: true, writable: true, configurable: true })
   }
   return out
-}
-
-function readJson(text: string | undefined, warnings: string[]): Record<string, unknown> | null {
-  if (text === undefined || text.trim() === '') return null
-  let raw: unknown
-  try {
-    raw = JSON.parse(text)
-  } catch (error) {
-    warnings.push(`文件不是合法 JSON，已按空策略处理：${String(error)}`)
-    return null
-  }
-  if (!isRecord(raw)) {
-    warnings.push('文件顶层不是对象，已按空策略处理')
-    return null
-  }
-  return raw
 }
 
 /**
@@ -140,7 +128,9 @@ function parseRows(raw: unknown, label: string, warnings: string[]): Record<stri
   }
   for (const rowKey of keys) {
     const parsed = parseRow(rowKey, raw[rowKey], warnings)
-    if (parsed !== null) out[rowKey] = parsed
+    if (parsed !== null) {
+      Object.defineProperty(out, rowKey, { value: parsed, enumerable: true, writable: true, configurable: true })
+    }
   }
   return out
 }
@@ -191,39 +181,17 @@ export interface ParsedPacks {
  * `default` 缺席时补一个空 pack：它是求值链的终点，不能不存在。补的行为留一条
  * warning，因为正常写入路径永远会写出 `default`，缺席意味着文件被外部改坏。
  */
+/** 名册框架的参数：求值链终点与上限仍是本包的口径（见 ADR-0016）。 */
+const ROSTER: RosterConfig<McpPack> = {
+  defaultPackId: DEFAULT_PACK_ID,
+  defaultPackName: DEFAULT_PACK_NAME,
+  emptyPack: EMPTY_PACK,
+  maxNames: MAX_NAMES,
+}
+
+/** 读 `packs.json`：框架在 core，条目与 `ui` 段是本包的形状。 */
 export function parsePacks(text: string | undefined): ParseResult<ParsedPacks> {
-  const warnings: string[] = []
-  const raw = readJson(text, warnings)
-  const ui = parseUi(raw?.['ui'], warnings)
-  const packs: Record<string, McpPack> = {}
-
-  const rawPacks = raw?.['packs']
-  if (rawPacks !== undefined) {
-    if (!isRecord(rawPacks)) {
-      warnings.push('packs 不是对象，已忽略')
-    } else {
-      const ids = Object.keys(rawPacks).sort()
-      if (ids.length > MAX_NAMES) {
-        warnings.push(`packs 超过 ${MAX_NAMES} 个，已只保留前 ${MAX_NAMES} 个`)
-        ids.length = MAX_NAMES
-      }
-      for (const id of ids) {
-        if (id === '') {
-          warnings.push('packs 里有空 id 的条目，已忽略')
-          continue
-        }
-        const pack = parsePack(id, rawPacks[id], warnings)
-        // 内置 pack 的显示名固定「默认」：文件里可能是旧名（default 等），读侧一并归一。
-        packs[id] = id === DEFAULT_PACK_ID ? { ...pack, name: DEFAULT_PACK_NAME } : pack
-      }
-    }
-  }
-
-  if (packs[DEFAULT_PACK_ID] === undefined) {
-    if (raw !== null) warnings.push('packs 缺少 default，已补一个空 pack')
-    packs[DEFAULT_PACK_ID] = EMPTY_PACK
-  }
-  return { value: { book: { packs }, ui }, warnings }
+  return parseRoster(text, { parsePack, parseUi }, ROSTER)
 }
 
 /**
@@ -313,7 +281,7 @@ export function parseGroups(text: string | undefined): ParseResult<GroupRegistry
           warnings.push(`assignments.${rowKey} 不是分组 id，已忽略`)
           continue
         }
-        assignments[rowKey] = groupId
+        Object.defineProperty(assignments, rowKey, { value: groupId, enumerable: true, writable: true, configurable: true })
       }
     }
   }

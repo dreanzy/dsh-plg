@@ -701,6 +701,23 @@ async function main() {
         check(pkg + ': 原型链 op 回 bad-request', r.json.error?.code === 'bad-request', r.json.error?.code)
       }
     }
+
+    // ---------- 统一的名字上限：写侧拒绝但不出错信封 ----------
+    {
+      const longName = 'x'.repeat(65)
+      for (const [pkg, P] of [
+        ['skill', '/api/skill-pack'],
+        ['plugin', '/api/plugin-pack'],
+        ['mcp', '/api/mcp-pack'],
+      ]) {
+        const r = await post(P + '/apply', { commands: [{ op: 'createPack', name: longName }] })
+        const why = (r.json.value?.warnings ?? []).find((w) => /过长/.test(w))
+        // 写失败不报错信封：面板要的是「最新状态 + 为什么没写进去」。
+        check(pkg + ': 超长 pack 名被拒且带说明', r.json.ok === true && why !== undefined, r.json.value?.warnings)
+        const after = await post(P + '/global', {})
+        check(pkg + ': 超长名字未落盘', !JSON.stringify(after.json).includes(longName))
+      }
+    }
   } finally {
     // 服务进程的 cwd 就是 workspace：Windows 下 cwd 被占着时目录删不掉（EBUSY）。
     // 必须杀整棵树并等它真的退，见 `killTree`。

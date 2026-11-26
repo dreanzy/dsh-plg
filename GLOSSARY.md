@@ -86,6 +86,14 @@ _Avoid_: 多入口包、伞包
 插件包之间不互相依赖；共用的服务端骨架抽成 `@dreanzy/dsh-pack-core`，各包对它写真实 semver 依赖，仍然各自发版。不用 `workspace:` 协议。边界见 [ADR-0007](./docs/adr/0007-shared-core-package.md)。
 _Avoid_: 共享内核、公共库、工具包
 
+**名册框架（Roster framework）**:
+读 `packs.json` 时与条目形状无关的那一段：读 JSON、判顶层、按 id 排序、上限截断、空 id 跳过、`default` 缺席时补一个空 pack。框架住 `dsh-pack-core` 的 `roster.ts`，条目解析（`parsePack`）与 `ui` 段（`parseUi`）由各包以回调注入。
+_Avoid_: 解析器、加载器、parsePacks
+
+**草稿操作（Draft ops）**:
+作用在名册草稿上的纯函数：写或删一个键、取一张 pack、查重名、造 id、查上限、造组 id、校验名字。只吃参数、不吃闭包状态，住 `dsh-pack-core` 的 `draft.ts`。
+_Avoid_: 工具函数、辅助函数、helper
+
 **源码安装**:
 用户以 `github:<owner>/<repo>#<sha>&path:/packages/<pkg>` 安装，触发该包的 `prepare` 构建。
 _Avoid_: git 安装、裸装

@@ -1,7 +1,7 @@
 {
   "name": "@dreanzy/dsh-pack-core",
-  "version": "0.2.0",
-  "description": "四个 pack 插件共用的服务端骨架：会话目录、装配记账、求值链与落盘规则。",
+  "version": "0.3.0",
+  "description": "四个 pack 插件共用的服务端骨架：会话目录、装配记账、求值链、名册框架、草稿操作与落盘规则。",
   "keywords": [
     "dsh",
     "dsh-plugin",

@@ -1,5 +1,6 @@
 import type { Envelope, ErrorCode } from '@dreanzy/dsh-pack-core'
 import {
+  packViews as corePackViews,
   resolveSession,
   staleKeysOf,
   type Rank,
@@ -122,26 +123,20 @@ function readString(source: Record<string, unknown> | null, key: string): string
  * 找「基线」得先扫一遍列表。重名按 id 兜底——`parsePack` 在 name 缺失时用 id
  * 代替，手改文件可能造出重名，没有兜底就不是全序。
  */
+/** 排序与 `default` 的显示名在 core，这里只把值域映射成面板要的 `groups` / `rows`。 */
 function packViews(book: PackBook): PackView[] {
-  const nameOf = (id: string): string => {
-    if (id === DEFAULT_PACK_ID) return DEFAULT_PACK_NAME
-    const pack = book.packs[id]
-    return pack === undefined ? id : pack.name
-  }
-  const ids = Object.keys(book.packs).sort((a, b) => {
-    if (a === b) return 0
-    if (a === DEFAULT_PACK_ID) return -1
-    if (b === DEFAULT_PACK_ID) return 1
-    const byName = nameOf(a).localeCompare(nameOf(b), 'zh')
-    return byName !== 0 ? byName : a < b ? -1 : 1
-  })
-  const out: PackView[] = []
-  for (const id of ids) {
-    const pack = book.packs[id]
-    if (pack === undefined) continue
-    out.push({ id, name: id === DEFAULT_PACK_ID ? DEFAULT_PACK_NAME : pack.name, groups: pack.groups, rows: pack.rows, builtin: id === DEFAULT_PACK_ID })
-  }
-  return out
+  const views = corePackViews<McpPack>(
+    book.packs,
+    { defaultPackId: DEFAULT_PACK_ID, defaultPackName: DEFAULT_PACK_NAME },
+    (row) => row.name,
+  )
+  return views.map((view) => ({
+    id: view.id,
+    name: view.name,
+    groups: view.row.groups,
+    rows: view.row.rows,
+    builtin: view.builtin,
+  }))
 }
 
 /**

@@ -6,7 +6,7 @@
  */
 
 /** 骨架包的版本。搬迁期间用它确认四个插件加载的是同一份核心。 */
-export const CORE_VERSION = '0.2.0'
+export const CORE_VERSION = '0.3.0'
 
 export { cwdFromAgent, cwdFromObserved } from './cwd.js'
 
@@ -61,3 +61,25 @@ export {
   type OpTable,
   type StoreFile,
 } from './ops.js'
+
+export {
+  assertNameFree,
+  assertPackRoom,
+  copyName,
+  findPack,
+  nextGroupId,
+  nextPackId,
+  requireName,
+  setKey,
+} from './draft.js'
+
+export {
+  isPlainRecord,
+  readJson,
+  parseRoster,
+  packViews,
+  type PackView,
+  type RosterConfig,
+  type RosterDeps,
+  type RosterResult,
+} from './roster.js'

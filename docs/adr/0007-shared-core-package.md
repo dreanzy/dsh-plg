@@ -36,6 +36,8 @@ ADR-0002 记的是"重复的基础设施约 150 行，对三包 13672 行约 1%"
 | 协议类型（`Envelope` / `ErrorCode` / 宿主 ctx 最小面） | 四份定义已经漂移（model 的 `ErrorCode` 少了 `'unknown-session'`）。`RouteContext` 本身三份逐字相同，随 `session` 一起进 core |
 | `routes` 的注册骨架（`toResponse` / `wrap` / `readFetchFace` / `registerRoutes`） | 四份逐字相同，而「HTTP 恒 200、信封 code 一致」这条不变式原先只写在四份注释里，没有任何测试守护——mcp 的原型链 op 报 `internal` 就是这么漏掉的 |
 
+2026-11-26 追加（见 [ADR-0016](./0016-roster-and-draft-into-core.md)）：名册读侧框架（`parseRoster` / `packViews` / `readJson`）与写侧草稿辅助（`setKey` / `findPack` / `assertNameFree` / `nextPackId` / `copyName` / `assertPackRoom` / `nextGroupId` / `requireName`）也进了 core。上表「条目 schema 留在各包」的判定仍成立——进 core 的是条目**之外**的框架。
+
 不抽：
 
 - **`hooks`**：四份 Jaccard 0.04–0.10，是四套宿主接线，不是同一段代码。合并只会把四个适配器缝进一个文件。

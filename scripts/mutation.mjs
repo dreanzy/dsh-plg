@@ -153,10 +153,11 @@ const SERVER = [
   },
   {
     // pack 名册退回按 id 排：id 与名字脱钩，用户看到的顺序就成了「创建顺序」。
+    // 排序收进 core 后（ADR-0016），变异目标跟着搬到 roster.ts。
     name: 'pack 名册退回按 id 排',
-    file: 'packages/dsh-skill-pack/src/routes.ts',
-    from: '    const byName = nameOf(a).localeCompare(nameOf(b), \'zh\')',
-    to: '    const byName = a.localeCompare(b)',
+    file: 'packages/dsh-pack-core/src/roster.ts',
+    lines: [154, 157],
+    repl: ['    const byName = a.localeCompare(b)'],
   },
   {
     // 2026-11-18 真出过：面板列出了别的 profile 装过的插件，用户在 web 里卸载了
