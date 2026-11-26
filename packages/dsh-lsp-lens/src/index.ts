@@ -1,11 +1,11 @@
 import { randomUUID } from 'node:crypto'
 import { appendFileSync } from 'node:fs'
 import { stat } from 'node:fs/promises'
-import { DirtySet } from './dirty.js'
 import { changedFiles } from './git.js'
 import { argumentPath, DEFAULT_EXTENSIONS, isSupportedPath, normalizePath, resolvePath, SHELL_TOOLS, withinRoot, WRITE_TOOLS } from './paths.js'
 import { renderFeedback } from './render.js'
 import { settleFlight, type Flight } from './flight.js'
+import { createSessionStore, type SessionState } from './sessions.js'
 import type { DiagnosticLike, FileFeedback } from './render.js'
 
 /** Cordis 插件名。 */
@@ -23,14 +23,6 @@ export interface Config {
 
 interface DecisionLike { kind?: string; content?: unknown[]; messages?: unknown[] }
 interface ExecutionLike { name?: string; arguments?: unknown; signal?: AbortSignal; agent?: unknown; workspace?: unknown }
-
-/** 一个会话的脏表与待结算项。键见 sessionKeyOf。 */
-interface SessionState {
-  readonly dirty: DirtySet
-  readonly pendingShell: Set<string>
-  readonly backgroundJobs: Map<string, string>
-  readonly inFlight: Map<string, Flight>
-}
 
 /** 观测候选的存活时间：过了这么久还没被任何会话认领，就没必要留着。 */
 const OBSERVED_TTL_MS = 10 * 60_000
@@ -126,7 +118,7 @@ export function apply(ctx: any, config: Config = {}): void {
   } catch { jobsRegistry = null }
 
   /** 会话作用域的脏表。一个 profile 里多个会话共用一个插件实例，不能共用一张表。 */
-  const sessions = new Map<string, SessionState>()
+  const sessions = createSessionStore()
   /** `fs/observed` 不带会话，先落进程级候选池，pre-step 用当前会话根分流。 */
   const observed = new Map<string, { version: string; at: number }>()
   let warnedMissingMessage = false
@@ -137,14 +129,7 @@ export function apply(ctx: any, config: Config = {}): void {
   // shortcut: 没有可靠的会话销毁事件，这张表只增不减。一个会话一张 DirtySet（含
   // 最多 2000 条锁定记忆），长跑进程里会话极多时会累积；升级条件是宿主提供 agent
   // 释放钩子。
-  const stateOf = (key: string): SessionState => {
-    let state = sessions.get(key)
-    if (state === undefined) {
-      state = { dirty: new DirtySet(), pendingShell: new Set(), backgroundJobs: new Map(), inFlight: new Map() }
-      sessions.set(key, state)
-    }
-    return state
-  }
+  const stateOf = (key: string): SessionState => sessions.of(key)
 
   /**
    * 发起一次诊断，不等待。控制器自持：pre-step 返回后宿主的 signal 可能被中止，
@@ -321,12 +306,6 @@ export function apply(ctx: any, config: Config = {}): void {
   })
 
   ctx.effect(() => () => {
-    for (const state of sessions.values()) {
-      state.dirty.clear()
-      state.pendingShell.clear()
-      state.backgroundJobs.clear()
-      state.inFlight.clear()
-    }
     sessions.clear()
     observed.clear()
     try { offPost() } catch { /* 退订失败不影响释放 */ }

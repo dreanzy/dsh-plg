@@ -21,7 +21,7 @@ if (flight.result !== null) feedback.push(flight.result)
 
 决定：把判定抽成 `flight.ts` 里的 `settleFlight(flight, step, now)`，返回四档之一——`pending` / `stale` / `take` / `empty`。它是纯函数：只读 `flight` 的三个时间字段与 `done`，不看表、不删项、不记日志。`apply` 的循环因此变成「判一次、按档处置」。
 
-**不抽的是飞行表本身。** `Map<会话键, SessionState>` 挂在 `apply` 的闭包里，因为它是会话作用域的——抽出去就要把 `stateOf` 一起搬，而 `stateOf` 的懒建与会话键的解析耦合在宿主事件上。
+**表本身在第二步抽了出去。** `Map<会话键, SessionState>` 原先挂在 `apply` 的闭包里；同一轮后续提交把它做成 `sessions.ts` 的 `createSessionStore()`（`of` / `size` / `clear`）。它抽得动，是因为「表的语义」与「什么时候读表」是两件事：前者是会话作用域的数据容器，后者是 pre-step 的调度时机。这一步只搬前者，`apply` 的读表、写表、结算时机与之前逐字一致。
 
 ## 考虑过的替代方案
 
