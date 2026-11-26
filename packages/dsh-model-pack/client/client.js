@@ -1170,10 +1170,21 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * 已知工作区：从会话列表里取 cwd，去重、按最近更新排序。
+     * 工作区清单的比较键：归一化后的路径。大小写不敏感、数字按自然序
+     * （`proj2` 在 `proj10` 前），中文目录按拼音。
      *
-     * 这是「当前工作区」的唯一来源——插件页是全局页面，没有会话上下文；
-     * 最近更新的根会话所在目录就是用户正在看的那一个。
+     * 清单是全局的：排序与当前会话、当前目录无关，同一批目录每次排成同一个序。
+     */
+    function compareCwd(left, right) {
+      const order = left.localeCompare(right, 'zh', { numeric: true, sensitivity: 'base' })
+      return order !== 0 ? order : left < right ? -1 : left > right ? 1 : 0
+    }
+
+    /**
+     * 已知工作区：从会话列表里取 cwd，去重后按路径排序。
+     *
+     * `currentCwd` 只给 chip 与 composer 标签用：按 sessionId 显式解析，
+     * 找不到时退回最近更新的根会话；它不参与清单排序。
      * 拿不到会话时返回空列表：面板仍能编辑 pack，只是不能绑定。
      */
     async function listWorkspaces(host, sessionId) {
@@ -1188,43 +1199,47 @@ window.__ModuleLoader__.load({
       if (!result || result.ok !== true) return { currentCwd: null, cwds: [] }
       const items = result.value && Array.isArray(result.value.items) ? result.value.items : []
       const roots = items.filter((item) => item && typeof item.cwd === 'string' && item.cwd !== '' && item.origin !== 'subagent')
-      // 当前会话的目录优先。只看「最近更新」会绑错：切到新工作区后，旧会话可能
-      // 仍是最新更新的那一个，用户看到的就是上一个目录。
-      let pinned = null
+      let currentCwd = null
       if (typeof sessionId === 'string' && sessionId !== '') {
         for (const item of roots) {
           const id = item.sessionId ?? item.id ?? (item.session && item.session.id)
           if (id === sessionId) {
-            pinned = item.cwd
+            currentCwd = item.cwd
             break
           }
         }
       }
-      // 其余按最近更新排序：用户刚在哪个目录里干活，哪个就排在后面。
-      roots.sort((a, b) => (Number(b.updatedAt) || 0) - (Number(a.updatedAt) || 0))
+      if (currentCwd === null) {
+        let latest = null
+        for (const item of roots) {
+          if (latest === null || (Number(item.updatedAt) || 0) > (Number(latest.updatedAt) || 0)) latest = item
+        }
+        currentCwd = latest === null ? null : latest.cwd
+      }
       // 不在这里截断：工作区页要能管理全部绑定，截断只属于模型位缓存那一处。
       const cwds = []
-      if (pinned !== null) cwds.push(pinned)
+      const seen = {}
       for (const item of roots) {
-        if (cwds.indexOf(item.cwd) < 0) cwds.push(item.cwd)
+        const key = normalizeCwd(item.cwd)
+        if (key === null || seen[key] === true) continue
+        seen[key] = true
+        cwds.push(item.cwd)
       }
-      return { currentCwd: cwds.length > 0 ? cwds[0] : null, cwds: cwds }
+      cwds.sort((a, b) => compareCwd(normalizeCwd(a), normalizeCwd(b)))
+      return { currentCwd: currentCwd, cwds: cwds }
     }
 
     /**
      * 读面板数据：一次 read 就够。
      *
-     * 绑定表（`state.bindings`）与 cwd 无关——它读的是同一份 workspaces.json，
-     * 一次 read 就带回全部工作区的绑定。cwd 只决定 `state.binding` /
-     * `state.packId` / `resolved` 算哪一条，所以传当前会话的目录。
-     *
-     * 旧契约下每个目录要各 read 一次才能拼出绑定表，那是服务端没有绑定表时的权宜；
-     * 现在多读只会多几次请求，还会让「当前工作区」与列表里的行对不上。
+     * 设置页是全局视图：read 不带 cwd，不按任何目录求值。绑定表
+     * （`state.bindings`）本来也与 cwd 无关——它读的是同一份 workspaces.json，
+     * 一次 read 就带回全部工作区的绑定。
      */
     async function loadPanel(host) {
       const listing = await listWorkspaces(host, env.sessionId)
-      const data = await api.read(listing.currentCwd)
-      return { data: data, currentCwd: listing.currentCwd, cwds: listing.cwds }
+      const data = await api.read(null)
+      return { data: data, cwds: listing.cwds }
     }
 
     /**
@@ -1237,7 +1252,6 @@ window.__ModuleLoader__.load({
       const [state, setState] = useState({
         phase: 'loading',
         data: null,
-        currentCwd: null,
         cwds: [],
         error: null,
       })
@@ -1251,7 +1265,7 @@ window.__ModuleLoader__.load({
           try {
             const loaded = await loadPanel(host)
             if (!alive) return
-            setState({ phase: 'ready', data: loaded.data, currentCwd: loaded.currentCwd, cwds: loaded.cwds, error: null })
+            setState({ phase: 'ready', data: loaded.data, cwds: loaded.cwds, error: null })
           } catch (failure) {
             if (!alive) return
             setState((prev) => ({ ...prev, phase: 'error', error: String(failure && failure.message ? failure.message : failure) }))
@@ -1268,14 +1282,13 @@ window.__ModuleLoader__.load({
        * 返回新状态而不是再 read 一次：`apply` 的响应就是落盘后重读的完整视图，
        * 多一次 read 既慢又可能读到别人刚写的中间态。调用方拿它反查新建的 pack id。
        *
-       * body 的 cwd 恒取当前工作区：命令自带 cwd（bind），
-       * 这个 cwd 只决定回读哪一条绑定——不带的话返回的 `state.binding` 是 null，
-       * 界面会闪一下「未绑定」。
+       * 设置页是全局视图：不带 cwd。命令自带 cwd（bind），回读的
+       * `state.binding` 是哪条不参与渲染。
        */
       const run = useCallback(
         async (commands) => {
           try {
-            const data = await api.apply(state.currentCwd, commands)
+            const data = await api.apply(null, commands)
             setState((prev) => ({ ...prev, phase: 'ready', data: data, error: null }))
             // 绑定与名册改动要把 chip 和模型位标签一起更新：两处都在会话页，与设置页
             // 之间没有通道，只能在这里主动重读。模型位那条缓存不失效的话，用户改完
@@ -1300,7 +1313,7 @@ window.__ModuleLoader__.load({
             return null
           }
         },
-        [host, state.currentCwd],
+        [host],
       )
 
       /**
@@ -2829,8 +2842,8 @@ window.__ModuleLoader__.load({
        */
       const wanted = useRef(null)
 
-      const preview = useCallback((commands) => api.apply(state.currentCwd, commands, true), [state.currentCwd])
-      const apply = useCallback((commands) => api.apply(state.currentCwd, commands), [state.currentCwd])
+      const preview = useCallback((commands) => api.apply(null, commands, true), [])
+      const apply = useCallback((commands) => api.apply(null, commands), [])
       const pending = usePending({ preview: preview, apply: apply, onApplied: accept })
 
       const base = state.data
@@ -2848,7 +2861,8 @@ window.__ModuleLoader__.load({
       const support = (data && data.support) || {}
 
       /**
-       * 绑定列表：会话来的目录在前，绑定表里多出来的目录在后，按归一化键去重。
+       * 绑定列表：会话来的目录与绑定表里多出来的目录合并，按归一化键去重，
+       * 再按路径排序——一页只该有一个顺序。
        *
        * 绑定表里可能有会话已经删掉的目录：不列出来的话，这些绑定既看不见也解不开。
        */
@@ -2863,7 +2877,7 @@ window.__ModuleLoader__.load({
         }
         for (const cwd of state.cwds) add(cwd)
         for (const cwd of Object.keys(bindings.bindings)) add(cwd)
-        return list
+        return list.sort((a, b) => compareCwd(normalizeCwd(a), normalizeCwd(b)))
       }, [state.cwds, bindings.bindings])
 
       /**
@@ -3642,7 +3656,7 @@ window.__ModuleLoader__.load({
 
     return {
       // 测试出口：只供 test/ 断言结构与纯逻辑用，运行期不要读它。
-      __internals: { pendingKey, createQueue, frozenRank, packListOf, usePending, TABS, PackRoster, WorkspaceBoard, ChipModal, CHIP_CSS },
+      __internals: { pendingKey, createQueue, frozenRank, packListOf, usePending, listWorkspaces, TABS, PackRoster, WorkspaceBoard, ChipModal, CHIP_CSS },
       // 依赖声明照抄官方 settings-subagent：remote.session 是独立服务名，
       // 只声明 remote 拿不到它（ctx.remote.session 会是空的，模型目录读不到）。
       // 声明里少一个 → 插件停在 pending → 整个设置分区连入口都不出现。

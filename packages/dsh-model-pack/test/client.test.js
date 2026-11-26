@@ -58,7 +58,7 @@ function loadClient(platform = 'win32') {
 test('factory 暴露测试出口', () => {
   const { __internals } = loadClient()
   assert.ok(__internals, '缺少 __internals 测试出口')
-  for (const name of ["pendingKey","usePending","TABS","PackRoster","WorkspaceBoard","ChipModal","CHIP_CSS"]) assert.ok(__internals[name], '测试出口缺少 ' + name)
+  for (const name of ["pendingKey","usePending","TABS","PackRoster","WorkspaceBoard","ChipModal","CHIP_CSS","listWorkspaces"]) assert.ok(__internals[name], '测试出口缺少 ' + name)
 })
 
 test('apply 在服务缺失时只降级，不抛错', () => {
@@ -209,4 +209,30 @@ test('冻结排序：改动前的 id 序变成 rank 表，未冻结时为空', (
   assert.equal(rank.size, 2)
   assert.equal(frozenRank(undefined).size, 0, '没有冻结序时不产生 rank')
   assert.equal(frozenRank([]).size, 0)
+})
+
+test('工作区清单按路径排序，当前目录按会话解析', async () => {
+  const { listWorkspaces } = loadClient().__internals
+  const host = {
+    remote: {
+      session: {
+        list: async () => ({
+          ok: true,
+          value: {
+            items: [
+              { sessionId: 's1', cwd: 'D:/work/Zeta', updatedAt: 100 },
+              { sessionId: 's2', cwd: 'C:/Users/Ann', updatedAt: 400 },
+              { sessionId: 's3', cwd: 'D:/work/Alpha', updatedAt: 200 },
+            ],
+          },
+        }),
+      },
+    },
+  }
+  const listing = await listWorkspaces(host, 's1')
+  assert.equal(listing.cwds.join(','), 'C:/Users/Ann,D:/work/Alpha,D:/work/Zeta')
+  // 当前目录按 sessionId 取：既不读清单第一项，也不跟着最近更新走。
+  assert.equal(listing.currentCwd, 'D:/work/Zeta')
+  // 会话不在清单里时才退回最近更新的根会话。
+  assert.equal((await listWorkspaces(host, 'missing')).currentCwd, 'C:/Users/Ann')
 })

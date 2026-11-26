@@ -1643,11 +1643,24 @@ const RANK_ORDER = {
     }
 
     /**
-     * 已知工作区：从会话列表里取 cwd，排除子代理会话，按最近更新倒序去重，
-     * 当前会话所在目录置顶。取不到会话时返回空列表——面板仍能编辑 pack，
+     * 工作区清单的比较键：归一化后的路径。大小写不敏感、数字按自然序
+     * （`proj2` 在 `proj10` 前），中文目录按拼音。
+     *
+     * 清单是全局的：排序与当前会话、当前目录无关，同一批目录每次排成同一个序。
+     */
+    function compareCwd(left, right) {
+      const order = left.localeCompare(right, 'zh', { numeric: true, sensitivity: 'base' })
+      return order !== 0 ? order : left < right ? -1 : left > right ? 1 : 0
+    }
+
+    /**
+     * 已知工作区：从会话列表里取 cwd，排除子代理会话，按路径去重排序。
+     *
+     * 截断仍按最近使用取舍：先按 `updatedAt` 倒序取前 MAX_WORKSPACES 条，
+     * 展示序只由路径决定。取不到会话时返回空列表——面板仍能编辑 pack，
      * 只是工作区页会显示「还没有开过会话的目录」。
      */
-    async function listWorkspaceCwds(host, sessionId) {
+    async function listWorkspaceCwds(host) {
       const session = host && host.remote ? host.remote.session : null
       if (!session || typeof session.list !== 'function') return []
       let result
@@ -1661,24 +1674,17 @@ const RANK_ORDER = {
       const roots = items.filter(
         (item) => item && typeof item.cwd === 'string' && item.cwd !== '' && item.origin !== 'subagent',
       )
-      let pinned = null
-      if (typeof sessionId === 'string' && sessionId !== '') {
-        for (const item of roots) {
-          const id = item.sessionId ?? item.id ?? (item.session && item.session.id)
-          if (id === sessionId) {
-            pinned = item.cwd
-            break
-          }
-        }
-      }
       roots.sort((a, b) => (Number(b.updatedAt) || 0) - (Number(a.updatedAt) || 0))
       const cwds = []
-      if (pinned !== null) cwds.push(pinned)
+      const seen = {}
       for (const item of roots) {
-        if (cwds.indexOf(item.cwd) < 0) cwds.push(item.cwd)
+        const key = normalizeCwd(item.cwd)
+        if (key === null || seen[key] === true) continue
+        seen[key] = true
+        cwds.push(item.cwd)
         if (cwds.length >= MAX_WORKSPACES) break
       }
-      return cwds
+      return cwds.sort((a, b) => compareCwd(normalizeCwd(a), normalizeCwd(b)))
     }
 
     // ---------- 面板 ----------
@@ -3154,7 +3160,7 @@ const RANK_ORDER = {
       useEffect(() => {
         let alive = true
         setSettled(false)
-        listWorkspaceCwds(host, env.sessionId).then(
+        listWorkspaceCwds(host).then(
           (list) => {
             if (!alive) return
             setCwds(list)
@@ -3276,7 +3282,7 @@ const RANK_ORDER = {
 
     return {
       // 测试出口：只供 test/ 断言结构与纯逻辑用，运行期不要读它。
-      __internals: { pendingKey, createQueue, frozenGroupNames, usePending, orderPacks, TABS, GroupsPage, PackSettings, WorkspacePage, PendingBar, CHIP_CSS },
+      __internals: { pendingKey, createQueue, frozenGroupNames, usePending, orderPacks, listWorkspaceCwds, TABS, GroupsPage, PackSettings, WorkspacePage, PendingBar, CHIP_CSS },
       // `remote` 与 `remote.session` 都是独立服务名：只声明 `remote` 拿不到 session。
       // 声明是「服务在不在 ctx 上」的唯一开关；取用仍要 try/catch（ctx.get 对取不到的
       // 已声明服务会抛错）。缺了这两个，工作区页读不到任何目录。

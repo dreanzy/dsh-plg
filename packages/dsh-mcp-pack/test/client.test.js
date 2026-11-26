@@ -58,7 +58,7 @@ function loadClient(platform = 'win32') {
 test('factory 暴露测试出口', () => {
   const { __internals } = loadClient()
   assert.ok(__internals, '缺少 __internals 测试出口')
-  for (const name of ["pendingKey","usePending","TABS","GroupsPage","PackSettings","WorkspacePage","PendingBar","CHIP_CSS"]) assert.ok(__internals[name], '测试出口缺少 ' + name)
+  for (const name of ["pendingKey","usePending","TABS","GroupsPage","PackSettings","WorkspacePage","PendingBar","CHIP_CSS","listWorkspaceCwds"]) assert.ok(__internals[name], '测试出口缺少 ' + name)
 })
 
 test('apply 在服务缺失时只降级，不抛错', () => {
@@ -165,4 +165,41 @@ test('冻结排序：待保存期间沿用改动前的组名，未冻结时返�
   assert.equal(map.get('g2'), 'beta')
   assert.equal(frozenGroupNames(null, true).size, 0, '没有 base 也不能抛')
   assert.equal(frozenGroupNames({}, true).size, 0)
+})
+
+test('工作区清单按路径排序，与最近更新无关', async () => {
+  const { listWorkspaceCwds } = loadClient().__internals
+  const host = {
+    remote: {
+      session: {
+        list: async () => ({
+          ok: true,
+          value: {
+            items: [
+              { sessionId: 's1', cwd: 'D:/work/Zeta', updatedAt: 300 },
+              { sessionId: 's2', cwd: 'C:/Users/Ann', updatedAt: 100 },
+              { sessionId: 's3', cwd: 'D:/work/Alpha', updatedAt: 200 },
+              // 同一目录的另一种写法：只留一条，取最近更新的那条。
+              { sessionId: 's4', cwd: 'd:/work/alpha', updatedAt: 50 },
+            ],
+          },
+        }),
+      },
+    },
+  }
+  const cwds = await listWorkspaceCwds(host)
+  assert.equal(cwds.join(','), 'C:/Users/Ann,D:/work/Alpha,D:/work/Zeta')
+})
+
+test('工作区清单截断按最近使用取舍，展示仍按路径', async () => {
+  const { listWorkspaceCwds } = loadClient().__internals
+  const items = []
+  for (let index = 0; index < 31; index += 1) {
+    items.push({ sessionId: 's' + index, cwd: 'C:/w/' + String(index).padStart(2, '0'), updatedAt: index })
+  }
+  const host = { remote: { session: { list: async () => ({ ok: true, value: { items } }) } } }
+  const cwds = await listWorkspaceCwds(host)
+  assert.equal(cwds.length, 30)
+  assert.equal(cwds[0], 'C:/w/01', '最早用过的目录被截掉，剩下的仍从路径最小开始')
+  assert.equal(cwds.includes('C:/w/00'), false)
 })
