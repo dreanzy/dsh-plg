@@ -1630,4 +1630,4 @@
           console.error('dsh-skill-pack: 客户端初始化失败', error)
         }
       },
-    }
+    }

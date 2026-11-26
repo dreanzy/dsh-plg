@@ -74,63 +74,49 @@ const SERVER_LAYERS = [
 const CLIENT = [
   {
     name: '分包页读工作区字段（row.itemWorkspace）',
-    file: 'packages/dsh-skill-pack/client/client.js',
+    file: 'packages/dsh-skill-pack/client/panel.js',
     from: '                const value = packItemOf(pack, row.name)',
     to: '                const value = row.itemWorkspace',
   },
   {
     name: '分包页 isDefault 判 sortPack === null',
-    file: 'packages/dsh-skill-pack/client/client.js',
+    file: 'packages/dsh-skill-pack/client/panel.js',
     from: 'packRankOf(packItemOf(sortPack, row.name), isDefault, landingOf(sortPack, sortDefault, row.name, gid))',
     to: 'packRankOf(packItemOf(sortPack, row.name), sortPack === null, landingOf(sortPack, sortDefault, row.name, gid))',
   },
   {
-    name: '分组显示值读冻结视图（groupRanks）',
-    file: 'packages/dsh-skill-pack/client/client.js',
-    lines: [2558, 2561],
-    repl: [
-      '                const rank = groupRanks[group.id]',
-      '                const value =',
-      "                  rank === 'explicit-on' ? true : rank === 'explicit-off' ? false : null",
-      "                const inherited = rank === 'follow-off' ? false : true",
-    ],
-  },
-  {
-    // 新建后不记下改动前的 id 集合，试算视图里就认不出哪张是新包，于是不选中它。
-    // 用户接着改开关时改的是上一张 pack，新包保存下来是空的——看起来就是「新建的包丢了」。
-    // 用字面量锚点而不是行号：这个文件里加几行样式就会让行号整体下移，锚点静默失配。
     name: '新建 pack 后不自动选中',
-    file: 'packages/dsh-skill-pack/client/client.js',
-    from: '        wanted.current = new Set(packs.map((entry) => entry.id))',
-    to: '        wanted.current = new Set()',
+    file: 'packages/dsh-skill-pack/client/panel.js',
+    from: 'wanted.current = new Set(packs.map((entry) => entry.id))',
+    to: 'wanted.current = new Set()',
   },
   {
     name: '排序档位顺序对调（follow-on / follow-off）',
-    file: 'packages/dsh-skill-pack/client/client.js',
-    lines: [26, 27],
-    repl: ["  'follow-on': 3,", "  'follow-off': 2,"],
+    file: 'scripts/client-shared/panel-core.js',
+    from: "  'follow-on': 2,\n  'follow-off': 3,",
+    to: "  'follow-on': 3,\n  'follow-off': 2,",
   },
   {
     name: '三态按钮把「关」传成 null',
-    file: 'packages/dsh-skill-pack/client/client.js',
-    from: "props.onChange(option.value === 'on' ? true : option.value === 'off' ? false : null)",
-    to: "props.onChange(option.value === 'on' ? true : null)",
+    file: 'scripts/client-shared/panel-core.js',
+    from: "option.value === 'on' ? true : option.value === 'off' ? false : null",
+    to: "option.value === 'on' ? true : null",
   },
   {
-    // 待保存期间不冻结 pack 序：改一张 pack 的名字，它立刻跳到新位置，
-    // 下一次点击就落在别的 pack 上。
     name: '待保存期间不冻结 pack 序',
-    file: 'packages/dsh-skill-pack/client/client.js',
-    from: '      if (!frozen) return packs',
-    to: '      return packs',
+    file: 'scripts/client-shared/panel-core.js',
+    from: 'if (!frozen) return packs',
+    to: 'return packs',
   },
   {
-    // 对照：只改注释里的一个词。不该被任何一层抓住——被抓说明规则在数注释，或断言过宽。
+    // 对照：只改注释里的一个词。只跑渲染测试——check-panels 现在会因产物未重建而红，
+    // 那条红是「产物与源码不一致」，不是「改动被抓」，混在一起就判不出来了。
     name: '对照：只改注释里的一个词',
     expect: 'missed',
-    file: 'packages/dsh-skill-pack/client/client.js',
-    from: '工作区清单上限：会话一多，绑定表会变成一堵墙。',
-    to: '工作区清单上限：会话一多，绑定表会变成一堵很长的墙。',
+    only: ['渲染测试'],
+    file: 'packages/dsh-skill-pack/client/panel.js',
+    from: '本包的面板业务面',
+    to: '本包的面板业务面（对照）',
   },
 ]
 
@@ -231,7 +217,7 @@ function applyMutation(source, mutation) {
  * 恢复用 `finally`：变异中途抛错（编译失败、测试超时）也必须把文件写回去，
  * 否则下一次跑会基于改坏的源码，报一堆看不懂的错。
  */
-async function runGroup(label, mutations, layers, needsBuild) {
+async function runGroup(label, mutations, layers, build) {
   const results = []
   for (const mutation of mutations) {
     const path = join(ROOT, mutation.file)
@@ -245,20 +231,29 @@ async function runGroup(label, mutations, layers, needsBuild) {
     const caught = {}
     try {
       writeAtomic(path, mutated)
-      if (needsBuild) {
+      if (build === 'server') {
         const built = await run('node', [TSC, '-p', 'packages/' + pkg + '/tsconfig.json'], ROOT)
         if (built !== 0) {
           results.push({ name: mutation.name, error: '编译失败' })
           continue
         }
+      } else if (build === 'client') {
+        // 客户端变异改的是源码，测试读的是产物：不重建等于什么都没改。
+        const built = await run('node', ['scripts/build-client.mjs'], ROOT)
+        if (built !== 0) {
+          results.push({ name: mutation.name, error: '客户端构建失败' })
+          continue
+        }
       }
-      for (const layer of layers) {
+      const activeLayers = mutation.only === undefined ? layers : layers.filter((layer) => mutation.only.includes(layer.name))
+      for (const layer of activeLayers) {
         caught[layer.name] = (await layer.run(pkg)) !== 0
       }
       results.push({ name: mutation.name, expect: mutation.expect ?? 'caught', caught })
     } finally {
       writeAtomic(path, original)
-      if (needsBuild) await run('node', [TSC, '-p', 'packages/' + pkg + '/tsconfig.json'], ROOT)
+      if (build === 'server') await run('node', [TSC, '-p', 'packages/' + pkg + '/tsconfig.json'], ROOT)
+      else if (build === 'client') await run('node', ['scripts/build-client.mjs'], ROOT)
     }
   }
   return results
@@ -266,8 +261,8 @@ async function runGroup(label, mutations, layers, needsBuild) {
 
 const which = process.argv[2]
 const groups = []
-if (which === undefined || which === 'client') groups.push(['客户端', CLIENT, CLIENT_LAYERS, false])
-if (which === undefined || which === 'server') groups.push(['服务端', SERVER, SERVER_LAYERS, true])
+if (which === undefined || which === 'client') groups.push(['客户端', CLIENT, CLIENT_LAYERS, 'client'])
+if (which === undefined || which === 'server') groups.push(['服务端', SERVER, SERVER_LAYERS, 'server'])
 
 if (groups.length === 0) {
   console.error('用法：node scripts/mutation.mjs [client|server]')

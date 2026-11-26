@@ -1,10 +1,46 @@
 /**
  * 由 scripts/build-client.mjs 生成，不要手改。
- * 源码：scripts/client-shared/panel-core.js + packages/dsh-skill-pack/client/panel.js
+ * 源码：packages/dsh-skill-pack/client/prelude.js + scripts/client-shared/panel-core.js + packages/dsh-skill-pack/client/panel.js
  */
 window.__ModuleLoader__.load({
   id: '@dreanzy/dsh-skill-pack',
   factory(require) {
+/**
+ * 本包给共享层的取值。
+ *
+ * 四个包的骨架同构，但有几处值必须不同：chip 上的缩写、残留键的种类名、承载
+ * 「显示官方项」的字段名，以及各包在 `T` / `S` 上追加的样式键。这些不进共享层，
+ * 因为它们是各包对外的口径（见 ADR-0017）。
+ *
+ * 拼接顺序：本文件 → panel-core.js → panel.js。这里只声明共享层要读的常量，
+ * 不放业务代码。
+ */
+
+/**
+ * 未绑定 pack 时 chip 上的字。
+ *
+ * 固定英文小写、三字母、去元音（skill→skl、plugin→plg、model→mdl；mcp 本就是
+ * 念字母的专名，恰好同形）。不随宿主语言：这四个是领域标识符，不是句子，
+ * 中文界面下缩写比中文译名更准，四个 chip 也等长。全名留在 title 里。
+ */
+const CHIP_LABEL = 'skl'
+
+/** 残留键里「能力项」这一类的名字：skill 叫技能、plugin 叫插件、mcp 叫行。 */
+const STALE_ITEM_LABEL = '技能'
+
+/** `ui` 段里「显示官方项」的字段名。四包的开关语义相同，只是历史键名不同。 */
+const SHOW_OFFICIAL_FIELD = 'showOfficialSkills'
+
+/** `ui` 段缺席时的缺省值。 */
+const UI_DEFAULTS = { showChip: true, defaultTab: 'groups' }
+
+/** 本包在共享样式表 `T` 上追加的键。函数形式避免在 `T` 初始化前引用它。 */
+const T_EXTRA = () => ({})
+
+/** 本包在共享样式表 `S` 上追加的键。 */
+const S_EXTRA = () => ({})
+
+
 /**
  * 面板共享层：四个 pack 面板共用的传输、样式、基础组件与宿主接线。
  *
@@ -13,7 +49,10 @@ window.__ModuleLoader__.load({
  * `skill-pack` 是 API 路径段（`skill-pack`）。
  *
  * 约定：不含 import/export，只声明本文件内部使用的 const 与 function；业务页面留在各包的
- * `client/panel.js` 里，按同一套顺序拼接在它后面。
+ * `client/panel.js` 里。拼接顺序是 `client/prelude.js` → 本文件 → `panel.js`：
+ * prelude 提供各包唯一有意不同的几个值（chip 缩写、残留键种类名、官方项字段名、
+ * `T` / `S` 的追加样式键）。追加样式键是函数而不是对象：prelude 在本文件之前，
+ * 写成对象会在引用 `T` 时撞上 TDZ。
  */
 
     const React = require('react')
@@ -195,6 +234,8 @@ const RANK_ORDER = {
        * 做法（pack 行就是浅底），也不会和任何文字抢位置。
        */
       pendingBg: PENDING_BG,
+      // 各包追加的样式键（见 client/prelude.js 的 T_EXTRA）。
+      ...T_EXTRA(),
     }
 
     const S = {
@@ -510,6 +551,8 @@ const RANK_ORDER = {
        * 必须落在真正被裁的那个 flex item 上，且 `min-width: 0` 才肯缩。
        */
       chipText: { minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+      // 各包追加的样式键（见 client/prelude.js 的 S_EXTRA）。
+      ...S_EXTRA(),
     }
 
     /**
@@ -548,14 +591,7 @@ const RANK_ORDER = {
     }
     const chipName = createSignal(null)
 
-    /**
-     * 未绑定 pack 时 chip 上的字。
-     *
-     * 固定英文小写、三字母、去元音（skill→skl、plugin→plg、model→mdl；mcp 本就是
-     * 念字母的专名，恰好同形）。不随宿主语言：这四个是领域标识符，不是句子，
-     * 中文界面下缩写比中文译名更准，四个 chip 也等长。全名留在 title 里。
-     */
-    const CHIP_LABEL = 'skl'
+    // CHIP_LABEL 来自 `client/prelude.js`：chip 上的缩写是各包对外的口径。
 
     // ---------- 基础组件 ----------
 
@@ -593,8 +629,8 @@ const RANK_ORDER = {
       )
     }
 
-    /** 残留键的种类标签。键空间不同，混着显示用户分不清是 skill 还是组。 */
-    const STALE_KIND_LABEL = { item: '技能', group: '分组', assignment: '归属' }
+    /** 残留键的种类标签。键空间不同，混着显示用户分不清是能力项还是组。 */
+    const STALE_KIND_LABEL = { item: STALE_ITEM_LABEL, group: '分组', assignment: '归属' }
 
     /**
      * 残留键的提示与清理入口。
@@ -1448,7 +1484,7 @@ const RANK_ORDER = {
     function uiOf(view) {
       if (!view) return null
       if (view.ui) return view.ui
-      return { showOfficialSkills: false, showChip: true, defaultTab: 'groups' }
+      return { [SHOW_OFFICIAL_FIELD]: false, ...UI_DEFAULTS }
     }
 
     /**

@@ -37,31 +37,37 @@ export async function buildOne(pkgDir, options = {}) {
   const pkgRoot = join(ROOT, 'packages', pkgDir)
   const manifest = JSON.parse(await readFile(join(pkgRoot, 'package.json'), 'utf8'))
   const core = await readFile(SHARED, 'utf8')
+  const prelude = await readFile(join(pkgRoot, 'client', 'prelude.js'), 'utf8')
   const panel = await readFile(join(pkgRoot, 'client', 'panel.js'), 'utf8')
 
   assert(!/^\s*import\s/mu.test(core), 'panel-core.js 不能含 import')
   assert(!/^\s*export\s/mu.test(core), 'panel-core.js 不能含 export')
   assert(!/^\s*export\s/mu.test(panel), pkgDir + '/panel.js 不能含 export')
 
+  // 源文件行尾不统一（历史遗留的 CRLF 与新增的 LF 并存），产物一律出 LF。
+  const normalize = (text) => text.replaceAll('\r\n', '\n')
   const short = pkgDir.replace(/^dsh-/u, '')
-  const filled = core.replaceAll('__PREFIX__', pkgDir).replaceAll('__PACK__', short)
+  const filled = normalize(core).replaceAll('__PREFIX__', pkgDir).replaceAll('__PACK__', short)
 
   const out = [
     '/**',
     ' * 由 scripts/build-client.mjs 生成，不要手改。',
-    ' * 源码：scripts/client-shared/panel-core.js + packages/' + pkgDir + '/client/panel.js',
+    ' * 源码：packages/' + pkgDir + '/client/prelude.js + scripts/client-shared/panel-core.js + packages/' + pkgDir + '/client/panel.js',
     ' */',
     'window.__ModuleLoader__.load({',
     "  id: '" + manifest.name + "',",
     '  factory(require) {',
+    normalize(prelude),
+    '',
     filled,
     '',
-    panel,
+    normalize(panel),
     '  },',
     '})',
     '',
   ].join('\n')
 
+  assert(out.includes('const CHIP_LABEL'), 'prelude 没有提供 CHIP_LABEL')
   assert(!out.includes('__PREFIX__'), '占位符 __PREFIX__ 没有被替换')
   assert(!out.includes('__PACK__'), '占位符 __PACK__ 没有被替换')
   assert(out.includes('window.__ModuleLoader__.load('), '产物缺少加载器外壳')

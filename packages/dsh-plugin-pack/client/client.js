@@ -1,32 +1,131 @@
 /**
- * 浏览器半边。手写单文件：宿主用 `require('react')` 提供 React，
- * 因此不引入 JSX、CSS Modules 或打包器，避免给这个仓库加第二套构建链。
- *
- * 结构照抄 `dsh-skill-pack`：设置页三页（分组 | 分包 | 工作区），chip 是当前工作区
- * 绑定 pack 的摘要与切换入口。本包的差异只有两处：
- *
- *   1. 管理对象是插件**包名**，不是 skill 名；
- *   2. 生效路径是「摘掉该插件注册的工具 + 剔除它注入的提示词段」——面板里关于
- *      失效的措辞按这条如实写，不套用「模型看不见」这种笼统说法。插件进程本身
- *      不会被卸载。
- *
- * 求值链只有服务端一份（`src/effective.ts`）：行上带 `open` / `itemWorkspace` /
- * `itemGlobal` / `decidedBy`。这里不重算链，只把各层原始记录拼成显示态
- * （覆盖 / 跟随）并画出来，命令仍只发原始三态值。
- *
- * 「跟随」与「写了个同值」是两件事：跟随看的是 pack 里有没有这条键，不是值比没比平。
+ * 由 scripts/build-client.mjs 生成，不要手改。
+ * 源码：packages/dsh-plugin-pack/client/prelude.js + scripts/client-shared/panel-core.js + packages/dsh-plugin-pack/client/panel.js
  */
 window.__ModuleLoader__.load({
   id: '@dreanzy/dsh-plugin-pack',
   factory(require) {
+/**
+ * 本包给共享层的取值（见 ADR-0017）。
+ *
+ * 拼接顺序：本文件 → panel-core.js → panel.js。
+ */
+
+/** 未绑定 pack 时 chip 上的字：plugin → plg。 */
+const CHIP_LABEL = 'plg'
+
+/** 残留键里「能力项」这一类的名字：plugin 关的是插件，所以叫插件。 */
+const STALE_ITEM_LABEL = '插件'
+
+/** `ui` 段里「显示官方项」的字段名。 */
+const SHOW_OFFICIAL_FIELD = 'showOfficialPlugins'
+
+/** `ui` 段缺席时的缺省值。 */
+const UI_DEFAULTS = { showChip: true, defaultTab: 'groups' }
+
+/** 本包在共享样式表 `T` 上追加的键。 */
+const T_EXTRA = () => ({ accent: 'var(--dsw-alias-state-business-primary, #4176e6)' })
+
+/** 本包在共享样式表 `S` 上追加的键：核心层没有的 8 个。 */
+const S_EXTRA = () => ({
+      action: {
+        padding: '4px 10px',
+        cursor: 'pointer',
+        borderRadius: '6px',
+        border: '1px solid ' + T.border,
+        background: 'transparent',
+        color: T.text,
+        fontSize: '12px',
+        lineHeight: 1.4,
+        whiteSpace: 'nowrap',
+      },
+      badgeWarn: {
+        fontSize: '11px',
+        padding: '1px 6px',
+        borderRadius: '999px',
+        background: 'transparent',
+        border: '1px solid ' + T.error,
+        color: T.error,
+        whiteSpace: 'nowrap',
+      },
+      button: (primary) => ({
+        border: primary ? 0 : '1px solid ' + T.border,
+        borderRadius: '6px',
+        padding: '5px 10px',
+        fontSize: '12px',
+        cursor: 'pointer',
+        background: primary ? T.accent : 'transparent',
+        color: primary ? T.onAccent : T.text,
+      }),
+      confirmNames: {
+        marginTop: '8px',
+        maxHeight: '180px',
+        overflow: 'auto',
+        fontFamily: 'ui-monospace, monospace',
+        fontSize: '12px',
+        color: T.text,
+        border: '1px solid ' + T.border,
+        borderRadius: '6px',
+        padding: '6px 8px',
+        lineHeight: 1.7,
+        whiteSpace: 'pre-wrap',
+        wordBreak: 'break-all',
+      },
+      /**
+       * 吸顶的区块标题。
+       *
+       * 分包页第二块有几百行，滚到中段时「包内开关：哪张 pack」早就滚出视口了，
+       * 而这一块每一行都在往这张 pack 里写决定。标题跟着滚走等于让人盲改。
+       * `top: 0` 相对最近的滚动祖先（宿主的设置弹层内容区）；要是宿主自己也吸顶，
+       * 这里会被压住——那就只能退回不吸顶，别硬加偏移量去猜。
+       */
+      probeFail: {
+        marginTop: '8px',
+        padding: '6px 10px',
+        borderRadius: '6px',
+        border: '1px solid ' + T.error,
+        background: 'rgba(192,57,43,0.10)',
+        color: T.error,
+        fontSize: '12px',
+        lineHeight: 1.6,
+      },
+      rowMeta: { color: T.dim, fontSize: '11px', marginTop: '2px' },
+      settingRow: {
+        display: 'flex',
+        alignItems: 'center',
+        gap: '12px',
+        padding: '10px 0',
+        borderTop: '1px solid ' + T.border,
+      },
+      stat: {
+        fontSize: '12px',
+        color: T.text,
+        padding: '2px 8px',
+        borderRadius: '999px',
+        border: '1px solid ' + T.border,
+        whiteSpace: 'nowrap',
+      },
+})
+
+
+/**
+ * 面板共享层：四个 pack 面板共用的传输、样式、基础组件与宿主接线。
+ *
+ * 这份文件不是模块，它在构建期被内联进每个包的 `client.js`（见 scripts/build-client.mjs 与
+ * ADR-0017）。两个占位符由构建器替换：`dsh-plugin-pack` 是 CSS 类名前缀（`dsh-skill-pack`），
+ * `plugin-pack` 是 API 路径段（`skill-pack`）。
+ *
+ * 约定：不含 import/export，只声明本文件内部使用的 const 与 function；业务页面留在各包的
+ * `client/panel.js` 里。拼接顺序是 `client/prelude.js` → 本文件 → `panel.js`：
+ * prelude 提供各包唯一有意不同的几个值（chip 缩写、残留键种类名、官方项字段名、
+ * `T` / `S` 的追加样式键）。追加样式键是函数而不是对象：prelude 在本文件之前，
+ * 写成对象会在引用 `T` 时撞上 TDZ。
+ */
+
     const React = require('react')
     const h = React.createElement
     const { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } = React
 
-    const PANEL_ID = 'plugin-pack'
-    const CHIP_ID = 'plugin-pack-chip'
-    const MODAL_ID = 'plugin-pack-chip-modal'
-    const TITLE = 'Plugin Pack'
     /** 内置 pack 的 id。未绑定的工作区按它求值。 */
     const DEFAULT_PACK_ID = 'default'
 
@@ -42,24 +141,18 @@ const RANK_ORDER = {
 }
     /** 工作区清单上限：会话一多，绑定表会变成一堵墙。 */
     const MAX_WORKSPACES = 30
-
     /**
-     * 两个分区按来源切，不参与求值，也不能当开关单位。
-     *
-     * 只做行内徽章，不做列表分区：分包页的主轴是「开 > 关 > 跟随」，
-     * 再按来源切一刀，同一个开关就会有两套排序口径。
-     */
-    const SECTION_TITLE = { official: '官方', profile: '第三方' }
-
-    /**
-     * chip 文字隐藏的断点。
+     * chip 的容器查询断点与两态交互样式。
      *
      * 宿主输入框底栏 `.row` 声明了 `container-type: inline-size`，并用
-     * `@container (width <= 560px)` 控制这一带按钮的间距。跟随同一个断点，
-     * chip 就和官方那几个按钮同步折叠，而不是各自算一套阈值。
+     * `@container (width <= 560px)` 控制这一带按钮的间距。chip 的字号与图标
+     * 对齐官方控件后整体变宽，断点相应上调到 640px，仍与官方同步折叠。
      *
      * 用 CSS 容器查询而不是 JS 量宽：插槽把 chip 包在一个与它等宽的容器里，
      * 量父级永远偏小；往上找祖先又依赖具体层级，两种做法都会误判。
+     *
+     * hover 与 focus 只能写在 CSS 里：内联 style 表达不了伪类。两态各抄官方
+     * 对应控件——默认态用 ModelSelect trigger 的 hover，绑定态用 PlanChip 的。
      */
     const CHIP_CSS =
       '.dsh-plugin-pack-chip { border: 1px solid var(--dsw-alias-border-l1, rgba(127,127,127,0.35)); background: transparent; color: var(--dsw-alias-label-secondary, GrayText); font-weight: 400 }' +
@@ -68,16 +161,6 @@ const RANK_ORDER = {
       '.dsh-plugin-pack-chip[data-bound="true"]:hover { background: color-mix(in srgb, var(--dsw-alias-state-business-tertiary), var(--dsw-alias-state-business-primary) 6%) }' +
       '.dsh-plugin-pack-chip:focus-visible { outline: var(--dsw-focus-ring-width, 2px) solid var(--dsw-alias-state-business-primary); outline-offset: 2px }' +
       '@container (max-width: 640px) { .dsh-plugin-pack-chip-text { display: none } }'
-
-    /**
-     * 待保存行的底色。
-     *
-     * 原先用左侧 `inset` 竖条，真机上它紧贴行首的箭头与文字，`inset` 阴影又没法
-     * 给文字让出间距，压字比不标更糟。改成整行浅底：与官方标记「当前项」同一套
-     * 做法（pack 行就是浅底），也不会和任何文字抢位置。
-     */
-    const PENDING_BG =
-      'color-mix(in srgb, var(--dsw-alias-state-business-tertiary, rgba(65,118,230,0.16)) 55%, transparent)'
 
     /**
      * 面板按钮与待保存标记的样式。
@@ -90,6 +173,16 @@ const RANK_ORDER = {
      * `--dsw-alias-interactive-bg-hover-danger`。官方二次确认是弹窗，这里压成行内两段，
      * 所以只换底色与字重、不加描边；加重靠底色，靠描边会像被框住的一块错误。
      */
+    /**
+     * 待保存行的底色。
+     *
+     * 原先用左侧 `inset` 竖条，真机上它紧贴行首的箭头与文字，`inset` 阴影又没法
+     * 给文字让出间距，压字比不标更糟。改成整行浅底：与官方标记「当前项」同一套
+     * 做法（pack 行就是浅底），也不会和任何文字抢位置。
+     */
+    const PENDING_BG =
+      'color-mix(in srgb, var(--dsw-alias-state-business-tertiary, rgba(65,118,230,0.16)) 55%, transparent)'
+
     const PANEL_CSS =
       '.dsh-plugin-pack-btn { transition: background 120ms ease, border-color 120ms ease, color 120ms ease }' +
       '.dsh-plugin-pack-btn-secondary { border-color: var(--dsw-alias-border-l1, rgba(127,127,127,0.3)); background: transparent; color: var(--dsw-alias-label-primary, inherit) }' +
@@ -120,7 +213,6 @@ const RANK_ORDER = {
       '.dsh-plugin-pack-row[data-state="current"] { background: rgba(127,127,127,0.16) }' +
       '.dsh-plugin-pack-row[data-state="pending"] { background: ' + PENDING_BG + ' }'
 
-    // ---------- 传输 ----------
 
     const PATHS = {
       global: '/api/plugin-pack/global',
@@ -128,10 +220,6 @@ const RANK_ORDER = {
       apply: '/api/plugin-pack/apply',
     }
 
-    /**
-     * 三路由共用一套信封：{ ok: true, value } 或 { ok: false, error }。
-     * HTTP 状态恒为 200，所以判定只能看 ok 字段，不能看 response.ok。
-     */
     async function post(path, body) {
       let response
       try {
@@ -177,18 +265,18 @@ const RANK_ORDER = {
      *
      * 宿主的真实前缀是 `--dsw-`（不是 `--dsh-`），且全部 token 都要求浅色与深色两套取值，
      * 底色用 `--dsw-alias-bg-layer-1`，不用 `--dsw-alias-bg-overlay`：后者在暗色主题下
-     * 绑定的是 neutral-bluish-700（中灰），弹窗会比页面亮一大截；它的语义是「半透明
-     * 浮层」，本来也不该当卡片底。layer-1 与页面同色，界线交给边框与阴影。
+ * 绑定的是 neutral-bluish-700（中灰），弹窗会比页面亮一大截；后者是给「半透明浮层」
+ * 用的，语义也不是卡片底。layer-1 与页面同色，界线交给边框与阴影。
+     * 弹窗优先用它，弹层才与它自绘的浮层同色。
      */
     const T = {
       text: 'var(--dsw-alias-label-primary, CanvasText)',
       dim: 'var(--dsw-alias-label-secondary, GrayText)',
       faint: 'var(--dsw-alias-label-tertiary, GrayText)',
-      surface: 'var(--dsw-alias-bg-layer-1, Canvas)',
+      surface:
+        'var(--dsw-alias-bg-layer-1, Canvas)',
       border: 'var(--dsw-alias-border-l1, rgba(127,127,127,0.35))',
       borderStrong: 'var(--dsw-alias-border-l2, rgba(127,127,127,0.55))',
-      // 同理不依赖品牌变量：变量在主题里存在但取值不明时，开态可能和关态撞色。
-      accent: '#2f6fed',
       // 不用 --dsw-alias-state-idle-primary：暗色主题下它解析成接近白色，
       // 与白色圆点叠成一条纯白胶囊，开/关完全看不出来。这里用固定的半透明灰，
       // 再给轨道加一圈内描边，暗色与亮色下都有轮廓。
@@ -205,8 +293,16 @@ const RANK_ORDER = {
       trackOff: 'rgba(127, 127, 127, 0.30)',
       knob: 'var(--dsw-alias-bg-layer-1, #111111)',
       knobOff: 'rgba(255, 255, 255, 0.92)',
-      /** 待保存行的底色。与 skill-pack 同一套取值，见 `PENDING_BG`。 */
+      /*
+       * 待保存行的底色。
+       *
+       * 原先用左侧 `inset` 竖条，真机上它紧贴行首的箭头与文字，`inset` 阴影又没法
+       * 给文字让出间距，压字比不标更糟。改成整行浅底：与官方标记「当前项」同一套
+       * 做法（pack 行就是浅底），也不会和任何文字抢位置。
+       */
       pendingBg: PENDING_BG,
+      // 各包追加的样式键（见 client/prelude.js 的 T_EXTRA）。
+      ...T_EXTRA(),
     }
 
     const S = {
@@ -239,18 +335,6 @@ const RANK_ORDER = {
         whiteSpace: 'nowrap',
         transition: 'background 120ms ease, color 120ms ease, border-color 120ms ease',
       }),
-      /** 行内的动作按钮（新建、添加、关闭）：与分段按钮同观感，不引新样式。 */
-      action: {
-        padding: '4px 10px',
-        cursor: 'pointer',
-        borderRadius: '6px',
-        border: '1px solid ' + T.border,
-        background: 'transparent',
-        color: T.text,
-        fontSize: '12px',
-        lineHeight: 1.4,
-        whiteSpace: 'nowrap',
-      },
       group: { borderRadius: '8px', border: '1px solid ' + T.border, marginBottom: '8px' },
       groupHead: { display: 'flex', alignItems: 'center', gap: '8px', padding: '8px 10px', cursor: 'pointer' },
       groupName: { fontWeight: 600, flex: '1 1 auto', color: T.text },
@@ -263,23 +347,6 @@ const RANK_ORDER = {
         color: T.dim,
         whiteSpace: 'nowrap',
       },
-      badgeWarn: {
-        fontSize: '11px',
-        padding: '1px 6px',
-        borderRadius: '999px',
-        background: 'transparent',
-        border: '1px solid ' + T.error,
-        color: T.error,
-        whiteSpace: 'nowrap',
-      },
-      stat: {
-        fontSize: '12px',
-        color: T.text,
-        padding: '2px 8px',
-        borderRadius: '999px',
-        border: '1px solid ' + T.border,
-        whiteSpace: 'nowrap',
-      },
       row: {
         display: 'flex',
         alignItems: 'center',
@@ -288,20 +355,17 @@ const RANK_ORDER = {
         borderTop: '1px solid ' + T.border,
       },
       rowMain: { flex: '1 1 auto', minWidth: 0 },
-      rowName: {
-        fontFamily: 'ui-monospace, monospace',
-        fontSize: '12px',
-        color: T.text,
-        display: 'flex',
-        alignItems: 'center',
-        gap: '6px',
-        flexWrap: 'wrap',
-        // 包名是开关的键，必须完整显示：@a/x 与 @b/x 去掉 scope 后同名，
-        // 短名会让人分不清关的是哪一个。长名允许折行，不做省略号。
-        wordBreak: 'break-all',
+      rowName: { fontFamily: 'ui-monospace, monospace', fontSize: '12px', color: T.text },
+      origin: {
+        marginLeft: '6px',
+        padding: '0 4px',
+        fontSize: '10px',
+        fontFamily: 'inherit',
+        color: T.dim,
+        border: '1px solid ' + T.border,
+        borderRadius: '3px',
+        whiteSpace: 'nowrap',
       },
-      rowDesc: { color: T.dim, fontSize: '11px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
-      rowMeta: { color: T.dim, fontSize: '11px', marginTop: '2px' },
       groupInput: {
         flex: '1 1 auto',
         minWidth: '80px',
@@ -313,6 +377,7 @@ const RANK_ORDER = {
         borderRadius: '4px',
         padding: '2px 6px',
       },
+      rowDesc: { color: T.dim, fontSize: '11px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
       sw: (on, disabled) => ({
         width: '36px',
         height: '20px',
@@ -450,16 +515,14 @@ const RANK_ORDER = {
         cursor: 'pointer',
         background: active || hover ? 'rgba(127, 127, 127, 0.18)' : 'transparent',
       }),
-      probeFail: {
-        marginTop: '8px',
-        padding: '6px 10px',
-        borderRadius: '6px',
-        border: '1px solid ' + T.error,
-        background: 'rgba(192,57,43,0.10)',
-        color: T.error,
-        fontSize: '12px',
-        lineHeight: 1.6,
-      },
+      error: { color: T.error, fontSize: '12px', marginBottom: '8px' },
+      empty: { color: T.faint, padding: '12px 4px', fontSize: '12px' },
+      /**
+       * 需要用户注意但不阻断的提示（残留键、宿主能力缺失）。
+       *
+       * 与另外两包同形：浅黄底 + 黄字 + 描边。用 `S.hint` 代替它会让这类提示
+       * 与普通说明文字长得一样，用户扫过去不会停。
+       */
       probeWarn: {
         marginTop: '8px',
         padding: '6px 10px',
@@ -470,8 +533,6 @@ const RANK_ORDER = {
         fontSize: '12px',
         lineHeight: 1.6,
       },
-      error: { color: T.error, fontSize: '12px', marginTop: '8px' },
-      empty: { color: T.faint, padding: '12px 4px', fontSize: '12px' },
       modalBack: {
         position: 'fixed',
         inset: 0,
@@ -484,7 +545,7 @@ const RANK_ORDER = {
       modal: {
         width: 'min(560px, 92vw)',
         maxHeight: '78vh',
-        // 下拉浮层要溢出弹层边缘，裁切会把它切掉一半；内容长了由内层自己滚。
+        // 下拉浮层要溢出弹层边缘，裁切会把它切掉一半；内容本来就短，不需要滚动。
         overflow: 'visible',
         background: T.surface,
         color: T.text,
@@ -493,20 +554,6 @@ const RANK_ORDER = {
         padding: '16px 18px',
         boxShadow: '0 18px 48px rgba(0,0,0,0.28)',
         fontSize: '13px',
-      },
-      confirmNames: {
-        marginTop: '8px',
-        maxHeight: '180px',
-        overflow: 'auto',
-        fontFamily: 'ui-monospace, monospace',
-        fontSize: '12px',
-        color: T.text,
-        border: '1px solid ' + T.border,
-        borderRadius: '6px',
-        padding: '6px 8px',
-        lineHeight: 1.7,
-        whiteSpace: 'pre-wrap',
-        wordBreak: 'break-all',
       },
       /**
        * 吸顶的区块标题。
@@ -571,22 +618,8 @@ const RANK_ORDER = {
        * 必须落在真正被裁的那个 flex item 上，且 `min-width: 0` 才肯缩。
        */
       chipText: { minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
-      settingRow: {
-        display: 'flex',
-        alignItems: 'center',
-        gap: '12px',
-        padding: '10px 0',
-        borderTop: '1px solid ' + T.border,
-      },
-      button: (primary) => ({
-        border: primary ? 0 : '1px solid ' + T.border,
-        borderRadius: '6px',
-        padding: '5px 10px',
-        fontSize: '12px',
-        cursor: 'pointer',
-        background: primary ? T.accent : 'transparent',
-        color: primary ? T.onAccent : T.text,
-      }),
+      // 各包追加的样式键（见 client/prelude.js 的 S_EXTRA）。
+      ...S_EXTRA(),
     }
 
     /**
@@ -616,7 +649,7 @@ const RANK_ORDER = {
     /**
      * 跨组件共享的界面状态。
      *
-     * `onChipChange` 由 `apply` 注册：设置页拨动后立刻挂上或摘下槽位。
+     * `showChip` 由 `apply` 订阅：设置页拨动后立刻挂上或摘下槽位。
      * `chipName` 是 chip 上显示的 pack 名。
      */
     const env = {
@@ -624,16 +657,114 @@ const RANK_ORDER = {
       sessionId: undefined,
     }
     const chipName = createSignal(null)
-    /**
-     * 未绑定 pack 时 chip 上的字。
-     *
-     * 固定英文小写、三字母、去元音（skill→skl、plugin→plg、model→mdl；mcp 本就是
-     * 念字母的专名，恰好同形）。不随宿主语言：这四个是领域标识符，不是句子，
-     * 中文界面下缩写比中文译名更准，四个 chip 也等长。全名留在 title 里。
-     */
-    const CHIP_LABEL = 'plg'
+
+    // CHIP_LABEL 来自 `client/prelude.js`：chip 上的缩写是各包对外的口径。
 
     // ---------- 基础组件 ----------
+
+    /**
+     * 策略文件的告警。
+     *
+     * 写入失败不再是错误信封：它和既有的读告警一样，跟着视图的 `warnings` 回来，
+     * 所以面板得有一处能看见。默认折起只显示条数——正常情况一条都没有，出现时才
+     * 占位置；展开才列出全文。
+     */
+    function Warnings(props) {
+      const [open, setOpen] = useState(false)
+      const list = Array.isArray(props.warnings) ? props.warnings : []
+      if (list.length === 0) return null
+      return h(
+        'div',
+        { style: { marginTop: '8px' } },
+        h(
+          'button',
+          {
+            type: 'button',
+            'aria-expanded': open,
+            style: { ...S.badge, cursor: 'pointer' },
+            onClick: () => setOpen(!open),
+          },
+          (open ? '▾ ' : '▸ ') + list.length + ' 条告警',
+        ),
+        open
+          ? h(
+              'div',
+              { style: { ...S.hint, marginTop: '4px' } },
+              list.map((warning, index) => h('div', { key: index }, warning)),
+            )
+          : null,
+      )
+    }
+
+    /** 残留键的种类标签。键空间不同，混着显示用户分不清是能力项还是组。 */
+    const STALE_KIND_LABEL = { item: STALE_ITEM_LABEL, group: '分组', assignment: '归属' }
+
+    /**
+     * 残留键的提示与清理入口。
+     *
+     * 与 plugin-pack 同形：默认折叠，展开后每个键一行，带种类与「出现在哪些 pack 里」，
+     * 并给清理按钮。清理走待保存改动，用户能先试算看到要删多少条再决定落盘。
+     */
+    function StaleKeys(props) {
+      const [open, setOpen] = useState(false)
+      const entries = Array.isArray(props.entries) ? props.entries : []
+      if (entries.length === 0) return null
+
+      /** 一个残留键对应的清理命令：按种类发不同的 op，键空间不同不能合并。 */
+      const commandsFor = (entry) => {
+        if (entry.kind === 'assignment') return [{ op: 'assign', name: entry.key, groupId: null }]
+        if (entry.kind === 'group') {
+          return (entry.packs || []).map((packId) => ({ op: 'packGroup', packId: packId, groupId: entry.key, value: null }))
+        }
+        return (entry.packs || []).map((packId) => ({ op: 'packItem', packId: packId, name: entry.key, value: null }))
+      }
+
+      const collapsed = entries.length > 6
+      const shown = open || !collapsed ? entries : entries.slice(0, 6)
+
+      return h(
+        'div',
+        { style: S.probeWarn },
+        h(
+          'div',
+          null,
+          entries.length + ' 个键在策略里、当前名册里没有。已保留不删（重新装回来时决定还在），也可以现在清掉：',
+        ),
+        h(
+          'div',
+          { style: { marginTop: '6px' } },
+          shown.map((entry) =>
+            h(
+              'div',
+              {
+                key: entry.kind + ':' + entry.key,
+                style: { display: 'flex', alignItems: 'center', gap: '6px', marginTop: '2px' },
+              },
+              h('span', { style: S.badge }, STALE_KIND_LABEL[entry.kind] || entry.kind),
+              h(
+                'span',
+                { style: { fontFamily: 'ui-monospace, monospace', wordBreak: 'break-word', flex: '1 1 auto' } },
+                entry.key,
+              ),
+              h(
+                'span',
+                { style: { ...S.hint, flex: '0 0 auto' } },
+                Array.isArray(entry.packs) && entry.packs.length > 0 ? entry.packs.join('、') : '全局',
+              ),
+              h(Button, { variant: 'secondary', onClick: () => props.onClear(commandsFor(entry)) }, '清理'),
+            ),
+          ),
+        ),
+        h(
+          'div',
+          { style: { marginTop: '6px', display: 'flex', gap: '8px' } },
+          collapsed
+            ? h(Button, { variant: 'quiet', onClick: () => setOpen(!open) }, open ? '收起' : '展开全部 ' + entries.length + ' 个')
+            : null,
+          h(Button, { variant: 'quiet', onClick: () => props.onClear(entries.flatMap(commandsFor)) }, '清理全部 ' + entries.length + ' 个'),
+        ),
+      )
+    }
 
     function Switch(props) {
       return h(
@@ -679,7 +810,7 @@ const RANK_ORDER = {
     const TRI_STATE = [
       { value: 'on', label: '开', title: '显式打开（压过组）' },
       { value: 'off', label: '关', title: '显式关闭（压过组）' },
-      { value: 'follow', label: '跟随', title: '不记录，按组与 default 求值' },
+      { value: 'follow', label: '跟随', title: '不记录，按组与默认求值' },
     ]
 
     function triStateOf(value, allowInherit) {
@@ -762,14 +893,14 @@ const RANK_ORDER = {
     }
 
     /**
-     * 删除的二次确认：第一次点变成「确认」（浅红底），再点一次才执行。
+     * 删除的二次确认：第一次点变成「确认」（浅红底 + 红字），再点一次才执行。
      *
      * 不用弹窗：这类删除都发生在列表行里，弹窗要额外一次「关闭」动作；
      * 行内二次确认把成本压到一次点击，误点的代价只是多看一眼。
      * 进入确认态后 4 秒自动撤销，点别处也撤销，避免一直停在危险状态。
      *
-     * 删除是唯一「点了就没了」的动作（不进待保存队列），所以确认态必须比常态明显：
-     * 文案换成「确认」，底色转浅红。
+     * 删除是唯一「点了就没了」的动作（不进待保存队列，见 ADR 0006），
+     * 所以确认态必须比常态明显：文案换成「确认」、红字、浅红底。
      */
     function ConfirmButton(props) {
       const [armed, setArmed] = useState(false)
@@ -867,10 +998,10 @@ const RANK_ORDER = {
     }
 
     /**
-     * 待保存改动。
+     * 待保存改动（见 ADR 0006）。
      *
      * 点一下只入队，不发写请求；队列非空时每次变化都用 `dryRun` 试算一次，
-     * 拿服务端算好的视图来渲染——浏览器不复制求值链。
+     * 拿服务端算好的视图来渲染——浏览器不复制求值链（根术语表「生效视图」）。
      * 点「保存」才把整批命令写盘。
      *
      * 队列活在这一次挂载里：关闭面板即丢。跨面板保留会被「我到底存了没」拖住，
@@ -1043,6 +1174,7 @@ const RANK_ORDER = {
         count: entries.length,
       }
     }
+
     /** 停靠区上方那一行提示：说清楚发生了什么，给一个关掉它的入口。 */
     function NoticeBar(props) {
       return h(
@@ -1196,170 +1328,6 @@ const RANK_ORDER = {
       )
     }
 
-    /**
-     * 二次确认弹层。
-     *
-     * 不用 window.confirm：它列不出包名，也无法把受保护的那几个单独标出来；
-     * 而这里的关键正是「先看见名字，再点确定」。
-     */
-    function ConfirmDialog(props) {
-      if (!props.open) return null
-      const names = Array.isArray(props.names) ? props.names : []
-      const shown = names.slice(0, 40)
-      const accept = () => {
-        const run = props.onConfirm
-        props.onCancel()
-        if (run) run()
-      }
-      return h(
-        'div',
-        { style: S.modalBack, onClick: props.onCancel },
-        h(
-          'div',
-          { style: S.modal, onClick: (event) => event.stopPropagation() },
-          h('div', { style: S.title }, props.title || '请确认'),
-          props.message ? h('div', { style: { ...S.hint, marginTop: '6px' } }, props.message) : null,
-          names.length > 0 ? h('div', { style: S.confirmNames }, shown.join('\n')) : null,
-          names.length > 40
-            ? h('div', { style: { ...S.hint, marginTop: '4px' } }, '…等 ' + names.length + ' 项')
-            : null,
-          h(
-            'div',
-            { style: { display: 'flex', justifyContent: 'flex-end', gap: '8px', marginTop: '14px' } },
-            h('button', { type: 'button', style: S.button(false), onClick: props.onCancel }, '取消'),
-            h('button', { type: 'button', style: S.button(true), onClick: accept }, props.confirmLabel || '确认'),
-          ),
-        ),
-      )
-    }
-
-    /** 残留键的种类标签。键空间不同，混着显示用户分不清是包还是组。 */
-    const STALE_KIND_LABEL = { item: '插件', group: '分组', assignment: '归属' }
-
-    /**
-     * 残留键的提示与清理入口。
-     *
-     * 默认折叠：包名本来就长（@dreanzy/dsh-plugin-pack 一条就 30 字），十条平铺会把
-     * 面板撑满。展开后每个键一行，带种类与「出现在哪些 pack 里」，并给清理按钮。
-     *
-     * 清理走待保存改动而不是当场写盘：它和开关一样是「攒着一起保存」的语义，
-     * 用户能先试算看到要删多少条，再决定要不要落盘。
-     */
-    function StaleKeysNotice(props) {
-      const [open, setOpen] = useState(false)
-      const entries = Array.isArray(props.entries) ? props.entries : []
-      if (entries.length === 0) return null
-
-      /** 一个残留键对应的清理命令：按种类发不同的 op，键空间不同不能合并。 */
-      const commandsFor = (entry) => {
-        if (entry.kind === 'assignment') return [{ op: 'assign', name: entry.key, groupId: null }]
-        if (entry.kind === 'group') {
-          return (entry.packs || []).map((packId) => ({ op: 'packGroup', packId: packId, groupId: entry.key, value: null }))
-        }
-        return (entry.packs || []).map((packId) => ({ op: 'packItem', packId: packId, name: entry.key, value: null }))
-      }
-
-      const clearOne = (entry) => props.onClear(commandsFor(entry))
-      const clearAll = () => props.onClear(entries.flatMap(commandsFor))
-
-      const collapsed = entries.length > 6
-      const shown = open || !collapsed ? entries : entries.slice(0, 6)
-
-      return h(
-        'div',
-        { style: S.probeWarn },
-        h(
-          'div',
-          null,
-          entries.length + ' 个键在策略里、当前名册里没有。已保留不删（重新装回来时决定还在），也可以现在清掉：',
-        ),
-        h(
-          'div',
-          { style: { marginTop: '6px' } },
-          shown.map((entry) =>
-            h(
-              'div',
-              {
-                key: entry.kind + ':' + entry.key,
-                style: { display: 'flex', alignItems: 'center', gap: '6px', marginTop: '2px' },
-              },
-              h('span', { style: S.badge }, STALE_KIND_LABEL[entry.kind] || entry.kind),
-              h(
-                'span',
-                { style: { fontFamily: 'ui-monospace, monospace', wordBreak: 'break-word', flex: '1 1 auto' } },
-                entry.key,
-              ),
-              h(
-                'span',
-                { style: { ...S.hint, flex: '0 0 auto' } },
-                Array.isArray(entry.packs) && entry.packs.length > 0 ? entry.packs.join('、') : '全局',
-              ),
-              h(
-                'button',
-                { type: 'button', style: S.action, onClick: () => clearOne(entry) },
-                '清理',
-              ),
-            ),
-          ),
-        ),
-        h(
-          'div',
-          { style: { marginTop: '6px', display: 'flex', gap: '8px' } },
-          collapsed
-            ? h(
-                'button',
-                { type: 'button', style: S.action, onClick: () => setOpen(!open) },
-                open ? '收起' : '展开全部 ' + entries.length + ' 个',
-              )
-            : null,
-          h('button', { type: 'button', style: S.action, onClick: clearAll }, '清理全部 ' + entries.length + ' 个'),
-        ),
-      )
-    }
-
-    /**
-     * 策略文件告警：读侧降级（坏文件、缺字段）与写侧拒写（读不出来、内容坏、命令被拒）都在这一处，默认折叠。
-     *
-     * 首要信息只是「有几条」，但写失败的原因必须能展开看到：只显示一句摘要时，
-     * 「点了保存却没生效」在界面上找不到任何解释。样式沿用 probeWarn + hint + badge。
-     */
-    function WarningsNotice(props) {
-      const [open, setOpen] = useState(false)
-      const all = (Array.isArray(props.warnings) ? props.warnings : []).filter(
-        (line) => typeof line === 'string' && line !== '',
-      )
-      if (all.length === 0) return null
-      return h(
-        'div',
-        { style: S.probeWarn },
-        h(
-          'div',
-          null,
-          '策略文件有告警 ',
-          h('span', { style: S.badge }, all.length + ' 条'),
-        ),
-        open
-          ? h(
-              'div',
-              { style: { marginTop: '4px' } },
-              all.map((line, index) =>
-                h(
-                  'div',
-                  { key: 'warn-' + index, style: { ...S.hint, marginTop: '2px', wordBreak: 'break-word' } },
-                  line,
-                ),
-              ),
-            )
-          : h('div', { style: { ...S.hint, marginTop: '4px', wordBreak: 'break-word' } }, all[0] + (all.length > 1 ? ' …' : '')),
-        all.length > 1
-          ? h(
-              'button',
-              { type: 'button', style: { ...S.action, marginTop: '6px' }, onClick: () => setOpen(!open) },
-              open ? '收起' : '展开全部 ' + all.length + ' 条',
-            )
-          : null,
-      )
-    }
 
     // ---------- 宿主与求值 ----------
 
@@ -1495,65 +1463,26 @@ const RANK_ORDER = {
       return out
     }
 
-
-
-    /** 一行的开关键：插件包名。服务端把它放在 `pkg` 上，命令里用的也是它。 */
-    function itemKey(row) {
-      return row && typeof row.pkg === 'string' ? row.pkg : ''
-    }
-
-    /** 官方包：服务端按发布作用域判定，前端只用来上徽章。 */
-    function isOfficial(row) {
-      return Boolean(row) && row.origin === 'official'
-    }
-
-    function sectionTitleOf(row) {
-      return isOfficial(row) ? SECTION_TITLE.official : SECTION_TITLE.profile
-    }
-
-    /**
-     * 这一项属于哪个组：只读组注册表的 `assignments`。
-     *
-     * 指向未知组时按未分组处理（那是悬空引用，不是分组）。
-     */
-    function groupOfRow(groups, row) {
-      const registry = (groups && groups.groups) || []
-      const assignments = (groups && groups.assignments) || {}
-      const gid = assignments[itemKey(row)] || null
-      if (gid === null) return null
-      for (const group of registry) {
-        if (group.id === gid) return gid
-      }
-      return null
+    /** 内置 pack 的显示名。数据里仍是 `default`，不写盘，也不参与重名校验。 */
+    function packLabel(pack) {
+      if (pack === null || pack === undefined) return ''
+      return pack.builtin === true || pack.id === DEFAULT_PACK_ID ? '默认' : pack.name
     }
 
 
-    /**
-     * 求值用的组 id：优先取宿主下发的 `groupId`，它不校验组是否还在注册表里——
-     * 悬空引用在宿主侧照样会命中组级记录。行上没有这个字段时才退回本地查表。
-     */
-    function rowGroupOf(groups, row) {
-      const gid = row && typeof row.groupId === 'string' ? row.groupId : ''
-      return gid !== '' ? gid : groupOfRow(groups, row)
-    }
 
 
-    function groupNameOf(groups, groupId) {
-      for (const group of groups || []) {
-        if (group.id === groupId) return group.name
-      }
-      return '未分组'
-    }
 
     /**
      * 分包页读的是**选中那张 pack 的原始记录**，不是工作区求值链。
      *
-     * 服务端行上的 `itemWorkspace` / `rank` 按**工作区绑定的** pack 算，而分包页让
-     * 用户逐张编辑 pack——选中哪张由本地状态决定，服务端不知道。拿绑定 pack 的结论
-     * 渲染分包页，结果是每张 pack 都显示成同一份值：默认 pack 里显式关掉的项显示成
-     * 「开」，其余 pack 全部显示成「跟随」，排序也退化成按名字。
+     * 两者不是一回事：服务端行上的 `itemWorkspace` / `rank` 按**工作区绑定的** pack
+     * 算，而分包页让用户逐张编辑 pack——选中哪张由本地状态决定，服务端不知道。
+     * 拿绑定 pack 的结论渲染分包页，结果是每张 pack 都显示成同一份值：默认 pack 里
+     * 显式关掉的项显示成「开」，其余 pack 全部显示成「跟随」，排序也退化成按名字。
      *
-     * 这里只做「读原始记录 + 算档位」，不碰求值链：链仍由服务端算，行上的 `open` 就是它。
+     * 这里只做「读原始记录 + 算档位」，不碰求值链：链（`pack.items ?? pack.groups ??
+     * default.items ?? default.groups ?? true`）仍由服务端算，行上的 `open` 就是它。
      */
     function packItemOf(pack, name) {
       if (pack === null || pack === undefined || !pack.items) return null
@@ -1601,45 +1530,28 @@ const RANK_ORDER = {
       return landing ? 'follow-on' : 'follow-off'
     }
 
-    /**
-     * 停用一个插件省下的 token：工具 schema 的估算值，加上段字符数按 4 字符/token 折算。
-     *
-     * 两半的口径不同（服务端已在 toolVolume 里除过 4），所以这里只折段字符。
-     */
-    function weightOf(row) {
-      if (!row) return 0
-      return Math.round((row.toolVolume || 0) + (row.sectionChars || 0) / 4)
+    function groupIdOf(row) {
+      return row.groupId || null
     }
 
-    function formatTokens(value) {
-      const n = Math.max(0, Math.round(Number(value) || 0))
-      if (n >= 10000) return Math.round(n / 1000) + 'k'
-      if (n >= 1000) return (n / 1000).toFixed(1) + 'k'
-      return String(n)
-    }
 
-    /**
-     * 行的第二行：工具数、段数与估算 token。字段缺失的按 0 算，不把 undefined 画到界面上。
-     *
-     * 工具数写「可见/归属」：停用生效后被隐藏的工具不再出现在清单里，只报可见数会让一个
-     * 已经关干净的插件看起来像归属没扫到。两个数相同时只写一个。
-     */
-    function metaOf(row) {
-      const tools = row && typeof row.tools === 'number' ? row.tools : 0
-      const owned = row && typeof row.owned === 'number' && row.owned > tools ? row.owned : tools
-      const sections = row && typeof row.sections === 'number' ? row.sections : 0
-      const count = owned === tools ? String(tools) : tools + '/' + owned
-      return count + ' 工具 · ' + sections + ' 段 · ≈' + formatTokens(weightOf(row)) + ' token'
-    }
 
-    /** `ui` 段兼容读：新服务端给 `ui`，缺字段时按内置缺省。 */
-    function uiOf(view) {
-      const ui = view && view.ui ? view.ui : null
-      return {
-        showOfficialPlugins: ui !== null && ui.showOfficialPlugins === true,
-        showChip: !ui || ui.showChip !== false,
-        defaultTab: ui && typeof ui.defaultTab === 'string' ? ui.defaultTab : 'groups',
+    function groupNameOf(groups, groupId) {
+      for (const group of groups || []) {
+        if (group.id === groupId) return group.name
       }
+      return '未分组'
+    }
+
+    /**
+     * `ui` 段。
+     *
+     * 服务端一定有 `ui`；旧面板靠 `policy` 投影兜底的那条分支随兼容层一起删掉了。
+     */
+    function uiOf(view) {
+      if (!view) return null
+      if (view.ui) return view.ui
+      return { [SHOW_OFFICIAL_FIELD]: false, ...UI_DEFAULTS }
     }
 
     /**
@@ -1658,7 +1570,7 @@ const RANK_ORDER = {
      *
      * 截断仍按最近使用取舍：先按 `updatedAt` 倒序取前 MAX_WORKSPACES 条，
      * 展示序只由路径决定。取不到会话时返回空列表——面板仍能编辑 pack，
-     * 只是工作区页会显示「还没有开过会话的目录」。
+     * 只是工作区清单读不到，其它页照常。
      */
     async function listWorkspaceCwds(host) {
       const session = host && host.remote ? host.remote.session : null
@@ -1686,6 +1598,250 @@ const RANK_ORDER = {
       }
       return cwds.sort((a, b) => compareCwd(normalizeCwd(a), normalizeCwd(b)))
     }
+
+
+/**
+ * 本包的面板业务面：三页的内容、chip 的内容、以及 `apply` 的装配。
+ *
+ * 它不是可直接加载的文件——构建器把 `client/prelude.js` 与
+ * `scripts/client-shared/panel-core.js` 拼在它前面，再套上 `window.__ModuleLoader__.load`
+ * 的外壳，产出 `client/client.js`（见 ADR-0017）。
+ */
+
+    const PANEL_ID = 'plugin-pack'
+    const CHIP_ID = 'plugin-pack-chip'
+    const MODAL_ID = 'plugin-pack-chip-modal'
+    const TITLE = 'Plugin Pack'
+
+    const SECTION_TITLE = { official: '官方', profile: '第三方' }
+
+    function ConfirmDialog(props) {
+      if (!props.open) return null
+      const names = Array.isArray(props.names) ? props.names : []
+      const shown = names.slice(0, 40)
+      const accept = () => {
+        const run = props.onConfirm
+        props.onCancel()
+        if (run) run()
+      }
+      return h(
+        'div',
+        { style: S.modalBack, onClick: props.onCancel },
+        h(
+          'div',
+          { style: S.modal, onClick: (event) => event.stopPropagation() },
+          h('div', { style: S.title }, props.title || '请确认'),
+          props.message ? h('div', { style: { ...S.hint, marginTop: '6px' } }, props.message) : null,
+          names.length > 0 ? h('div', { style: S.confirmNames }, shown.join('\n')) : null,
+          names.length > 40
+            ? h('div', { style: { ...S.hint, marginTop: '4px' } }, '…等 ' + names.length + ' 项')
+            : null,
+          h(
+            'div',
+            { style: { display: 'flex', justifyContent: 'flex-end', gap: '8px', marginTop: '14px' } },
+            h('button', { type: 'button', style: S.button(false), onClick: props.onCancel }, '取消'),
+            h('button', { type: 'button', style: S.button(true), onClick: accept }, props.confirmLabel || '确认'),
+          ),
+        ),
+      )
+    }
+
+    /** 残留键的种类标签。键空间不同，混着显示用户分不清是包还是组。 */
+
+    /**
+     * 残留键的提示与清理入口。
+     *
+     * 默认折叠：包名本来就长（@dreanzy/dsh-plugin-pack 一条就 30 字），十条平铺会把
+     * 面板撑满。展开后每个键一行，带种类与「出现在哪些 pack 里」，并给清理按钮。
+     *
+     * 清理走待保存改动而不是当场写盘：它和开关一样是「攒着一起保存」的语义，
+     * 用户能先试算看到要删多少条，再决定要不要落盘。
+     */
+    function StaleKeysNotice(props) {
+      const [open, setOpen] = useState(false)
+      const entries = Array.isArray(props.entries) ? props.entries : []
+      if (entries.length === 0) return null
+
+      /** 一个残留键对应的清理命令：按种类发不同的 op，键空间不同不能合并。 */
+      const commandsFor = (entry) => {
+        if (entry.kind === 'assignment') return [{ op: 'assign', name: entry.key, groupId: null }]
+        if (entry.kind === 'group') {
+          return (entry.packs || []).map((packId) => ({ op: 'packGroup', packId: packId, groupId: entry.key, value: null }))
+        }
+        return (entry.packs || []).map((packId) => ({ op: 'packItem', packId: packId, name: entry.key, value: null }))
+      }
+
+      const clearOne = (entry) => props.onClear(commandsFor(entry))
+      const clearAll = () => props.onClear(entries.flatMap(commandsFor))
+
+      const collapsed = entries.length > 6
+      const shown = open || !collapsed ? entries : entries.slice(0, 6)
+
+      return h(
+        'div',
+        { style: S.probeWarn },
+        h(
+          'div',
+          null,
+          entries.length + ' 个键在策略里、当前名册里没有。已保留不删（重新装回来时决定还在），也可以现在清掉：',
+        ),
+        h(
+          'div',
+          { style: { marginTop: '6px' } },
+          shown.map((entry) =>
+            h(
+              'div',
+              {
+                key: entry.kind + ':' + entry.key,
+                style: { display: 'flex', alignItems: 'center', gap: '6px', marginTop: '2px' },
+              },
+              h('span', { style: S.badge }, STALE_KIND_LABEL[entry.kind] || entry.kind),
+              h(
+                'span',
+                { style: { fontFamily: 'ui-monospace, monospace', wordBreak: 'break-word', flex: '1 1 auto' } },
+                entry.key,
+              ),
+              h(
+                'span',
+                { style: { ...S.hint, flex: '0 0 auto' } },
+                Array.isArray(entry.packs) && entry.packs.length > 0 ? entry.packs.join('、') : '全局',
+              ),
+              h(
+                'button',
+                { type: 'button', style: S.action, onClick: () => clearOne(entry) },
+                '清理',
+              ),
+            ),
+          ),
+        ),
+        h(
+          'div',
+          { style: { marginTop: '6px', display: 'flex', gap: '8px' } },
+          collapsed
+            ? h(
+                'button',
+                { type: 'button', style: S.action, onClick: () => setOpen(!open) },
+                open ? '收起' : '展开全部 ' + entries.length + ' 个',
+              )
+            : null,
+          h('button', { type: 'button', style: S.action, onClick: clearAll }, '清理全部 ' + entries.length + ' 个'),
+        ),
+      )
+    }
+
+    /**
+     * 策略文件告警：读侧降级（坏文件、缺字段）与写侧拒写（读不出来、内容坏、命令被拒）都在这一处，默认折叠。
+     *
+     * 首要信息只是「有几条」，但写失败的原因必须能展开看到：只显示一句摘要时，
+     * 「点了保存却没生效」在界面上找不到任何解释。样式沿用 probeWarn + hint + badge。
+     */
+    function WarningsNotice(props) {
+      const [open, setOpen] = useState(false)
+      const all = (Array.isArray(props.warnings) ? props.warnings : []).filter(
+        (line) => typeof line === 'string' && line !== '',
+      )
+      if (all.length === 0) return null
+      return h(
+        'div',
+        { style: S.probeWarn },
+        h(
+          'div',
+          null,
+          '策略文件有告警 ',
+          h('span', { style: S.badge }, all.length + ' 条'),
+        ),
+        open
+          ? h(
+              'div',
+              { style: { marginTop: '4px' } },
+              all.map((line, index) =>
+                h(
+                  'div',
+                  { key: 'warn-' + index, style: { ...S.hint, marginTop: '2px', wordBreak: 'break-word' } },
+                  line,
+                ),
+              ),
+            )
+          : h('div', { style: { ...S.hint, marginTop: '4px', wordBreak: 'break-word' } }, all[0] + (all.length > 1 ? ' …' : '')),
+        all.length > 1
+          ? h(
+              'button',
+              { type: 'button', style: { ...S.action, marginTop: '6px' }, onClick: () => setOpen(!open) },
+              open ? '收起' : '展开全部 ' + all.length + ' 条',
+            )
+          : null,
+      )
+    }
+
+
+    function itemKey(row) {
+      return row && typeof row.pkg === 'string' ? row.pkg : ''
+    }
+
+    /** 官方包：服务端按发布作用域判定，前端只用来上徽章。 */
+    function isOfficial(row) {
+      return Boolean(row) && row.origin === 'official'
+    }
+
+    function sectionTitleOf(row) {
+      return isOfficial(row) ? SECTION_TITLE.official : SECTION_TITLE.profile
+    }
+
+    /**
+     * 这一项属于哪个组：只读组注册表的 `assignments`。
+     *
+     * 指向未知组时按未分组处理（那是悬空引用，不是分组）。
+     */
+    function groupOfRow(groups, row) {
+      const registry = (groups && groups.groups) || []
+      const assignments = (groups && groups.assignments) || {}
+      const gid = assignments[itemKey(row)] || null
+      if (gid === null) return null
+      for (const group of registry) {
+        if (group.id === gid) return gid
+      }
+      return null
+    }
+
+
+    /**
+     * 求值用的组 id：优先取宿主下发的 `groupId`，它不校验组是否还在注册表里——
+     * 悬空引用在宿主侧照样会命中组级记录。行上没有这个字段时才退回本地查表。
+     */
+    function rowGroupOf(groups, row) {
+      const gid = row && typeof row.groupId === 'string' ? row.groupId : ''
+      return gid !== '' ? gid : groupOfRow(groups, row)
+    }
+
+
+
+    function weightOf(row) {
+      if (!row) return 0
+      return Math.round((row.toolVolume || 0) + (row.sectionChars || 0) / 4)
+    }
+
+    function formatTokens(value) {
+      const n = Math.max(0, Math.round(Number(value) || 0))
+      if (n >= 10000) return Math.round(n / 1000) + 'k'
+      if (n >= 1000) return (n / 1000).toFixed(1) + 'k'
+      return String(n)
+    }
+
+    /**
+     * 行的第二行：工具数、段数与估算 token。字段缺失的按 0 算，不把 undefined 画到界面上。
+     *
+     * 工具数写「可见/归属」：停用生效后被隐藏的工具不再出现在清单里，只报可见数会让一个
+     * 已经关干净的插件看起来像归属没扫到。两个数相同时只写一个。
+     */
+    function metaOf(row) {
+      const tools = row && typeof row.tools === 'number' ? row.tools : 0
+      const owned = row && typeof row.owned === 'number' && row.owned > tools ? row.owned : tools
+      const sections = row && typeof row.sections === 'number' ? row.sections : 0
+      const count = owned === tools ? String(tools) : tools + '/' + owned
+      return count + ' 工具 · ' + sections + ' 段 · ≈' + formatTokens(weightOf(row)) + ' token'
+    }
+
+    /** `ui` 段兼容读：新服务端给 `ui`，缺字段时按内置缺省。 */
 
     // ---------- 面板 ----------
 

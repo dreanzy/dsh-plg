@@ -167,31 +167,34 @@ const BASELINE = [
     name: '引用的 S 样式键都有定义',
     check(source) {
       const code = stripComments(source)
-      const start = code.indexOf('const S = {')
-      if (start < 0) return true
-      // 从 `const S = {` 起找到配对的 `}`：按花括号深度扫，跳过字符串。
-      let depth = 0
-      let end = -1
-      let quote = null
-      for (let index = start; index < code.length; index += 1) {
-        const char = code[index]
-        if (quote !== null) {
-          if (char === '\\') { index += 1; continue }
-          if (char === quote) quote = null
-          continue
-        }
-        if (char === '"' || char === "'" || char === '`') { quote = char; continue }
-        if (char === '{') depth += 1
-        else if (char === '}') {
-          depth -= 1
-          if (depth === 0) { end = index; break }
-        }
-      }
-      if (end < 0) return true
-      const body = code.slice(start, end)
-      // 定义：行首缩进后的 `键:` 或 `键(`（函数式样式）。
+      // 样式表可能分两段：共享层的 `const S = {`，与本包 prelude 里的
+      // `const S_EXTRA = () => ({`。两段的键都算已定义（见 ADR-0017）。
       const defined = new Set()
-      for (const match of body.matchAll(/^\s{4,}([A-Za-z_][A-Za-z0-9_]*)\s*[:(]/gmu)) defined.add(match[1])
+      for (const start of [code.indexOf('const S = {'), code.indexOf('const S_EXTRA = () => ({')]) {
+        if (start < 0) continue
+        // 从起点起找到配对的 `}`：按花括号深度扫，跳过字符串。
+        let depth = 0
+        let end = -1
+        let quote = null
+        for (let index = start; index < code.length; index += 1) {
+          const char = code[index]
+          if (quote !== null) {
+            if (char === '\\') { index += 1; continue }
+            if (char === quote) quote = null
+            continue
+          }
+          if (char === '"' || char === "'" || char === '`') { quote = char; continue }
+          if (char === '{') depth += 1
+          else if (char === '}') {
+            depth -= 1
+            if (depth === 0) { end = index; break }
+          }
+        }
+        if (end < 0) continue
+        // 定义：行首缩进后的 `键:` 或 `键(`（函数式样式）。
+        for (const match of code.slice(start, end).matchAll(/^\s{4,}([A-Za-z_][A-Za-z0-9_]*)\s*[:(]/gmu)) defined.add(match[1])
+      }
+      if (defined.size === 0) return true
       // 引用：`S.键`，排除 `S.键(` 之外的属性链（`S.a.b` 只取 a）。
       for (const match of code.matchAll(/\bS\.([A-Za-z_][A-Za-z0-9_]*)/gu)) {
         if (!defined.has(match[1])) return false
@@ -284,9 +287,14 @@ for (const dir of dirs) {
   }
 
   // 纪律查源码。未迁移到共享层的包还没有 panel.js，回退到产物本身。
+  // 三段源码一起查：prelude 里也有 S_EXTRA / T_EXTRA 这类样式键定义。
   let source
   try {
-    source = readFileSync(sharedCore, 'utf8') + '\n' + readFileSync(join(clientDir, 'panel.js'), 'utf8')
+    source = [
+      readFileSync(join(clientDir, 'prelude.js'), 'utf8'),
+      readFileSync(sharedCore, 'utf8'),
+      readFileSync(join(clientDir, 'panel.js'), 'utf8'),
+    ].join('\n')
   } catch {
     source = readFileSync(join(clientDir, 'client.js'), 'utf8')
   }

@@ -6,7 +6,10 @@
  * `__PACK__` 是 API 路径段（`skill-pack`）。
  *
  * 约定：不含 import/export，只声明本文件内部使用的 const 与 function；业务页面留在各包的
- * `client/panel.js` 里，按同一套顺序拼接在它后面。
+ * `client/panel.js` 里。拼接顺序是 `client/prelude.js` → 本文件 → `panel.js`：
+ * prelude 提供各包唯一有意不同的几个值（chip 缩写、残留键种类名、官方项字段名、
+ * `T` / `S` 的追加样式键）。追加样式键是函数而不是对象：prelude 在本文件之前，
+ * 写成对象会在引用 `T` 时撞上 TDZ。
  */
 
     const React = require('react')
@@ -188,6 +191,8 @@ const RANK_ORDER = {
        * 做法（pack 行就是浅底），也不会和任何文字抢位置。
        */
       pendingBg: PENDING_BG,
+      // 各包追加的样式键（见 client/prelude.js 的 T_EXTRA）。
+      ...T_EXTRA(),
     }
 
     const S = {
@@ -503,6 +508,8 @@ const RANK_ORDER = {
        * 必须落在真正被裁的那个 flex item 上，且 `min-width: 0` 才肯缩。
        */
       chipText: { minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+      // 各包追加的样式键（见 client/prelude.js 的 S_EXTRA）。
+      ...S_EXTRA(),
     }
 
     /**
@@ -541,14 +548,7 @@ const RANK_ORDER = {
     }
     const chipName = createSignal(null)
 
-    /**
-     * 未绑定 pack 时 chip 上的字。
-     *
-     * 固定英文小写、三字母、去元音（skill→skl、plugin→plg、model→mdl；mcp 本就是
-     * 念字母的专名，恰好同形）。不随宿主语言：这四个是领域标识符，不是句子，
-     * 中文界面下缩写比中文译名更准，四个 chip 也等长。全名留在 title 里。
-     */
-    const CHIP_LABEL = 'skl'
+    // CHIP_LABEL 来自 `client/prelude.js`：chip 上的缩写是各包对外的口径。
 
     // ---------- 基础组件 ----------
 
@@ -586,8 +586,8 @@ const RANK_ORDER = {
       )
     }
 
-    /** 残留键的种类标签。键空间不同，混着显示用户分不清是 skill 还是组。 */
-    const STALE_KIND_LABEL = { item: '技能', group: '分组', assignment: '归属' }
+    /** 残留键的种类标签。键空间不同，混着显示用户分不清是能力项还是组。 */
+    const STALE_KIND_LABEL = { item: STALE_ITEM_LABEL, group: '分组', assignment: '归属' }
 
     /**
      * 残留键的提示与清理入口。
@@ -1441,7 +1441,7 @@ const RANK_ORDER = {
     function uiOf(view) {
       if (!view) return null
       if (view.ui) return view.ui
-      return { showOfficialSkills: false, showChip: true, defaultTab: 'groups' }
+      return { [SHOW_OFFICIAL_FIELD]: false, ...UI_DEFAULTS }
     }
 
     /**
@@ -1488,4 +1488,3 @@ const RANK_ORDER = {
       }
       return cwds.sort((a, b) => compareCwd(normalizeCwd(a), normalizeCwd(b)))
     }
-
