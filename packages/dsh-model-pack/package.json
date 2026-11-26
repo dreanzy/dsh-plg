@@ -39,7 +39,7 @@
   },
   "files": [
     "lib",
-    "client",
+    "client/client.js",
     "locale/*.json",
     "icon.svg",
     "cordis.patch.yml"
@@ -64,7 +64,8 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "tsc -p tsconfig.json && node --test --test-isolation=none test/",
+    "build:client": "node ../../scripts/build-client.mjs dsh-model-pack",
+    "test": "tsc -p tsconfig.json && node ../../scripts/build-client.mjs dsh-model-pack && node --test --test-isolation=none test/",
     "prepare": "tsc -p tsconfig.json",
     "prepublishOnly": "tsc -p tsconfig.json && node --test --test-isolation=none test/"
   },

@@ -1,84 +1,151 @@
 /**
- * 浏览器半边：设置 → Model Pack，外加会话输入框右侧的 chip。
- *
- * 结构照抄 `dsh-plugin-pack` / `dsh-mcp-pack`：设置页三页（模型 | 提示词 | 分包），
- * chip 是当前工作区绑定 pack 的摘要与切换入口。本包的差异只有一处：
- *
- *   pack 的内容不是一张布尔表，而是「一条会话路由 + 至多四档子智能体路由」，
- *   所以「分包」页放名册与内容编辑器，「工作区」页放绑定。
- *
- * 数据全部来自服务端：`ui.defaultTab` 与工作区绑定都落在 packs.json / workspaces.json，
- * 浏览器不存任何配置。
- *
- * 改动先入队、点「保存」才写盘（ADR 0006）：点控件只把命令放进待保存队列，队列非空时
- * 每一步都拿服务端的 `dryRun` 试算视图来渲染，面板因此不在浏览器里重算一遍求值链。
- *
- * 数据来自本插件的两条路由（read / apply）；模型目录来自宿主的
- * `remote.session.modelCatalog()`，那是唯一能回答「这个模型公布了哪些思考强度」的地方
- * ——不猜、不硬编码。
- *
- * 不引 JSX、不引打包器：宿主用 require('react') 提供 React。工厂必须惰性，
- * 所有订阅与请求都在 apply 里用 ctx.effect 注册并返回清理函数。
- *
- * 一条约定贯穿全文件：**「跟随」是键不存在，不是空值**。
- *   会话路由的 reasoningEffort、pack 的 session、档位本身、工作区绑定，
- *   四处的「跟随」都表现为删键。因此每处都有一个独立的「跟随」入口，
- *   而不是下拉里的一个空选项——空选项会让人以为「选了空 = 跟随」，
- *   实际写下去的是空串，落盘后是坏输入。
+ * 由 scripts/build-client.mjs 生成，不要手改。
+ * 源码：packages/dsh-model-pack/client/prelude.js + scripts/client-shared/panel-base.js
+ *      + 协议层（包的 client/protocol.js 或共享的 panel-protocol.js）+ packages/dsh-model-pack/client/panel.js
  */
 window.__ModuleLoader__.load({
   id: '@dreanzy/dsh-model-pack',
   factory(require) {
+/**
+ * 本包给共享层的取值（见 ADR-0017）。
+ *
+ * 拼接顺序：本文件 → panel-base.js → client/protocol.js → panel.js。
+ */
+
+/** 未绑定 pack 时 chip 上的字：model → mdl。 */
+const CHIP_LABEL = 'mdl'
+
+/** 残留键里「能力项」这一类的名字。model 没有残留键的概念，这里只为满足共享层。 */
+const STALE_ITEM_LABEL = '条目'
+
+/** `ui` 段里「显示官方项」的字段名。model 没有这个开关。 */
+const SHOW_OFFICIAL_FIELD = 'showOfficialModels'
+
+/** `ui` 段缺席时的缺省值。 */
+const UI_DEFAULTS = { showChip: true, defaultTab: 'packs' }
+
+/** 本包在共享样式表 `T` 上追加的键。 */
+const T_EXTRA = () => ({
+
+})
+
+/** 本包在共享样式表 `S` 上追加的键。 */
+const S_EXTRA = () => ({
+      badgeWarn: {
+        fontSize: '11px',
+        padding: '1px 6px',
+        borderRadius: '999px',
+        background: 'transparent',
+        border: '1px solid ' + T.error,
+        color: T.error,
+        whiteSpace: 'nowrap',
+      },
+      reset: {
+        border: 0,
+        background: 'transparent',
+        cursor: 'pointer',
+        color: T.dim,
+        fontSize: '12px',
+        padding: '2px 4px',
+        minHeight: '24px',
+        display: 'inline-flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+      },
+      rowMeta: { color: T.dim, fontSize: '12px', marginTop: '3px', lineHeight: 1.5 },
+      field: { padding: '6px 0 10px', borderTop: '1px solid ' + T.border },
+      fieldHead: { display: 'flex', alignItems: 'center', gap: '8px', padding: '0 10px', marginTop: '8px' },
+      fieldRow: { display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', padding: '4px 10px' },
+      fieldLabel: { color: T.dim, fontSize: '11px', minWidth: '64px' },
+      notice: { marginTop: '8px', padding: '6px 10px', borderRadius: '6px', border: '1px solid ' + T.border, color: T.dim, fontSize: '12px' },
+      fallbackRow: { display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap', padding: '4px 10px 4px 22px' },
+      mono: { color: T.faint, fontSize: '11px', fontFamily: 'ui-monospace, monospace', wordBreak: 'break-all', whiteSpace: 'pre-wrap' },
+      probeFail: {
+        marginTop: '8px',
+        padding: '6px 10px',
+        borderRadius: '6px',
+        border: '1px solid ' + T.error,
+        background: 'rgba(192,57,43,0.10)',
+        color: T.error,
+        fontSize: '12px',
+        lineHeight: 1.6,
+      },
+      disabledSection: { opacity: 0.5, pointerEvents: 'none', userSelect: 'none' },
+      /**
+       * 行内操作按钮的尺寸与排布。颜色、hover、危险态全部在 `PANEL_CSS` 里——
+       * 内联写 `background` / `color` 会压掉 CSS 的 `:hover`（ui-baseline 红线 7）。
+       * 尺寸对齐官方设置页行内按钮：高 28px、左右 10px、12px 字、radius-sm。
+       */
+      textarea: {
+        width: '100%',
+        boxSizing: 'border-box',
+        minHeight: '88px',
+        padding: '6px 8px',
+        border: '1px solid ' + T.border,
+        borderRadius: '6px',
+        background: 'transparent',
+        color: T.text,
+        fontSize: '12px',
+        lineHeight: 1.6,
+        fontFamily: 'inherit',
+        resize: 'vertical',
+      },
+      // 分段控件照官方：容器不画整条外框，每个选项是各自独立的小按钮；
+      // 选中项用浅底 + 更亮的文字，而不是整块品牌色——官方设置页就是这个观感。
+      section: { borderRadius: '8px', border: '1px solid ' + T.border, marginBottom: '8px' },
+      rowFirst: {
+        display: 'flex',
+        alignItems: 'center',
+        gap: '8px',
+        padding: '10px',
+        borderBottom: '1px solid ' + T.border,
+      },
+      root: { fontSize: '13px', color: T.text },
+      hero: { display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: '12px', flexWrap: 'wrap' },
+
+      delta: { padding: '3px 0', fontSize: '12px', color: T.text, lineHeight: 1.6 },
+})
+
+
+/**
+ * 面板的基础层：React、样式、基础组件、以及不依赖条目形状的工具。
+ *
+ * 这些在四个包里真的相同（`Switch` 不会因为管的是 MCP 行而变形）。协议相关的部分
+ * （路径、传输、待保存键、求值对象）在 `panel-protocol.js` 或各包的 `client/protocol.js`。
+ *
+ * 拼接顺序：`client/prelude.js` → 本文件 → 协议层 → `client/panel.js`。
+ */
     const React = require('react')
     const h = React.createElement
     const { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } = React
 
-    // ---------- 常量 ----------
-
-    const TITLE = 'Model Pack'
-    const PANEL_ID = 'model-pack'
-    const CHIP_ID = 'model-pack-chip'
-    const MODAL_ID = 'model-pack-chip-modal'
-
-    /**
-     * 默认 pack 的 id：`packs.json` 里真实存在的一项（见 src/pack.ts 的 DEFAULT_PACK_ID）。
-     *
-     * 它就是求值链的终点——工作区没绑定、或绑定悬空时落到这里。因此它在本面板里
-     * 带「默认」徽章，没有改名与删除入口；但**内容可编辑**（分包页可以选它来改）。
-     */
+    /** 内置 pack 的 id。未绑定的工作区按它求值。 */
     const DEFAULT_PACK_ID = 'default'
-    /** 默认 pack 的固定显示名。服务端落盘时也归一到它，改名命令对它无效。 */
-    const DEFAULT_PACK_NAME = '默认'
 
-    /** 档 id 固定四个，顺序即难度顺序；显示名可改，缺省用这里。 */
-    const TIER_IDS = ['tier1', 'tier2', 'tier3', 'tier4']
-    // 与 src/pack.ts 的 TIER_DEFAULT_NAMES 逐字一致：出厂档名只有一套。
-    /** 档的出厂显示名，与 src/pack.ts 的 TIER_DEFAULT_NAMES 逐字一致。 */
-    const TIER_NAMES = {
-      tier1: 'Scout',
-      tier2: 'Quick',
-      tier3: 'Deep',
-      tier4: 'Heavy',
-    }
-    /** 提示词覆盖的键：编排段一个，档四个（与 src/pack.ts 的 PROMPT_KEYS 一致）。 */
-    const PROMPT_DELEGATION_KEY = 'delegation'
-    const PROMPT_TIER_FIELDS = ['label', 'text']
-    /** 模型位 pack 名缓存最多读几个工作区：每个工作区要一次 read，不做无界扇出。 */
-    /** 模型位标签缓存最多读几个目录。与其余三包的工作区页上限（30）不是一回事。 */
-    const LABEL_CWD_LIMIT = 8
-
-    /** 工作区页每页显示几条；绑定表本身不截断，翻页拿全量。 */
-    const WORKSPACES_PAGE = 20
-
+/**
+ * 排序档位的序。与 core 的 `RANK_ORDER` 逐字一致——浏览器半边走不了服务端模块，
+ * 只能复制；`test/client.test.js` 逐档比对两边，漂移立刻红。
+ */
+const RANK_ORDER = {
+  'explicit-on': 0,
+  'explicit-off': 1,
+  'follow-on': 2,
+  'follow-off': 3,
+}
+    /** 工作区清单上限：会话一多，绑定表会变成一堵墙。 */
+    const MAX_WORKSPACES = 30
     /**
-     * chip 文字隐藏的断点。
+     * chip 的容器查询断点与两态交互样式。
      *
      * 宿主输入框底栏 `.row` 声明了 `container-type: inline-size`，并用
-     * `@container (width <= 560px)` 控制这一带按钮的间距。跟随同一个断点，
-     * chip 就和官方那几个按钮同步折叠，而不是各自算一套阈值。
+     * `@container (width <= 560px)` 控制这一带按钮的间距。chip 的字号与图标
+     * 对齐官方控件后整体变宽，断点相应上调到 640px，仍与官方同步折叠。
      *
      * 用 CSS 容器查询而不是 JS 量宽：插槽把 chip 包在一个与它等宽的容器里，
      * 量父级永远偏小；往上找祖先又依赖具体层级，两种做法都会误判。
+     *
+     * hover 与 focus 只能写在 CSS 里：内联 style 表达不了伪类。两态各抄官方
+     * 对应控件——默认态用 ModelSelect trigger 的 hover，绑定态用 PlanChip 的。
      */
     const CHIP_CSS =
       '.dsh-model-pack-chip { border: 1px solid var(--dsw-alias-border-l1, rgba(127,127,127,0.35)); background: transparent; color: var(--dsw-alias-label-secondary, GrayText); font-weight: 400 }' +
@@ -89,6 +156,17 @@ window.__ModuleLoader__.load({
       '@container (max-width: 640px) { .dsh-model-pack-chip-text { display: none } }'
 
     /**
+     * 面板按钮与待保存标记的样式。
+     *
+     * 尺寸抄官方设置页的行内操作按钮（`ModelsSection.module.css` 的
+     * `.rowActions .secondaryButton`）：高 28px、左右 10px、12px 字、`--dsw-radius-sm`。
+     * 颜色一律留在类里：内联写 `background` / `color` 会压掉 `:hover`（ui-baseline 红线 7）。
+     *
+     * 删除确认态抄官方的危险按钮：浅红底 + 红字，hover 用
+     * `--dsw-alias-interactive-bg-hover-danger`。官方二次确认是弹窗，这里压成行内两段，
+     * 所以只换底色与字重、不加描边；加重靠底色，靠描边会像被框住的一块错误。
+     */
+    /**
      * 待保存行的底色。
      *
      * 原先用左侧 `inset` 竖条，真机上它紧贴行首的箭头与文字，`inset` 阴影又没法
@@ -98,13 +176,6 @@ window.__ModuleLoader__.load({
     const PENDING_BG =
       'color-mix(in srgb, var(--dsw-alias-state-business-tertiary, rgba(65,118,230,0.16)) 55%, transparent)'
 
-    /**
-     * 面板按钮与可点行的样式。
-     *
-     * 尺寸抄官方设置页的行内操作按钮（`ModelsSection.module.css` 的
-     * `.rowActions .secondaryButton`）：高 28px、左右 10px、12px 字、`--dsw-radius-sm`。
-     * 颜色一律留在类里：内联写 `background` / `color` 会压掉 `:hover`（ui-baseline 红线 7）。
-     */
     const PANEL_CSS =
       '.dsh-model-pack-btn { transition: background 120ms ease, border-color 120ms ease, color 120ms ease }' +
       '.dsh-model-pack-btn-secondary { border-color: var(--dsw-alias-border-l1, rgba(127,127,127,0.3)); background: transparent; color: var(--dsw-alias-label-primary, inherit) }' +
@@ -135,96 +206,46 @@ window.__ModuleLoader__.load({
       '.dsh-model-pack-row[data-state="current"] { background: rgba(127,127,127,0.16) }' +
       '.dsh-model-pack-row[data-state="pending"] { background: ' + PENDING_BG + ' }'
 
-    /**
-     * 设置页的三页，顺序固定：分包 → 工作区 → 提示词。
-     *
-     * `value` 必须与 `UiState['defaultTab']` 逐字一致：它同时是 `defaultTab` 命令的取值。
-     */
-    const TABS = [
-      { value: 'packs', label: '分包' },
-      { value: 'workspace', label: '工作区' },
-      { value: 'prompts', label: '提示词' },
-    ]
-
-    // ---------- 传输 ----------
-
-    const PATHS = {
-      read: '/api/model-pack/read',
-      apply: '/api/model-pack/apply',
-    }
-
-    /**
-     * 两条路由共用一套信封：{ ok: true, value } 或 { ok: false, error }。
-     * HTTP 恒 200（见 src/routes.ts），所以判定只能看 ok 字段，不能看 response.ok。
-     */
-    async function post(path, body) {
-      let response
-      try {
-        response = await fetch(path, {
-          method: 'POST',
-          cache: 'no-store',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify(body || {}),
-        })
-      } catch (error) {
-        throw new Error('网络请求失败：' + String(error))
-      }
-      let payload
-      try {
-        payload = await response.json()
-      } catch {
-        throw new Error('响应不是合法 JSON（HTTP ' + response.status + '）')
-      }
-      if (payload && payload.ok === true) return payload.value
-      const message = payload && payload.error && payload.error.message ? payload.error.message : '请求失败'
-      throw new Error(message)
-    }
-
-    const api = {
-      read: (cwd, sessionId) =>
-        post(PATHS.read, {
-          ...(cwd ? { cwd: cwd } : {}),
-          ...(typeof sessionId === 'string' && sessionId !== '' ? { sessionId: sessionId } : {}),
-        }),
-      /**
-       * `dryRun` 只把命令应用在内存里、返回同一份视图，不写盘——待保存改动靠它渲染。
-       */
-      apply: (cwd, commands, dryRun) => {
-        const body = {}
-        if (cwd) body.cwd = cwd
-        body.commands = commands
-        if (dryRun === true) body.dryRun = true
-        return post(PATHS.apply, body)
-      },
-    }
-
-    // ---------- 样式 ----------
-
-    /**
-     * 颜色一律取宿主主题 token（--dsw-*，不是 --dsh-*），见 docs/ui-baseline.md。
-     * 卡片底用 bg-layer-1 而不是 bg-overlay：后者在暗色主题下是中灰浮层，当卡片底会发亮。
-     */
     const T = {
       text: 'var(--dsw-alias-label-primary, CanvasText)',
       dim: 'var(--dsw-alias-label-secondary, GrayText)',
       faint: 'var(--dsw-alias-label-tertiary, GrayText)',
-      surface: 'var(--dsw-alias-bg-layer-1, Canvas)',
+      surface:
+        'var(--dsw-alias-bg-layer-1, Canvas)',
       border: 'var(--dsw-alias-border-l1, rgba(127,127,127,0.35))',
       borderStrong: 'var(--dsw-alias-border-l2, rgba(127,127,127,0.55))',
+      // 不用 --dsw-alias-state-idle-primary：暗色主题下它解析成接近白色，
+      // 与白色圆点叠成一条纯白胶囊，开/关完全看不出来。这里用固定的半透明灰，
+      // 再给轨道加一圈内描边，暗色与亮色下都有轮廓。
+      idle: 'rgba(127, 127, 127, 0.38)',
       error: 'var(--dsw-alias-state-error-primary, #c0392b)',
       warn: 'var(--dsw-alias-state-warning-primary, #b7791f)',
+      onAccent: '#ffffff',
+      /*
+       * 开关配色照官方「反色」风格：开态轨道取前景色（暗色主题下是亮白），圆点取底色
+       * （近黑）；关态轨道是中灰、圆点是浅圆点。反色在亮暗两套主题里都成立，
+       * 也不依赖品牌色——品牌色在主题里存在与否不确定，撞色时开关就废了。
+       */
+      track: 'var(--dsw-alias-label-primary, #e6e6e6)',
+      trackOff: 'rgba(127, 127, 127, 0.30)',
+      knob: 'var(--dsw-alias-bg-layer-1, #111111)',
+      knobOff: 'rgba(255, 255, 255, 0.92)',
+      /*
+       * 待保存行的底色。
+       *
+       * 原先用左侧 `inset` 竖条，真机上它紧贴行首的箭头与文字，`inset` 阴影又没法
+       * 给文字让出间距，压字比不标更糟。改成整行浅底：与官方标记「当前项」同一套
+       * 做法（pack 行就是浅底），也不会和任何文字抢位置。
+       */
+      pendingBg: PENDING_BG,
+      // 各包追加的样式键（见 client/prelude.js 的 T_EXTRA）。
+      ...T_EXTRA(),
     }
 
     const S = {
-      // 设置页的 section 自带滚动容器，面板不自己滚高度。
-      root: { fontSize: '13px', color: T.text },
       title: { fontSize: '15px', fontWeight: 600, color: T.text },
-      hero: { display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: '12px', flexWrap: 'wrap' },
-
       hint: { color: T.dim, fontSize: '12px', lineHeight: 1.6 },
-      mono: { color: T.faint, fontSize: '11px', fontFamily: 'ui-monospace, monospace', wordBreak: 'break-all', whiteSpace: 'pre-wrap' },
       bar: { display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', margin: '14px 0 10px' },
-      delta: { padding: '3px 0', fontSize: '12px', color: T.text, lineHeight: 1.6 },
       input: {
         flex: '1 1 200px',
         minWidth: '160px',
@@ -235,23 +256,9 @@ window.__ModuleLoader__.load({
         color: T.text,
         fontSize: '13px',
       },
-      // 多行提示词框：边框、圆角、底色都跟 S.input 走，只加高度与换行行为。
-      textarea: {
-        width: '100%',
-        boxSizing: 'border-box',
-        minHeight: '88px',
-        padding: '6px 8px',
-        border: '1px solid ' + T.border,
-        borderRadius: '6px',
-        background: 'transparent',
-        color: T.text,
-        fontSize: '12px',
-        lineHeight: 1.6,
-        fontFamily: 'inherit',
-        resize: 'vertical',
-      },
       // 分段控件照官方：容器不画整条外框，每个选项是各自独立的小按钮；
-      // 选中项用浅底 + 更亮的文字，而不是整块品牌色——官方设置页就是这个观感。
+      // 选中项用浅底 + 更亮的文字，而不是整块品牌色——官方设置页就是这个观感，
+      // 品牌色实心块在暗色主题下会盖掉周围所有信息。
       segment: { display: 'flex', gap: '6px', flexWrap: 'wrap', alignItems: 'center' },
       segItem: (active) => ({
         padding: '4px 10px',
@@ -265,53 +272,8 @@ window.__ModuleLoader__.load({
         whiteSpace: 'nowrap',
         transition: 'background 120ms ease, color 120ms ease, border-color 120ms ease',
       }),
-      // 自绘下拉。原生 <select> 的弹出层由系统绘制，不跟主题：暗色下一点开是一块
-      // 蓝底浮层，与官方设置页的语言选择器完全不是一个观感。
-      pickerTrigger: {
-        display: 'inline-flex',
-        alignItems: 'center',
-        justifyContent: 'space-between',
-        gap: '8px',
-        width: '100%',
-        padding: '5px 8px',
-        border: '1px solid ' + T.border,
-        borderRadius: '8px',
-        background: 'transparent',
-        color: T.text,
-        fontSize: '12px',
-        lineHeight: 1.5,
-        cursor: 'pointer',
-        textAlign: 'left',
-      },
-      pickerLabel: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
-      pickerMenu: {
-        position: 'absolute',
-        top: 'calc(100% + 4px)',
-        left: 0,
-        right: 0,
-        zIndex: 30,
-        padding: '4px',
-        borderRadius: '10px',
-        border: '1px solid ' + T.border,
-        background: 'var(--dsw-alias-bg-layer-2, var(--dsw-alias-bg-layer-1, Canvas))',
-        boxShadow: '0 8px 24px rgba(0, 0, 0, 0.28)',
-        maxHeight: '260px',
-        overflowY: 'auto',
-      },
-      pickerItem: (active, hover) => ({
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'space-between',
-        gap: '10px',
-        padding: '6px 8px',
-        borderRadius: '6px',
-        fontSize: '12px',
-        color: T.text,
-        cursor: 'pointer',
-        background: active || hover ? 'rgba(127, 127, 127, 0.18)' : 'transparent',
-      }),
-      section: { borderRadius: '8px', border: '1px solid ' + T.border, marginBottom: '8px' },
-      groupHead: { display: 'flex', alignItems: 'center', gap: '8px', padding: '8px 10px', borderBottom: '1px solid ' + T.border },
+      group: { borderRadius: '8px', border: '1px solid ' + T.border, marginBottom: '8px' },
+      groupHead: { display: 'flex', alignItems: 'center', gap: '8px', padding: '8px 10px', cursor: 'pointer' },
       groupName: { fontWeight: 600, flex: '1 1 auto', color: T.text },
       badge: {
         fontSize: '11px',
@@ -322,32 +284,61 @@ window.__ModuleLoader__.load({
         color: T.dim,
         whiteSpace: 'nowrap',
       },
-      badgeWarn: {
-        fontSize: '11px',
-        padding: '1px 6px',
-        borderRadius: '999px',
-        background: 'transparent',
-        border: '1px solid ' + T.error,
-        color: T.error,
-        whiteSpace: 'nowrap',
-      },
-      row: { display: 'flex', alignItems: 'center', gap: '8px', padding: '8px 10px', borderTop: '1px solid ' + T.border },
-      rowFirst: {
+      row: {
         display: 'flex',
         alignItems: 'center',
-        gap: '8px',
-        padding: '10px',
-        borderBottom: '1px solid ' + T.border,
+        gap: '10px',
+        padding: '6px 10px 6px 22px',
+        borderTop: '1px solid ' + T.border,
       },
       rowMain: { flex: '1 1 auto', minWidth: 0 },
-      rowName: { display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap', color: T.text, fontWeight: 600 },
-      rowMeta: { color: T.dim, fontSize: '12px', marginTop: '3px', lineHeight: 1.5 },
-      field: { padding: '6px 0 10px', borderTop: '1px solid ' + T.border },
-      fieldHead: { display: 'flex', alignItems: 'center', gap: '8px', padding: '0 10px', marginTop: '8px' },
-      fieldRow: { display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', padding: '4px 10px' },
-      fieldLabel: { color: T.dim, fontSize: '11px', minWidth: '64px' },
-      fallbackRow: { display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap', padding: '4px 10px 4px 22px' },
-      disabledSection: { opacity: 0.5, pointerEvents: 'none', userSelect: 'none' },
+      rowName: { fontFamily: 'ui-monospace, monospace', fontSize: '12px', color: T.text },
+      origin: {
+        marginLeft: '6px',
+        padding: '0 4px',
+        fontSize: '10px',
+        fontFamily: 'inherit',
+        color: T.dim,
+        border: '1px solid ' + T.border,
+        borderRadius: '3px',
+        whiteSpace: 'nowrap',
+      },
+      groupInput: {
+        flex: '1 1 auto',
+        minWidth: '80px',
+        fontWeight: 600,
+        fontSize: '13px',
+        color: T.text,
+        background: 'transparent',
+        border: '1px solid ' + T.border,
+        borderRadius: '4px',
+        padding: '2px 6px',
+      },
+      rowDesc: { color: T.dim, fontSize: '11px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+      sw: (on, disabled) => ({
+        width: '36px',
+        height: '20px',
+        borderRadius: '999px',
+        border: 0,
+        padding: 0,
+        cursor: disabled ? 'not-allowed' : 'pointer',
+        opacity: disabled ? 0.45 : 1,
+        background: on ? T.track : T.trackOff,
+        position: 'relative',
+        flex: '0 0 auto',
+        transition: 'background 140ms ease',
+      }),
+      knob: (on) => ({
+        position: 'absolute',
+        top: '2px',
+        left: on ? '18px' : '2px',
+        width: '16px',
+        height: '16px',
+        borderRadius: '999px',
+        background: on ? T.knob : T.knobOff,
+        boxShadow: '0 1px 2px rgba(0, 0, 0, 0.28)',
+        transition: 'left 140ms ease, background 140ms ease',
+      }),
       /**
        * 行内操作按钮的尺寸与排布。颜色、hover、危险态全部在 `PANEL_CSS` 里——
        * 内联写 `background` / `color` 会压掉 CSS 的 `:hover`（ui-baseline 红线 7）。
@@ -414,11 +405,98 @@ window.__ModuleLoader__.load({
         paddingTop: '10px',
         borderTop: '1px solid var(--dsw-alias-border-l2, rgba(127,127,127,0.55))',
       },
+      /*
+       * 自绘下拉。原生 <select> 的弹出层由系统绘制，不跟主题：暗色下一点开是一块
+       * 蓝底浮层，与官方设置页的语言选择器完全不是一个观感。这里改成按钮 + 浮层。
+       */
+      pickerTrigger: {
+        display: 'inline-flex',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        gap: '8px',
+        width: '100%',
+        padding: '5px 8px',
+        border: '1px solid ' + T.border,
+        borderRadius: '8px',
+        background: 'transparent',
+        color: T.text,
+        fontSize: '12px',
+        lineHeight: 1.5,
+        cursor: 'pointer',
+        textAlign: 'left',
+      },
+      pickerLabel: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+      pickerMenu: {
+        position: 'absolute',
+        top: 'calc(100% + 4px)',
+        left: 0,
+        right: 0,
+        zIndex: 30,
+        padding: '4px',
+        borderRadius: '10px',
+        border: '1px solid ' + T.border,
+        background: 'var(--dsw-alias-bg-layer-2, var(--dsw-alias-bg-layer-1, Canvas))',
+        boxShadow: '0 8px 24px rgba(0, 0, 0, 0.28)',
+        maxHeight: '260px',
+        overflowY: 'auto',
+      },
+      pickerItem: (active, hover) => ({
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        gap: '10px',
+        padding: '6px 8px',
+        borderRadius: '6px',
+        fontSize: '12px',
+        color: T.text,
+        cursor: 'pointer',
+        background: active || hover ? 'rgba(127, 127, 127, 0.18)' : 'transparent',
+      }),
+      error: { color: T.error, fontSize: '12px', marginBottom: '8px' },
+      empty: { color: T.faint, padding: '12px 4px', fontSize: '12px' },
+      /**
+       * 需要用户注意但不阻断的提示（残留键、宿主能力缺失）。
+       *
+       * 与另外两包同形：浅黄底 + 黄字 + 描边。用 `S.hint` 代替它会让这类提示
+       * 与普通说明文字长得一样，用户扫过去不会停。
+       */
+      probeWarn: {
+        marginTop: '8px',
+        padding: '6px 10px',
+        borderRadius: '6px',
+        border: '1px solid ' + T.warn,
+        background: 'rgba(183,121,31,0.10)',
+        color: T.warn,
+        fontSize: '12px',
+        lineHeight: 1.6,
+      },
+      modalBack: {
+        position: 'fixed',
+        inset: 0,
+        background: 'rgba(0,0,0,0.42)',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        zIndex: 9999,
+      },
+      modal: {
+        width: 'min(560px, 92vw)',
+        maxHeight: '78vh',
+        // 下拉浮层要溢出弹层边缘，裁切会把它切掉一半；内容本来就短，不需要滚动。
+        overflow: 'visible',
+        background: T.surface,
+        color: T.text,
+        border: '1px solid ' + T.borderStrong,
+        borderRadius: '12px',
+        padding: '16px 18px',
+        boxShadow: '0 18px 48px rgba(0,0,0,0.28)',
+        fontSize: '13px',
+      },
       /**
        * 吸顶的区块标题。
        *
-       * 分包页的内容区有几百行，滚到中段时「档位」「工作区绑定」早就滚出视口了，
-       * 而这一块每一行都在往同一个对象里写决定。标题跟着滚走等于让人盲改。
+       * 分包页第二块有几百行，滚到中段时「包内开关：哪张 pack」早就滚出视口了，
+       * 而这一块每一行都在往这张 pack 里写决定。标题跟着滚走等于让人盲改。
        * `top: 0` 相对最近的滚动祖先（宿主的设置弹层内容区）；要是宿主自己也吸顶，
        * 这里会被压住——那就只能退回不吸顶，别硬加偏移量去猜。
        */
@@ -433,67 +511,17 @@ window.__ModuleLoader__.load({
         fontWeight: 600,
         color: T.text,
       },
-      /**
-       * 裸文字按钮（行内图标、折叠箭头）。
-       *
-       * 热区按 24px 起：原来只有字号那么高，指针要精确压住才点得中——这类控件
-       * 是整类的问题，不只改被指出来的那一个。
-       */
-      reset: {
-        border: 0,
-        background: 'transparent',
-        cursor: 'pointer',
-        color: T.dim,
-        fontSize: '12px',
-        padding: '2px 4px',
-        minHeight: '24px',
-        display: 'inline-flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-      },
-      probeFail: {
-        marginTop: '8px',
-        padding: '6px 10px',
-        borderRadius: '6px',
-        border: '1px solid ' + T.error,
-        background: 'rgba(192,57,43,0.10)',
-        color: T.error,
-        fontSize: '12px',
-        lineHeight: 1.6,
-      },
-      probeWarn: {
-        marginTop: '8px',
-        padding: '6px 10px',
-        borderRadius: '6px',
-        border: '1px solid ' + T.warn,
-        background: 'rgba(183,121,31,0.10)',
-        color: T.warn,
-        fontSize: '12px',
-        lineHeight: 1.6,
-      },
-      notice: { marginTop: '8px', padding: '6px 10px', borderRadius: '6px', border: '1px solid ' + T.border, color: T.dim, fontSize: '12px' },
-      error: { color: T.error, fontSize: '12px', marginTop: '8px' },
-      empty: { color: T.faint, padding: '12px 4px', fontSize: '12px' },
       block: { marginTop: '16px', paddingTop: '12px', borderTop: '1px solid ' + T.border },
+      blockTitle: { fontSize: '12px', fontWeight: 600, color: T.text, marginBottom: '6px' },
       packRow: {
         display: 'flex',
         alignItems: 'center',
         gap: '8px',
         padding: '6px 8px',
         borderRadius: '6px',
+        cursor: 'pointer',
         border: '1px solid ' + T.border,
         marginBottom: '6px',
-      },
-      groupInput: {
-        flex: '1 1 auto',
-        minWidth: '80px',
-        fontWeight: 600,
-        fontSize: '13px',
-        color: T.text,
-        background: 'transparent',
-        border: '1px solid ' + T.border,
-        borderRadius: '4px',
-        padding: '2px 6px',
       },
       path: { fontFamily: 'ui-monospace, monospace', fontSize: '11px', color: T.dim, wordBreak: 'break-all' },
       /**
@@ -527,43 +555,1078 @@ window.__ModuleLoader__.load({
        * 必须落在真正被裁的那个 flex item 上，且 `min-width: 0` 才肯缩。
        */
       chipText: { minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
-      modalBack: {
-        position: 'fixed',
-        inset: 0,
-        background: 'rgba(0,0,0,0.42)',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        zIndex: 9999,
-      },
-      modal: {
-        width: 'min(560px, 92vw)',
-        maxHeight: '78vh',
-        // 下拉浮层要溢出弹层边缘，裁切会把它切掉一半；内容长了由内层自己滚。
-        overflow: 'visible',
-        background: T.surface,
-        color: T.text,
-        border: '1px solid ' + T.borderStrong,
-        borderRadius: '12px',
-        padding: '16px 18px',
-        boxShadow: '0 18px 48px rgba(0,0,0,0.28)',
-        fontSize: '13px',
-      },
-      confirmNames: {
-        marginTop: '8px',
-        maxHeight: '160px',
-        overflow: 'auto',
-        fontFamily: 'ui-monospace, monospace',
-        fontSize: '12px',
-        color: T.text,
-        border: '1px solid ' + T.border,
-        borderRadius: '6px',
-        padding: '6px 8px',
-        lineHeight: 1.7,
-        whiteSpace: 'pre-wrap',
-        wordBreak: 'break-all',
+      // 各包追加的样式键（见 client/prelude.js 的 S_EXTRA）。
+      ...S_EXTRA(),
+    }
+
+    /**
+     * 极小的可观测量。
+     *
+     * 设置页改的是持久化配置，槽位注册却发生在 `apply` 里，两者在 React 上没有
+     * 父子关系，改完不会自动重挂；chip 在会话页、设置页在设置弹层里，同理。
+     * 一个 set/subscribe 就够了，不引任何状态库。
+     */
+    function createSignal(initial) {
+      let value = initial
+      const listeners = new Set()
+      return {
+        read: () => value,
+        set: (next) => {
+          if (value === next) return
+          value = next
+          for (const listener of listeners) listener()
+        },
+        subscribe: (listener) => {
+          listeners.add(listener)
+          return () => listeners.delete(listener)
+        },
+      }
+    }
+
+    /**
+     * 跨组件共享的界面状态。
+     *
+     * `showChip` 由 `apply` 订阅：设置页拨动后立刻挂上或摘下槽位。
+     * `chipName` 是 chip 上显示的 pack 名。
+     */
+    const env = {
+      onChipChange: null,
+      sessionId: undefined,
+    }
+    const chipName = createSignal(null)
+
+    // CHIP_LABEL 来自 `client/prelude.js`：chip 上的缩写是各包对外的口径。
+
+    // ---------- 基础组件 ----------
+
+    /**
+     * 策略文件的告警。
+     *
+     * 写入失败不再是错误信封：它和既有的读告警一样，跟着视图的 `warnings` 回来，
+     * 所以面板得有一处能看见。默认折起只显示条数——正常情况一条都没有，出现时才
+     * 占位置；展开才列出全文。
+     */
+    function Warnings(props) {
+      const [open, setOpen] = useState(false)
+      const list = Array.isArray(props.warnings) ? props.warnings : []
+      if (list.length === 0) return null
+      return h(
+        'div',
+        { style: { marginTop: '8px' } },
+        h(
+          'button',
+          {
+            type: 'button',
+            'aria-expanded': open,
+            style: { ...S.badge, cursor: 'pointer' },
+            onClick: () => setOpen(!open),
+          },
+          (open ? '▾ ' : '▸ ') + list.length + ' 条告警',
+        ),
+        open
+          ? h(
+              'div',
+              { style: { ...S.hint, marginTop: '4px' } },
+              list.map((warning, index) => h('div', { key: index }, warning)),
+            )
+          : null,
+      )
+    }
+
+    /** 残留键的种类标签。键空间不同，混着显示用户分不清是能力项还是组。 */
+    const STALE_KIND_LABEL = { item: STALE_ITEM_LABEL, group: '分组', assignment: '归属' }
+
+    /**
+     * 残留键的提示与清理入口。
+     *
+     * 与 plugin-pack 同形：默认折叠，展开后每个键一行，带种类与「出现在哪些 pack 里」，
+     * 并给清理按钮。清理走待保存改动，用户能先试算看到要删多少条再决定落盘。
+     */
+    function StaleKeys(props) {
+      const [open, setOpen] = useState(false)
+      const entries = Array.isArray(props.entries) ? props.entries : []
+      if (entries.length === 0) return null
+
+      /** 一个残留键对应的清理命令：按种类发不同的 op，键空间不同不能合并。 */
+      const commandsFor = (entry) => {
+        if (entry.kind === 'assignment') return [{ op: 'assign', name: entry.key, groupId: null }]
+        if (entry.kind === 'group') {
+          return (entry.packs || []).map((packId) => ({ op: 'packGroup', packId: packId, groupId: entry.key, value: null }))
+        }
+        return (entry.packs || []).map((packId) => ({ op: 'packItem', packId: packId, name: entry.key, value: null }))
+      }
+
+      const collapsed = entries.length > 6
+      const shown = open || !collapsed ? entries : entries.slice(0, 6)
+
+      return h(
+        'div',
+        { style: S.probeWarn },
+        h(
+          'div',
+          null,
+          entries.length + ' 个键在策略里、当前名册里没有。已保留不删（重新装回来时决定还在），也可以现在清掉：',
+        ),
+        h(
+          'div',
+          { style: { marginTop: '6px' } },
+          shown.map((entry) =>
+            h(
+              'div',
+              {
+                key: entry.kind + ':' + entry.key,
+                style: { display: 'flex', alignItems: 'center', gap: '6px', marginTop: '2px' },
+              },
+              h('span', { style: S.badge }, STALE_KIND_LABEL[entry.kind] || entry.kind),
+              h(
+                'span',
+                { style: { fontFamily: 'ui-monospace, monospace', wordBreak: 'break-word', flex: '1 1 auto' } },
+                entry.key,
+              ),
+              h(
+                'span',
+                { style: { ...S.hint, flex: '0 0 auto' } },
+                Array.isArray(entry.packs) && entry.packs.length > 0 ? entry.packs.join('、') : '全局',
+              ),
+              h(Button, { variant: 'secondary', onClick: () => props.onClear(commandsFor(entry)) }, '清理'),
+            ),
+          ),
+        ),
+        h(
+          'div',
+          { style: { marginTop: '6px', display: 'flex', gap: '8px' } },
+          collapsed
+            ? h(Button, { variant: 'quiet', onClick: () => setOpen(!open) }, open ? '收起' : '展开全部 ' + entries.length + ' 个')
+            : null,
+          h(Button, { variant: 'quiet', onClick: () => props.onClear(entries.flatMap(commandsFor)) }, '清理全部 ' + entries.length + ' 个'),
+        ),
+      )
+    }
+
+    function Switch(props) {
+      return h(
+        'button',
+        {
+          type: 'button',
+          'aria-pressed': props.on,
+          title: props.title || (props.on ? '已开启' : '已关闭'),
+          disabled: props.disabled,
+          style: S.sw(props.on, props.disabled),
+          onClick: props.disabled ? undefined : () => props.onChange(!props.on),
+        },
+        h('span', { style: S.knob(props.on) }),
+      )
+    }
+
+    function Segmented(props) {
+      return h(
+        'div',
+        { style: S.segment },
+        props.options.map((option) =>
+          h(
+            'button',
+            {
+              key: option.value,
+              type: 'button',
+              style: S.segItem(props.value === option.value),
+              onClick: () => props.onChange(option.value),
+            },
+            option.label,
+          ),
+        ),
+      )
+    }
+
+    /**
+     * 三态开关：开 / 关 / 跟随。
+     *
+     * 「跟随」必须是独立可点的第三个选项：显式关掉与「不表态」是两件事，
+     * 用「点两次循环」或和「开」共用一个按钮都表达不出来。选中态沿用分段控件的
+     * 浅底样式，不引新样式。
+     */
+    const TRI_STATE = [
+      { value: 'on', label: '开', title: '显式打开（压过组）' },
+      { value: 'off', label: '关', title: '显式关闭（压过组）' },
+      { value: 'follow', label: '跟随', title: '不记录，按组与默认求值' },
+    ]
+
+    function triStateOf(value, allowInherit) {
+      if (value === true) return 'on'
+      if (value === false) return 'off'
+      // default pack 没有上一层：未记录就是取内置缺省（开），显示成「开」而不是「跟随」。
+      return allowInherit === false ? 'on' : 'follow'
+    }
+
+    function TriState(props) {
+      // `default` 是求值链的终点，没有「跟随」可言；两态就够，多一个按钮反而让人
+      // 以为还能往上找。
+      const allowInherit = props.allowInherit !== false
+      const active = triStateOf(props.value, allowInherit)
+      const options = allowInherit ? TRI_STATE : TRI_STATE.filter((option) => option.value !== 'follow')
+      return h(
+        'div',
+        { style: { display: 'inline-flex', gap: '4px', alignItems: 'center', flex: '0 0 auto' } },
+        options.map((option) =>
+          h(
+            'button',
+            {
+              key: option.value,
+              type: 'button',
+              title: option.title,
+              'aria-pressed': active === option.value,
+              disabled: props.disabled,
+              style: {
+                ...S.segItem(active === option.value),
+                /*
+                 * 三态是这个面板里点得最多的控件。原来是 11px 字 + 2px 7px 内距，
+                 * 热区只有 19px 高——比被抱怨"太小"的删除按钮还小一截。
+                 * 高度按官方控件档位取 24px（一排三个，28 会显得笨重）。
+                 */
+                display: 'inline-flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                boxSizing: 'border-box',
+                height: '24px',
+                padding: '0 10px',
+                fontSize: '12px',
+                lineHeight: '18px',
+                opacity: props.disabled ? 0.45 : 1,
+                cursor: props.disabled ? 'not-allowed' : 'pointer',
+              },
+              onClick: () => {
+                if (props.disabled) return
+                props.onChange(option.value === 'on' ? true : option.value === 'off' ? false : null)
+              },
+            },
+            option.label,
+          ),
+        ),
+      )
+    }
+
+    /**
+     * 面板按钮。颜色全部在 `PANEL_CSS` 里，这里只给尺寸与语义。
+     *
+     * 尺寸抄官方设置页的行内操作按钮（28px 高、左右 10px、12px 字、radius-sm），
+     * 比原来的裸文字热区大一倍以上——裸文字只有字号那么高，指针要精确压住才点得中。
+     */
+    function Button(props) {
+      const variant = props.variant || (props.danger === true ? 'danger' : 'secondary')
+      const className = 'dsh-model-pack-btn dsh-model-pack-btn-' + variant
+      return h(
+        'button',
+        {
+          type: 'button',
+          disabled: props.disabled === true,
+          className: className,
+          style: { ...S.btn, ...(props.style || {}) },
+          title: props.title || '',
+          ref: props.innerRef,
+          'data-armed': variant === 'danger' && props.armed === true ? 'true' : undefined,
+          onClick: props.onClick,
+        },
+        props.children,
+      )
+    }
+
+    /**
+     * 删除的二次确认：第一次点变成「确认」（浅红底 + 红字），再点一次才执行。
+     *
+     * 不用弹窗：这类删除都发生在列表行里，弹窗要额外一次「关闭」动作；
+     * 行内二次确认把成本压到一次点击，误点的代价只是多看一眼。
+     * 进入确认态后 4 秒自动撤销，点别处也撤销，避免一直停在危险状态。
+     *
+     * 删除是唯一「点了就没了」的动作（不进待保存队列，见 ADR 0006），
+     * 所以确认态必须比常态明显：文案换成「确认」、红字、浅红底。
+     */
+    function ConfirmButton(props) {
+      const [armed, setArmed] = useState(false)
+      const boxRef = useRef(null)
+      const disabled = props.disabled === true
+      useEffect(() => {
+        if (!armed) return undefined
+        const timer = setTimeout(() => setArmed(false), 4000)
+        return () => clearTimeout(timer)
+      }, [armed])
+      useEffect(() => {
+        if (!armed) return undefined
+        const onDown = (event) => {
+          const node = boxRef.current
+          if (node && node.contains(event.target)) return
+          setArmed(false)
+        }
+        document.addEventListener('mousedown', onDown, true)
+        return () => document.removeEventListener('mousedown', onDown, true)
+      }, [armed])
+      return h(
+        Button,
+        {
+          danger: true,
+          armed: armed,
+          disabled: disabled,
+          innerRef: boxRef,
+          style: props.style,
+          title: armed ? '再点一次确认删除' : props.title || '',
+          onClick: (event) => {
+            event.stopPropagation()
+            if (disabled) return
+            if (!armed) {
+              setArmed(true)
+              return
+            }
+            setArmed(false)
+            props.onConfirm()
+          },
+        },
+        armed ? props.confirmLabel || '确认' : props.label || '删除',
+      )
+    }
+
+    /**
+     * 面板内输入框的 Esc 只作用于输入框自己，不冒泡。
+     *
+     * 宿主的设置弹层把 Esc 当「关闭面板」：改名途中按 Esc 想反悔，
+     * 结果整个面板关掉，改了一半的名字也一起没了。
+     */
+    function stopEscape(event) {
+      if (event.key === 'Escape') event.stopPropagation()
+    }
+
+    /** 每条命令命中哪一格状态。同键后写覆盖，队列里永远只有最后一次取值。 */
+    /**
+     * 待保存期间的组名回溯表：组 id → 改动前的名字。
+     *
+     * 冻结的是「排序键」，不是视图。组 id 与行键都不变，只有分组名要回溯——否则改完名
+     * 的那一组会立刻跳到新位置，下一次点击就落在别的组上。也不能用 `base` 的数组位置
+     * 当序：列表平时按名字排，两者顺序本来就不同，那样一进待保存状态反而会重排一次。
+     *
+     * `frozen` 为 false 时返回空表，调用方按当前名字排即可。
+     */
+    function frozenGroupNames(base, frozen) {
+      const map = new Map()
+      if (!frozen) return map
+      const groups = base && base.groups && Array.isArray(base.groups.groups) ? base.groups.groups : []
+      for (const group of groups) {
+        if (group && typeof group.id === 'string') map.set(group.id, group.name)
+      }
+      return map
+    }
+
+    function createQueue(keyOf) {
+      let entries = []
+      let uid = 0
+
+      const set = (next) => {
+        entries = next
+        return next
+      }
+
+      return {
+        get entries() {
+          return entries
+        },
+        get count() {
+          return entries.length
+        },
+        /** 被改动命中的键，供行渲染标出「这一行还没保存」。 */
+        keys() {
+          const set = new Set()
+          for (const entry of entries) if (entry.key !== null) set.add(entry.key)
+          return set
+        },
+        commands() {
+          return entries.map((entry) => entry.command)
+        },
+        push(commands) {
+          const list = Array.isArray(commands) ? commands : [commands]
+          const next = entries.slice()
+          for (const command of list) {
+            const key = keyOf(command)
+            if (key !== null) {
+              for (let index = next.length - 1; index >= 0; index -= 1) {
+                if (next[index].key === key) next.splice(index, 1)
+              }
+            }
+            uid += 1
+            next.push({ id: uid, key: key, command: command })
+          }
+          return set(next)
+        },
+        undo() {
+          return set(entries.slice(0, -1))
+        },
+        discard() {
+          return set([])
+        },
+        /** 换一个新引用但内容不变：删除是另一条写盘路径，队列没变也要重算一次试算。 */
+        touch() {
+          return set(entries.slice())
+        },
+        /** 丢掉命中 predicate 的命令，返回丢掉的条数。 */
+        drop(predicate) {
+          const victims = entries.filter((entry) => predicate(entry.command))
+          if (victims.length === 0) return 0
+          set(entries.filter((entry) => !predicate(entry.command)))
+          return victims.length
+        },
+      }
+    }
+
+    /**
+     * 待保存改动。
+     *
+     * 点一下只入队，不发写请求；队列非空时每次变化都用 `dryRun` 试算一次，
+     * 拿服务端算好的视图来渲染——浏览器不复制求值链。
+     * 点「保存」才把整批命令写盘。
+     *
+     * 队列活在这一次挂载里：关闭面板即丢。跨面板保留会被「我到底存了没」拖住，
+     * 而用户关掉面板再回来时通常已经不记得点过什么了。
+     *
+     * 这里只剩两件需要 React 的事：试算的世代号与提交。队列规则全在 `createQueue`，
+     * 因此可以脱离渲染直接测。
+     */
+    function usePending(options) {
+      const queueRef = useRef(null)
+      if (queueRef.current === null) queueRef.current = createQueue(pendingKey)
+      const queue = queueRef.current
+      const [entries, setEntries] = useState(queue.entries)
+      const [preview, setPreview] = useState({ data: null, loading: false, error: null })
+      const seq = useRef(0)
+      const latest = useRef(options)
+      latest.current = options
+
+      useEffect(() => {
+        if (entries.length === 0) {
+          // 队列空了就让上一次在途的试算作废，避免它的响应把视图改回「有改动」。
+          seq.current += 1
+          setPreview({ data: null, loading: false, error: null })
+          return
+        }
+        const mine = (seq.current += 1)
+        setPreview((prev) => ({ data: prev.data, loading: true, error: null }))
+        latest.current.preview(queue.commands()).then(
+          (data) => {
+            if (mine === seq.current) setPreview({ data: data, loading: false, error: null })
+          },
+          (error) => {
+            if (mine === seq.current) {
+              setPreview((prev) => ({ data: prev.data, loading: false, error: String(error.message || error) }))
+            }
+          },
+        )
+      }, [entries])
+
+      /** 把队列的新数组交给 React：队列自己同步持有同一份，事件回调里读到的永远是最新。 */
+      const apply = useCallback((next) => {
+        setEntries(next)
+        return next
+      }, [])
+
+      const push = useCallback((commands) => apply(queue.push(commands)), [apply, queue])
+      const undo = useCallback(() => apply(queue.undo()), [apply, queue])
+      const discard = useCallback(() => apply(queue.discard()), [apply, queue])
+      const refresh = useCallback(() => apply(queue.touch()), [apply, queue])
+
+      const resetPreview = useCallback(() => {
+        seq.current += 1
+        setPreview({ data: null, loading: false, error: null })
+      }, [])
+
+      const drop = useCallback(
+        (predicate) => {
+          const dropped = queue.drop(predicate)
+          if (dropped > 0) apply(queue.entries)
+          return dropped
+        },
+        [apply, queue],
+      )
+
+      const commit = useCallback(async () => {
+        const commands = queue.commands()
+        if (commands.length === 0) return true
+        try {
+          const data = await latest.current.apply(commands)
+          apply(queue.discard())
+          latest.current.onApplied(data)
+          return true
+        } catch (error) {
+          setPreview((prev) => ({ ...prev, error: String(error.message || error) }))
+          return false
+        }
+      }, [apply, queue])
+
+      const keys = useMemo(() => queue.keys(), [entries, queue])
+
+      return {
+        entries: entries,
+        keys: keys,
+        preview: preview,
+        push: push,
+        undo: undo,
+        discard: discard,
+        drop: drop,
+        refresh: refresh,
+        resetPreview: resetPreview,
+        commit: commit,
+        count: entries.length,
+      }
+    }
+
+    /** 停靠区上方那一行提示：说清楚发生了什么，给一个关掉它的入口。 */
+    function NoticeBar(props) {
+      return h(
+        'div',
+        { style: S.noticeBar },
+        h(
+          'span',
+          {
+            style: {
+              ...S.hint,
+              flex: '1 1 auto',
+              minWidth: 0,
+              color: 'var(--dsw-alias-state-warn-label, #b7791f)',
+            },
+          },
+          props.text,
+        ),
+        h(Button, { variant: 'quiet', onClick: props.onClose, title: '关闭提示' }, '关闭'),
+      )
+    }
+
+    /** 底部待保存条：左计数与错误，右「撤销 / 放弃全部 / 保存」。 */
+    function PendingBar(props) {
+      if (props.count === 0) return null
+      const busy = props.busy === true
+      // 设置页里贴住底边（内容很长，要一直看得见）；弹层里不贴，由外层底栏排布。
+      const inline = props.inline === true
+      const style = inline ? S.pendingInline : S.pendingBar
+      return h(
+        'div',
+        { style: style },
+        // 弹层里「关闭」占住最左，这里先把空位弹开，让文字与按钮一起靠右。
+        inline ? h('span', { key: 'spacer', style: { flex: '1 1 auto' } }) : null,
+        h(
+          'span',
+          {
+            style: { ...S.hint, flex: inline ? '0 0 auto' : '1 1 auto', color: props.error ? T.error : undefined },
+          },
+          props.error ? '未保存：' + props.error : '已改 ' + props.count + ' 项，尚未保存',
+        ),
+        h(Button, { variant: 'quiet', onClick: props.onUndo, disabled: busy }, '撤销'),
+        // 只有一项时「撤销」与「放弃全部」做的是同一件事，多一个按钮只是多一次选择。
+        props.count > 1
+          ? h(Button, { variant: 'quiet', onClick: props.onDiscard, disabled: busy }, '放弃全部')
+          : null,
+        h(Button, { variant: 'primary', onClick: props.onCommit, disabled: busy }, busy ? '保存中…' : '保存'),
+      )
+    }
+
+    function Chevron() {
+      return h(
+        'svg',
+        {
+          width: 10,
+          height: 10,
+          viewBox: '0 0 10 10',
+          'aria-hidden': true,
+          style: { flex: '0 0 auto', opacity: 0.65 },
+        },
+        h('path', {
+          d: 'M2.5 4L5 6.5L7.5 4',
+          stroke: 'currentColor',
+          strokeWidth: 1.3,
+          fill: 'none',
+          strokeLinecap: 'round',
+          strokeLinejoin: 'round',
+        }),
+      )
+    }
+
+    /**
+     * 下拉选择器。
+     *
+     * `options` 是 `[{ value, label }]`。点外部或按 Esc 关闭：监听挂在文档上，
+     * 不依赖父级的点击处理，所以嵌在可点击的列表行里也不会误触。
+     */
+    function Picker(props) {
+      const [open, setOpen] = useState(false)
+      const [hover, setHover] = useState(null)
+      const boxRef = useRef(null)
+      const options = Array.isArray(props.options) ? props.options : []
+      let current = null
+      for (const option of options) {
+        if (option.value === props.value) current = option
+      }
+      const label = current === null ? props.placeholder || '' : current.label
+
+      useEffect(() => {
+        if (!open) return undefined
+        const onDown = (event) => {
+          const node = boxRef.current
+          if (node && node.contains(event.target)) return
+          setOpen(false)
+        }
+        const onKey = (event) => {
+          if (event.key === 'Escape') setOpen(false)
+        }
+        document.addEventListener('mousedown', onDown, true)
+        document.addEventListener('keydown', onKey, true)
+        return () => {
+          document.removeEventListener('mousedown', onDown, true)
+          document.removeEventListener('keydown', onKey, true)
+        }
+      }, [open])
+
+      return h(
+        'div',
+        { ref: boxRef, style: { position: 'relative', minWidth: props.minWidth || '120px' } },
+        h(
+          'button',
+          {
+            type: 'button',
+            style: { ...S.pickerTrigger, ...(props.triggerStyle || {}) },
+            title: props.title || label,
+            'aria-haspopup': 'listbox',
+            'aria-expanded': open,
+            onClick: (event) => {
+              event.stopPropagation()
+              setOpen(!open)
+            },
+          },
+          h('span', { style: S.pickerLabel }, label),
+          h(Chevron),
+        ),
+        open
+          ? h(
+              'div',
+              { style: S.pickerMenu, role: 'listbox' },
+              options.map((option) =>
+                h(
+                  'div',
+                  {
+                    key: option.value,
+                    role: 'option',
+                    'aria-selected': option.value === props.value,
+                    style: S.pickerItem(option.value === props.value, hover === option.value),
+                    onMouseEnter: () => setHover(option.value),
+                    onMouseLeave: () => setHover(null),
+                    onClick: (event) => {
+                      event.stopPropagation()
+                      setOpen(false)
+                      props.onChange(option.value)
+                    },
+                  },
+                  h('span', { style: S.pickerLabel }, option.label),
+                  option.value === props.value ? h('span', { style: { opacity: 0.9 } }, '✓') : null,
+                ),
+              ),
+            )
+          : null,
+      )
+    }
+
+    // ---------- 宿主与求值 ----------
+
+    /**
+     * 取 `ctx.remote`。
+     *
+     * 服务是否在 `ctx` 上由 `inject` 决定：声明了才可能有值。但 `ctx.get` 对取不到
+     * 的已声明服务是**抛错**而不是返回 undefined，所以探测必须包 try/catch——
+     * 这一行漏了会让整个 client 模块加载失败，桌面端直接起不来。
+     * 取不到就退化成 `remote: null`：工作区页会空着（目录清单就来自 `remote`），
+     * 其它页照常工作。
+     */
+    function createHost(ctx) {
+      let remote = null
+      try {
+        remote = (ctx && ctx.remote) || null
+      } catch {
+        remote = null
+      }
+      if (remote === null || !remote.session) {
+        try {
+          const session = typeof ctx.get === 'function' ? ctx.get('remote.session') : undefined
+          if (session) remote = { session: session }
+        } catch {
+          // 取不到就保持 null。
+        }
+      }
+      return { ctx: ctx, remote: remote }
+    }
+
+    /**
+     * 工作区键归一，必须与服务端 `normalizeCwd` 逐字节一致：
+     * 反斜杠转正斜杠、去尾斜杠、Windows 下转小写、盘符根保留尾斜杠（`c:/`）。
+     * 这里只用它回读 `bindings`；发出去的 cwd 保持原样，由服务端自己归一。
+     */
+    function normalizeCwd(cwd) {
+      if (typeof cwd !== 'string') return null
+      const trimmed = cwd.trim()
+      if (trimmed === '') return null
+      let unified = trimmed.replace(/\\/gu, '/')
+      if (isWindows()) unified = unified.toLowerCase()
+      if (unified.length > 1) {
+        const stripped = unified.replace(/\/+$/u, '')
+        if (stripped === '') return '/'
+        return /^[a-z]:$/iu.test(stripped) ? stripped + '/' : stripped
+      }
+      return unified
+    }
+
+    /**
+     * 绑定命令的待保存键。
+     *
+     * 服务端按归一化后的 cwd 落盘，所以「这一行有没有未保存改动」也必须按归一化后的
+     * cwd 查。两边各写一遍时 Windows 上必然不等（`C:\\x` vs `c:/x`），
+     * 待保存标记永不出现。
+     */
+    function bindKeyOf(cwd) {
+      const key = normalizeCwd(cwd)
+      return 'bind:' + (key === null ? cwd : key)
+    }
+
+    function isWindows() {
+      try {
+        if (typeof process !== 'undefined' && process && typeof process.platform === 'string') {
+          return process.platform === 'win32'
+        }
+      } catch {
+        // 浏览器里没有 process。
+      }
+      try {
+        return typeof navigator !== 'undefined' && /windows/i.test(String(navigator.userAgent || ''))
+      } catch {
+        return false
+      }
+    }
+
+    /** 读绑定：先精确匹配；历史键大小写不同时再比一次小写。 */
+    function bindingOf(bindings, cwd) {
+      if (!bindings || !bindings.bindings) return null
+      const key = normalizeCwd(cwd)
+      if (key === null) return null
+      const exact = bindings.bindings[key]
+      if (typeof exact === 'string') return exact
+      const lower = key.toLowerCase()
+      for (const candidate of Object.keys(bindings.bindings)) {
+        if (candidate.toLowerCase() === lower) return bindings.bindings[candidate]
+      }
+      return null
+    }
+
+    function hasPack(packs, id) {
+      if (typeof id !== 'string') return false
+      for (const pack of packs || []) {
+        if (pack.id === id) return true
+      }
+      return false
+    }
+
+    function packById(packs, id) {
+      if (!Array.isArray(packs)) return null
+      for (const pack of packs) {
+        if (pack.id === id) return pack
+      }
+      return packs.length > 0 ? packs[0] : null
+    }
+
+    function defaultPackOf(packs) {
+      for (const pack of packs || []) {
+        if (pack.id === DEFAULT_PACK_ID) return pack
+      }
+      return null
+    }
+
+    /**
+     * 名册的显示序。
+     *
+     * 服务端已按名字排好（`default` 恒置顶），这里只在待保存期间覆盖成改动前的 id 序：
+     * 改名会让那张 pack 立刻跳到新位置，下一次点击就落在别的 pack 上——与分组、行
+     * 同一条规则。新建的 pack 不在改动前的序里，落到末尾，同档沿用服务端的名字序
+     * （`Array.prototype.sort` 稳定）。
+     */
+    function packLabel(pack) {
+      if (pack === null || pack === undefined) return ''
+      return pack.builtin === true || pack.id === DEFAULT_PACK_ID ? '默认' : pack.name
+    }
+
+    /**
+     * 分包页读的是**选中那张 pack 的原始记录**，不是工作区求值链。
+     *
+     * 两者不是一回事：服务端行上的 `itemWorkspace` / `rank` 按**工作区绑定的** pack
+     * 算，而分包页让用户逐张编辑 pack——选中哪张由本地状态决定，服务端不知道。
+     * 拿绑定 pack 的结论渲染分包页，结果是每张 pack 都显示成同一份值：默认 pack 里
+     * 显式关掉的项显示成「开」，其余 pack 全部显示成「跟随」，排序也退化成按名字。
+     *
+     * 这里只做「读原始记录 + 算档位」，不碰求值链：链（`pack.items ?? pack.groups ??
+     * default.items ?? default.groups ?? true`）仍由服务端算，行上的 `open` 就是它。
+     */
+    function packRankOf(explicit, isDefault, landing) {
+      if (explicit === true) return 'explicit-on'
+      if (explicit === false) return 'explicit-off'
+      if (isDefault) return 'explicit-on'
+      return landing ? 'follow-on' : 'follow-off'
+    }
+
+    function groupIdOf(row) {
+      return row.groupId || null
+    }
+
+    function groupNameOf(groups, groupId) {
+      for (const group of groups || []) {
+        if (group.id === groupId) return group.name
+      }
+      return '未分组'
+    }
+
+    /**
+     * `ui` 段。
+     *
+     * 服务端一定有 `ui`；旧面板靠 `policy` 投影兜底的那条分支随兼容层一起删掉了。
+     */
+    function compareCwd(left, right) {
+      const order = left.localeCompare(right, 'zh', { numeric: true, sensitivity: 'base' })
+      return order !== 0 ? order : left < right ? -1 : left > right ? 1 : 0
+    }
+
+    /**
+     * 已知工作区：从会话列表里取 cwd，排除子代理会话，按路径去重排序。
+     *
+     * 截断仍按最近使用取舍：先按 `updatedAt` 倒序取前 MAX_WORKSPACES 条，
+     * 展示序只由路径决定。取不到会话时返回空列表——面板仍能编辑 pack，
+     * 只是工作区清单读不到，其它页照常。
+     */
+    async function listWorkspaceCwds(host) {
+      const session = host && host.remote ? host.remote.session : null
+      if (!session || typeof session.list !== 'function') return []
+      let result
+      try {
+        result = await session.list({})
+      } catch {
+        return []
+      }
+      if (!result || result.ok !== true) return []
+      const items = result.value && Array.isArray(result.value.items) ? result.value.items : []
+      const roots = items.filter(
+        (item) => item && typeof item.cwd === 'string' && item.cwd !== '' && item.origin !== 'subagent',
+      )
+      roots.sort((a, b) => (Number(b.updatedAt) || 0) - (Number(a.updatedAt) || 0))
+      const cwds = []
+      const seen = {}
+      for (const item of roots) {
+        const key = normalizeCwd(item.cwd)
+        if (key === null || seen[key] === true) continue
+        seen[key] = true
+        cwds.push(item.cwd)
+        if (cwds.length >= MAX_WORKSPACES) break
+      }
+      return cwds.sort((a, b) => compareCwd(normalizeCwd(a), normalizeCwd(b)))
+    }
+
+
+/**
+
+ * model 的协议层：读写接口、绑定读取、宿主接线、待保存键。
+
+ *
+
+ * 覆盖共享的 `panel-protocol.js`——model 管的不是「模型可见性」而是会话路由，
+
+ * 路径、命令集与待保存键都不同（见 ADR-0017）。
+
+ */
+
+
+
+    const PATHS = {
+      read: '/api/model-pack/read',
+      apply: '/api/model-pack/apply',
+    }
+
+    /**
+     * 两条路由共用一套信封：{ ok: true, value } 或 { ok: false, error }。
+     * HTTP 恒 200（见 src/routes.ts），所以判定只能看 ok 字段，不能看 response.ok。
+     */
+    async function post(path, body) {
+      let response
+      try {
+        response = await fetch(path, {
+          method: 'POST',
+          cache: 'no-store',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(body || {}),
+        })
+      } catch (error) {
+        throw new Error('网络请求失败：' + String(error))
+      }
+      let payload
+      try {
+        payload = await response.json()
+      } catch {
+        throw new Error('响应不是合法 JSON（HTTP ' + response.status + '）')
+      }
+      if (payload && payload.ok === true) return payload.value
+      const message = payload && payload.error && payload.error.message ? payload.error.message : '请求失败'
+      throw new Error(message)
+    }
+
+    const api = {
+      read: (cwd, sessionId) =>
+        post(PATHS.read, {
+          ...(cwd ? { cwd: cwd } : {}),
+          ...(typeof sessionId === 'string' && sessionId !== '' ? { sessionId: sessionId } : {}),
+        }),
+      /**
+       * `dryRun` 只把命令应用在内存里、返回同一份视图，不写盘——待保存改动靠它渲染。
+       */
+      apply: (cwd, commands, dryRun) => {
+        const body = {}
+        if (cwd) body.cwd = cwd
+        body.commands = commands
+        if (dryRun === true) body.dryRun = true
+        return post(PATHS.apply, body)
       },
     }
+
+
+    function bindingOf(data) {
+      const id = data && data.state ? data.state.binding : null
+      if (typeof id !== 'string' || id === '') return null
+      // 绑到 default 与服务端求值同义（bind 命令会把它归一成删键）：按未绑定处理。
+      return id === DEFAULT_PACK_ID ? null : id
+    }
+
+
+
+    function createHost(ctx) {
+      // remote 在文件末尾的 inject 里声明了：想用某个服务必须声明它。从 inject 里
+      // 去掉只会让面板静默变空（模型目录读不到 → 所有下拉为空），不是优雅降级。
+      //
+      // 取用仍要兜底：ctx.get 在服务不存在时**抛错**，不返回 undefined；少了这个 try，
+      // 这一行会让整个 client 模块加载失败，进而把 web boot 判成 entry failed、
+      // 桌面端起不来。
+      let remote = null
+      try {
+        remote = (ctx && ctx.remote) || null
+      } catch {
+        remote = null
+      }
+      // 退一步再取一次：某些作用域只挂了子命名空间本身，没有外层 remote。
+      if (remote === null || !remote.session) {
+        try {
+          const session = typeof ctx.get === 'function' ? ctx.get('remote.session') : undefined
+          if (session) remote = { session: session }
+        } catch {
+          // 取不到就保持 null，面板会显示「没有模型目录」而不是崩。
+        }
+      }
+      const host = { ctx: ctx, remote: remote }
+      host.catalog = createCatalog(host)
+      return host
+    }
+
+
+    function pendingKey(command) {
+      switch (command.op) {
+        case 'packSession':
+          return 'packSession:' + command.packId
+        case 'packTier':
+          return 'packTier:' + command.packId + ':' + command.tierId
+        case 'putPack':
+          return 'pack:' + command.packId
+        case 'renamePack':
+          return 'renamePack:' + command.packId
+        case 'bind':
+          // 与渲染处的查询键同源：服务端按归一化后的 cwd 落盘，渲染也按归一化后的
+          // cwd 查。两边各写一遍时 Windows 上必然不等（`C:\x` vs `c:/x`），
+          // 待保存标记永不出现。
+          return bindKeyOf(command.cwd)
+        default:
+          // 新建、复制与提示词补丁没有可覆盖的目标：前两者每条都是独立一次决定，
+          // 后者的每条只带自己那几个键（按单键去重会丢掉别的键）。
+          return null
+      }
+    }
+
+    /**
+     * 待保存改动（见 ADR 0006）。
+     *
+     * 点一下只入队，不发写请求；队列非空时每次变化都用 `dryRun` 试算一次，
+     * 拿服务端算好的视图来渲染——浏览器不复制求值链（根术语表「生效视图」）。
+     * 点「保存」才把整批命令写盘。
+     *
+     * 队列活在这一次挂载里：关闭面板即丢。跨面板保留会被「我到底存了没」拖住，
+     * 而用户关掉面板再回来时通常已经不记得点过什么了。
+     */
+    /**
+     * 待保存队列的纯部分：只有条目数组与键规则，不碰 React（见 ADR 0006）。
+     *
+     * `keyOf` 决定「同键后写覆盖」：键不为 null 时先删掉同键的旧条目再追加；新建与
+     * 删除这类没有可覆盖目标的命令键为 null，每条都独立存在。
+     *
+     * 每次变更都换一个新数组：试算 effect 靠引用变化重跑。
+     */
+
+/**
+ * 本包的面板业务面：三页的内容、chip 的内容、以及 `apply` 的装配。
+ *
+ * 组件与工具来自 `panel-base.js`；路径、传输、绑定读取与待保存键在 `client/protocol.js`。
+ * 三个组件（Chevron / Picker / TextField）保留本包版本并加 `Model` 前缀——它们比基础层
+ * 的多一层行为（开合旋转、禁用项、失焦提交），见 ADR-0017。
+ */
+    // ---------- 常量 ----------
+
+    const TITLE = 'Model Pack'
+    const PANEL_ID = 'model-pack'
+    const CHIP_ID = 'model-pack-chip'
+    const MODAL_ID = 'model-pack-chip-modal'
+
+    /**
+     * 默认 pack 的 id：`packs.json` 里真实存在的一项（见 src/pack.ts 的 DEFAULT_PACK_ID）。
+     *
+     * 它就是求值链的终点——工作区没绑定、或绑定悬空时落到这里。因此它在本面板里
+     * 带「默认」徽章，没有改名与删除入口；但**内容可编辑**（分包页可以选它来改）。
+     */
+    /** 默认 pack 的固定显示名。服务端落盘时也归一到它，改名命令对它无效。 */
+    const DEFAULT_PACK_NAME = '默认'
+
+    /** 档 id 固定四个，顺序即难度顺序；显示名可改，缺省用这里。 */
+    const TIER_IDS = ['tier1', 'tier2', 'tier3', 'tier4']
+    // 与 src/pack.ts 的 TIER_DEFAULT_NAMES 逐字一致：出厂档名只有一套。
+    /** 档的出厂显示名，与 src/pack.ts 的 TIER_DEFAULT_NAMES 逐字一致。 */
+    const TIER_NAMES = {
+      tier1: 'Scout',
+      tier2: 'Quick',
+      tier3: 'Deep',
+      tier4: 'Heavy',
+    }
+    /** 提示词覆盖的键：编排段一个，档四个（与 src/pack.ts 的 PROMPT_KEYS 一致）。 */
+    const PROMPT_DELEGATION_KEY = 'delegation'
+    const PROMPT_TIER_FIELDS = ['label', 'text']
+    /** 模型位 pack 名缓存最多读几个工作区：每个工作区要一次 read，不做无界扇出。 */
+    /** 模型位标签缓存最多读几个目录。与其余三包的工作区页上限（30）不是一回事。 */
+    const LABEL_CWD_LIMIT = 8
+
+    /** 工作区页每页显示几条；绑定表本身不截断，翻页拿全量。 */
+    const WORKSPACES_PAGE = 20
+
+    /**
+     * chip 文字隐藏的断点。
+     *
+     * 宿主输入框底栏 `.row` 声明了 `container-type: inline-size`，并用
+     * `@container (width <= 560px)` 控制这一带按钮的间距。跟随同一个断点，
+     * chip 就和官方那几个按钮同步折叠，而不是各自算一套阈值。
+     *
+     * 用 CSS 容器查询而不是 JS 量宽：插槽把 chip 包在一个与它等宽的容器里，
+     * 量父级永远偏小；往上找祖先又依赖具体层级，两种做法都会误判。
+     */
+
+    const TABS = [
+      { value: 'packs', label: '分包' },
+      { value: 'workspace', label: '工作区' },
+      { value: 'prompts', label: '提示词' },
+    ]
+
 
     // ---------- 纯函数 ----------
 
@@ -605,16 +1668,7 @@ window.__ModuleLoader__.load({
      * 当前 cwd 的原始绑定 id（可能悬空）。
      *
      * 与 `data.state.packId` 的区别：后者是**生效** id，悬空时已经回落成 `default`。
-     * 面板要标「绑定失效」就必须看原始值，否则悬空与未绑定长得一样。
      */
-    function bindingOf(data) {
-      const id = data && data.state ? data.state.binding : null
-      if (typeof id !== 'string' || id === '') return null
-      // 绑到 default 与服务端求值同义（bind 命令会把它归一成删键）：按未绑定处理。
-      return id === DEFAULT_PACK_ID ? null : id
-    }
-
-
     function packNameOf(data, id) {
       if (!id) return ''
       // default 的显示名固定：文件里可能是旧名（default / 出厂方案），界面统一成「默认」。
@@ -1097,96 +2151,10 @@ window.__ModuleLoader__.load({
       return { read: read, subscribe: subscribe, load: load }
     }
 
-    /** apply 里创建一次，组件通过闭包拿到同一个实例。 */
-    function createHost(ctx) {
-      // remote 在文件末尾的 inject 里声明了：想用某个服务必须声明它。从 inject 里
-      // 去掉只会让面板静默变空（模型目录读不到 → 所有下拉为空），不是优雅降级。
-      //
-      // 取用仍要兜底：ctx.get 在服务不存在时**抛错**，不返回 undefined；少了这个 try，
-      // 这一行会让整个 client 模块加载失败，进而把 web boot 判成 entry failed、
-      // 桌面端起不来。
-      let remote = null
-      try {
-        remote = (ctx && ctx.remote) || null
-      } catch {
-        remote = null
-      }
-      // 退一步再取一次：某些作用域只挂了子命名空间本身，没有外层 remote。
-      if (remote === null || !remote.session) {
-        try {
-          const session = typeof ctx.get === 'function' ? ctx.get('remote.session') : undefined
-          if (session) remote = { session: session }
-        } catch {
-          // 取不到就保持 null，面板会显示「没有模型目录」而不是崩。
-        }
-      }
-      const host = { ctx: ctx, remote: remote }
-      host.catalog = createCatalog(host)
-      return host
-    }
 
     // ---------- 数据 ----------
 
-    function isWindows() {
-      try {
-        if (typeof process !== 'undefined' && process && typeof process.platform === 'string') {
-          return process.platform === 'win32'
-        }
-      } catch {
-        // 浏览器里没有 process。
-      }
-      try {
-        return typeof navigator !== 'undefined' && /windows/i.test(String(navigator.userAgent || ''))
-      } catch {
-        return false
-      }
-    }
 
-    /** 工作区键归一。只用它给列表去重，发出去的 cwd 保持原样。 */
-    function normalizeCwd(cwd) {
-      if (typeof cwd !== 'string') return null
-      const trimmed = cwd.trim()
-      if (trimmed === '') return null
-      let unified = trimmed.replace(/\\/gu, '/')
-      if (isWindows()) unified = unified.toLowerCase()
-      if (unified.length > 1) {
-        const stripped = unified.replace(/\/+$/u, '')
-        if (stripped === '') return '/'
-        return /^[a-z]:$/iu.test(stripped) ? stripped + '/' : stripped
-      }
-      return unified
-    }
-
-    /**
-     * 绑定命令的待保存键。
-     *
-     * 服务端按归一化后的 cwd 落盘，所以「这一行有没有未保存改动」也必须按归一化后的
-     * cwd 查。两边各写一遍时 Windows 上必然不等（`C:\\x` vs `c:/x`），
-     * 待保存标记永不出现，底部条说「已改 1 项」却看不出是哪行。
-     */
-    function bindKeyOf(cwd) {
-      const key = normalizeCwd(cwd)
-      return 'bind:' + (key === null ? cwd : key)
-    }
-
-    /**
-     * 工作区清单的比较键：归一化后的路径。大小写不敏感、数字按自然序
-     * （`proj2` 在 `proj10` 前），中文目录按拼音。
-     *
-     * 清单是全局的：排序与当前会话、当前目录无关，同一批目录每次排成同一个序。
-     */
-    function compareCwd(left, right) {
-      const order = left.localeCompare(right, 'zh', { numeric: true, sensitivity: 'base' })
-      return order !== 0 ? order : left < right ? -1 : left > right ? 1 : 0
-    }
-
-    /**
-     * 已知工作区：从会话列表里取 cwd，去重后按路径排序。
-     *
-     * `currentCwd` 只给 chip 与 composer 标签用：按 sessionId 显式解析，
-     * 找不到时退回最近更新的根会话；它不参与清单排序。
-     * 拿不到会话时返回空列表：面板仍能编辑 pack，只是不能绑定。
-     */
     async function listWorkspaces(host, sessionId) {
       const session = host && host.remote ? host.remote.session : null
       if (!session || typeof session.list !== 'function') return { currentCwd: null, cwds: [] }
@@ -1344,6 +2312,7 @@ window.__ModuleLoader__.load({
       return snapshot
     }
 
+
     // ---------- 基础组件 ----------
 
     /**
@@ -1352,43 +2321,8 @@ window.__ModuleLoader__.load({
      * chip 在会话页、设置页在设置弹层里，两者在 React 上没有父子关系；绑定改了要让
      * chip 上的名字跟着变，只能靠一个可订阅的值。一个 set/subscribe 就够，不引状态库。
      */
-    function createSignal(initial) {
-      let value = initial
-      const listeners = new Set()
-      return {
-        read: () => value,
-        set: (next) => {
-          if (value === next) return
-          value = next
-          for (const listener of listeners) listener()
-        },
-        subscribe: (listener) => {
-          listeners.add(listener)
-          return () => listeners.delete(listener)
-        },
-      }
-    }
 
-    function Segmented(props) {
-      return h(
-        'div',
-        { style: S.segment },
-        props.options.map((option) =>
-          h(
-            'button',
-            {
-              key: option.value,
-              type: 'button',
-              style: S.segItem(props.value === option.value),
-              onClick: () => props.onChange(option.value),
-            },
-            option.label,
-          ),
-        ),
-      )
-    }
-
-    function Chevron(props) {
+    function ModelChevron(props) {
       const open = props && props.open === true
       return h(
         'svg',
@@ -1421,7 +2355,8 @@ window.__ModuleLoader__.load({
      * `options` 是 `[{ value, label }]`。点外部或按 Esc 关闭：监听挂在文档上，
      * 不依赖父级的点击处理，所以嵌在可点击的列表行里也不会误触。
      */
-    function Picker(props) {
+
+    function ModelPicker(props) {
       const [open, setOpen] = useState(false)
       const [hover, setHover] = useState(null)
       const boxRef = useRef(null)
@@ -1469,7 +2404,7 @@ window.__ModuleLoader__.load({
             },
           },
           h('span', { style: S.pickerLabel }, label),
-          h(Chevron, { open: open }),
+          h(ModelChevron, { open: open }),
         ),
         open
           ? h(
@@ -1500,6 +2435,7 @@ window.__ModuleLoader__.load({
       )
     }
 
+
     function Tag(props) {
       const face = props || {}
       return h('span', { style: face.danger ? S.badgeWarn : S.badge, title: face.title }, face.children)
@@ -1511,95 +2447,8 @@ window.__ModuleLoader__.load({
      * 尺寸抄官方设置页的行内操作按钮（28px 高、左右 10px、12px 字、radius-sm），
      * 比原来的裸文字热区大一倍以上——裸文字只有字号那么高，指针要精确压住才点得中。
      */
-    function Button(props) {
-      const variant = props.variant || (props.danger === true ? 'danger' : 'secondary')
-      const className = 'dsh-model-pack-btn dsh-model-pack-btn-' + variant
-      return h(
-        'button',
-        {
-          type: 'button',
-          disabled: props.disabled === true,
-          className: className,
-          style: { ...S.btn, ...(props.style || {}) },
-          title: props.title || '',
-          ref: props.innerRef,
-          'data-armed': variant === 'danger' && props.armed === true ? 'true' : undefined,
-          onClick: props.onClick,
-        },
-        props.children,
-      )
-    }
 
-    /**
-     * 删除的二次确认：第一次点变成「确认」，再点一次才执行。
-     *
-     * 不用弹窗：这类删除都发生在列表行里，弹窗要额外一次「关闭」动作；
-     * 行内二次确认把成本压到一次点击，误点的代价只是多看一眼。
-     * 进入确认态后 4 秒自动撤销，点别处也撤销，避免一直停在危险状态。
-     *
-     * 删除是唯一「点了就没了」的动作（不进待保存队列，见 ADR 0006），
-     * 所以确认态必须比常态明显：文案换成「确认」、浅红底、字重加重。
-     */
-    function ConfirmButton(props) {
-      const [armed, setArmed] = useState(false)
-      const boxRef = useRef(null)
-      const disabled = props.disabled === true
-      useEffect(() => {
-        if (!armed) return undefined
-        const timer = setTimeout(() => setArmed(false), 4000)
-        return () => clearTimeout(timer)
-      }, [armed])
-      useEffect(() => {
-        if (!armed) return undefined
-        const onDown = (event) => {
-          const node = boxRef.current
-          if (node && node.contains(event.target)) return
-          setArmed(false)
-        }
-        document.addEventListener('mousedown', onDown, true)
-        return () => document.removeEventListener('mousedown', onDown, true)
-      }, [armed])
-      return h(
-        Button,
-        {
-          danger: true,
-          armed: armed,
-          disabled: disabled,
-          innerRef: boxRef,
-          style: props.style,
-          title: armed ? '再点一次确认删除' : props.title || '',
-          onClick: (event) => {
-            event.stopPropagation()
-            if (disabled) return
-            if (!armed) {
-              setArmed(true)
-              return
-            }
-            setArmed(false)
-            props.onConfirm()
-          },
-        },
-        armed ? props.confirmLabel || '确认' : props.label || '删除',
-      )
-    }
-
-    /**
-     * 面板内输入框的 Esc 只作用于输入框自己，不冒泡。
-     *
-     * 宿主的设置弹层把 Esc 当「关闭面板」：改名途中按 Esc 想反悔，
-     * 结果整个面板关掉，改了一半的名字也一起没了。
-     */
-    function stopEscape(event) {
-      if (event.key === 'Escape') event.stopPropagation()
-    }
-
-    /**
-     * 文本输入：改动先留在输入框里，失焦、回车或 Esc 时才交给调用方。
-     *
-     * 不逐字入队：每次入队都会发一次 `dryRun`，逐字就是每个键一次往返，光标会跟着
-     * 服务端的回显跳。输入框因此自己持有一份缓冲，未聚焦时始终显示外部值。
-     */
-    function TextField(props) {
+    function ModelTextField(props) {
       const [buffer, setBuffer] = useState(null)
       const cancelled = useRef(false)
       const value = buffer === null ? String(props.value === undefined ? '' : props.value) : buffer
@@ -1642,254 +2491,6 @@ window.__ModuleLoader__.load({
     }
 
     /** 每条命令命中哪一格状态。同键后写覆盖，队列里永远只有最后一次取值。 */
-    function pendingKey(command) {
-      switch (command.op) {
-        case 'packSession':
-          return 'packSession:' + command.packId
-        case 'packTier':
-          return 'packTier:' + command.packId + ':' + command.tierId
-        case 'putPack':
-          return 'pack:' + command.packId
-        case 'renamePack':
-          return 'renamePack:' + command.packId
-        case 'bind':
-          // 与渲染处的查询键同源：服务端按归一化后的 cwd 落盘，渲染也按归一化后的
-          // cwd 查。两边各写一遍时 Windows 上必然不等（`C:\x` vs `c:/x`），
-          // 待保存标记永不出现。
-          return bindKeyOf(command.cwd)
-        default:
-          // 新建、复制与提示词补丁没有可覆盖的目标：前两者每条都是独立一次决定，
-          // 后者的每条只带自己那几个键（按单键去重会丢掉别的键）。
-          return null
-      }
-    }
-
-    /**
-     * 待保存改动（见 ADR 0006）。
-     *
-     * 点一下只入队，不发写请求；队列非空时每次变化都用 `dryRun` 试算一次，
-     * 拿服务端算好的视图来渲染——浏览器不复制求值链（根术语表「生效视图」）。
-     * 点「保存」才把整批命令写盘。
-     *
-     * 队列活在这一次挂载里：关闭面板即丢。跨面板保留会被「我到底存了没」拖住，
-     * 而用户关掉面板再回来时通常已经不记得点过什么了。
-     */
-    /**
-     * 待保存队列的纯部分：只有条目数组与键规则，不碰 React（见 ADR 0006）。
-     *
-     * `keyOf` 决定「同键后写覆盖」：键不为 null 时先删掉同键的旧条目再追加；新建与
-     * 删除这类没有可覆盖目标的命令键为 null，每条都独立存在。
-     *
-     * 每次变更都换一个新数组：试算 effect 靠引用变化重跑。
-     */
-    function createQueue(keyOf) {
-      let entries = []
-      let uid = 0
-
-      const set = (next) => {
-        entries = next
-        return next
-      }
-
-      return {
-        get entries() {
-          return entries
-        },
-        get count() {
-          return entries.length
-        },
-        /** 被改动命中的键，供行渲染标出「这一行还没保存」。 */
-        keys() {
-          const set = new Set()
-          for (const entry of entries) if (entry.key !== null) set.add(entry.key)
-          return set
-        },
-        commands() {
-          return entries.map((entry) => entry.command)
-        },
-        push(commands) {
-          const list = Array.isArray(commands) ? commands : [commands]
-          const next = entries.slice()
-          for (const command of list) {
-            const key = keyOf(command)
-            if (key !== null) {
-              for (let index = next.length - 1; index >= 0; index -= 1) {
-                if (next[index].key === key) next.splice(index, 1)
-              }
-            }
-            uid += 1
-            next.push({ id: uid, key: key, command: command })
-          }
-          return set(next)
-        },
-        undo() {
-          return set(entries.slice(0, -1))
-        },
-        discard() {
-          return set([])
-        },
-        /** 换一个新引用但内容不变：删除是另一条写盘路径，队列没变也要重算一次试算。 */
-        touch() {
-          return set(entries.slice())
-        },
-        /** 丢掉命中 predicate 的命令，返回丢掉的条数。 */
-        drop(predicate) {
-          const victims = entries.filter((entry) => predicate(entry.command))
-          if (victims.length === 0) return 0
-          set(entries.filter((entry) => !predicate(entry.command)))
-          return victims.length
-        },
-      }
-    }
-
-    /**
-     * 待保存改动。
-     *
-     * 点一下只入队，不发写请求；队列非空时每次变化都用 `dryRun` 试算一次，
-     * 拿服务端算好的视图来渲染——浏览器不复制求值链。
-     * 点「保存」才把整批命令写盘。
-     *
-     * 队列活在这一次挂载里：关闭面板即丢。跨面板保留会被「我到底存了没」拖住，
-     * 而用户关掉面板再回来时通常已经不记得点过什么了。
-     *
-     * 这里只剩两件需要 React 的事：试算的世代号与提交。队列规则全在 `createQueue`，
-     * 因此可以脱离渲染直接测。
-     */
-    function usePending(options) {
-      const queueRef = useRef(null)
-      if (queueRef.current === null) queueRef.current = createQueue(pendingKey)
-      const queue = queueRef.current
-      const [entries, setEntries] = useState(queue.entries)
-      const [preview, setPreview] = useState({ data: null, loading: false, error: null })
-      const seq = useRef(0)
-      const latest = useRef(options)
-      latest.current = options
-
-      useEffect(() => {
-        if (entries.length === 0) {
-          // 队列空了就让上一次在途的试算作废，避免它的响应把视图改回「有改动」。
-          seq.current += 1
-          setPreview({ data: null, loading: false, error: null })
-          return
-        }
-        const mine = (seq.current += 1)
-        setPreview((prev) => ({ data: prev.data, loading: true, error: null }))
-        latest.current.preview(queue.commands()).then(
-          (data) => {
-            if (mine === seq.current) setPreview({ data: data, loading: false, error: null })
-          },
-          (error) => {
-            if (mine === seq.current) {
-              setPreview((prev) => ({ data: prev.data, loading: false, error: String(error.message || error) }))
-            }
-          },
-        )
-      }, [entries])
-
-      /** 把队列的新数组交给 React：队列自己同步持有同一份，事件回调里读到的永远是最新。 */
-      const apply = useCallback((next) => {
-        setEntries(next)
-        return next
-      }, [])
-
-      const push = useCallback((commands) => apply(queue.push(commands)), [apply, queue])
-      const undo = useCallback(() => apply(queue.undo()), [apply, queue])
-      const discard = useCallback(() => apply(queue.discard()), [apply, queue])
-      const refresh = useCallback(() => apply(queue.touch()), [apply, queue])
-
-      const resetPreview = useCallback(() => {
-        seq.current += 1
-        setPreview({ data: null, loading: false, error: null })
-      }, [])
-
-      const drop = useCallback(
-        (predicate) => {
-          const dropped = queue.drop(predicate)
-          if (dropped > 0) apply(queue.entries)
-          return dropped
-        },
-        [apply, queue],
-      )
-
-      const commit = useCallback(async () => {
-        const commands = queue.commands()
-        if (commands.length === 0) return true
-        try {
-          const data = await latest.current.apply(commands)
-          apply(queue.discard())
-          latest.current.onApplied(data)
-          return true
-        } catch (error) {
-          setPreview((prev) => ({ ...prev, error: String(error.message || error) }))
-          return false
-        }
-      }, [apply, queue])
-
-      const keys = useMemo(() => queue.keys(), [entries, queue])
-
-      return {
-        entries: entries,
-        keys: keys,
-        preview: preview,
-        push: push,
-        undo: undo,
-        discard: discard,
-        drop: drop,
-        refresh: refresh,
-        resetPreview: resetPreview,
-        commit: commit,
-        count: entries.length,
-      }
-    }
-
-    /** 停靠区上方那一行提示：说清楚发生了什么，给一个关掉它的入口。 */
-    function NoticeBar(props) {
-      return h(
-        'div',
-        { style: S.noticeBar },
-        h(
-          'span',
-          {
-            style: {
-              ...S.hint,
-              flex: '1 1 auto',
-              minWidth: 0,
-              color: 'var(--dsw-alias-state-warn-label, #b7791f)',
-            },
-          },
-          props.text,
-        ),
-        h(Button, { variant: 'quiet', onClick: props.onClose, title: '关闭提示' }, '关闭'),
-      )
-    }
-
-    /** 底部待保存条：左计数与错误，右「撤销 / 放弃全部 / 保存」。 */
-    function PendingBar(props) {
-      if (props.count === 0) return null
-      const busy = props.busy === true
-      // 设置页里贴住底边（内容很长，要一直看得见）；弹层里不贴，由外层底栏排布。
-      const inline = props.inline === true
-      const style = inline ? S.pendingInline : S.pendingBar
-      return h(
-        'div',
-        { style: style },
-        // 弹层里「关闭」占住最左，这里先把空位弹开，让文字与按钮一起靠右。
-        inline ? h('span', { key: 'spacer', style: { flex: '1 1 auto' } }) : null,
-        h(
-          'span',
-          {
-            style: { ...S.hint, flex: inline ? '0 0 auto' : '1 1 auto', color: props.error ? T.error : undefined },
-          },
-          props.error ? '未保存：' + props.error : '已改 ' + props.count + ' 项，尚未保存',
-        ),
-        h(Button, { variant: 'quiet', onClick: props.onUndo, disabled: busy }, '撤销'),
-        // 只有一项时「撤销」与「放弃全部」做的是同一件事，多一个按钮只是多一次选择。
-        props.count > 1
-          ? h(Button, { variant: 'quiet', onClick: props.onDiscard, disabled: busy }, '放弃全部')
-          : null,
-        h(Button, { variant: 'primary', onClick: props.onCommit, disabled: busy }, busy ? '保存中…' : '保存'),
-      )
-    }
 
     // ---------- 路由编辑 ----------
 
@@ -1963,7 +2564,7 @@ window.__ModuleLoader__.load({
       // 失效路由的「变淡」只能落在触发器上，不能落在容器上。
       // 容器一旦 opacity < 1，会把整个合成层做半透明，下拉菜单也不例外：
       // 菜单背后的表单文字透出来，就成了一眼看不清的两层字。子元素无法把
-      // 父级 opacity 补回来，所以这里把透明度下发给 Picker，由它只装饰触发器。
+      // 父级 opacity 补回来，所以这里把透明度下发给 ModelPicker，由它只装饰触发器。
       const dim = filled && !known
 
       return h(
@@ -1977,7 +2578,7 @@ window.__ModuleLoader__.load({
           h(
             'div',
             { style: { flex: '1 1 auto', minWidth: '150px' } },
-            h(Picker, {
+            h(ModelPicker, {
               value: currentKey,
               placeholder: 'provider · model',
               disabled: disabled,
@@ -1990,11 +2591,11 @@ window.__ModuleLoader__.load({
             'div',
             { style: { flex: '0 0 auto', width: '82px' } },
             effort !== ''
-              ? h(Picker, {
+              ? h(ModelPicker, {
                   value: effort,
                   disabled: disabled,
                   dim: dim,
-                  // 必须显式压小：Picker 根节点默认 minWidth 120px，套在窄容器里
+                  // 必须显式压小：ModelPicker 根节点默认 minWidth 120px，套在窄容器里
                   // 会撑出去盖住右边的按钮。
                   minWidth: '60px',
                   options: effortOptions,
@@ -2113,7 +2714,7 @@ window.__ModuleLoader__.load({
             { style: { flex: '0 1 140px', minWidth: '100px' } },
             // 双击名字即改名：改名的常见入口就是「看见名字想改」，不必先点一个按钮。
             renaming
-              ? h(TextField, {
+              ? h(ModelTextField, {
                   autoFocus: true,
                   value: tier.name || '',
                   style: S.input,
@@ -2253,7 +2854,7 @@ window.__ModuleLoader__.load({
             { style: { flex: '0 1 200px', minWidth: '120px' } },
             nameLocked
               ? h('span', { style: S.rowName }, DEFAULT_PACK_NAME)
-              : h(TextField, {
+              : h(ModelTextField, {
                   value: pack.name || '',
                   style: S.input,
                   placeholder: '比如：标准',
@@ -2393,7 +2994,7 @@ window.__ModuleLoader__.load({
           h(
             'div',
             { style: S.rowMain },
-            h(TextField, {
+            h(ModelTextField, {
               value: base.label,
               style: S.input,
               disabled: disabled,
@@ -2410,7 +3011,7 @@ window.__ModuleLoader__.load({
           h(
             'div',
             { style: S.rowMain },
-            h(TextField, {
+            h(ModelTextField, {
               multiline: true,
               rows: 2,
               value: base.text,
@@ -2493,7 +3094,7 @@ window.__ModuleLoader__.load({
             h(
               'div',
               { style: S.rowMain },
-              h(TextField, {
+              h(ModelTextField, {
                 multiline: true,
                 rows: 8,
                 value: effective.delegation,
@@ -2519,6 +3120,7 @@ window.__ModuleLoader__.load({
         ),
       )
     }
+
 
     // ---------- 分包页：名册 ----------
 
@@ -2620,7 +3222,7 @@ window.__ModuleLoader__.load({
               // 双击名字即改名；`default` 的名字由服务端固定，不给入口。
               renaming === entry.id && !entry.isDefault
                 ? h('div', { style: { flex: '1 1 140px', minWidth: '100px' } },
-                    h(TextField, {
+                    h(ModelTextField, {
                       autoFocus: true,
                       value: entry.name,
                       style: S.input,
@@ -2789,7 +3391,7 @@ window.__ModuleLoader__.load({
                 h(
                   'div',
                   { style: { flex: '0 0 auto', minWidth: '150px' } },
-                  h(Picker, {
+                  h(ModelPicker, {
                     value: value,
                     options: options,
                     onChange: (next) => queue([{ op: 'bind', cwd: cwd, packId: next === '' ? null : next }]),
@@ -3046,7 +3648,7 @@ window.__ModuleLoader__.load({
           h(
             'div',
             { style: { flex: '0 0 auto', minWidth: '120px' } },
-            h(Picker, {
+            h(ModelPicker, {
               value: defaultTab,
               options: TABS.map((entry) => ({ value: entry.value, label: entry.label })),
               onChange: (next) => run([{ op: 'defaultTab', value: next }]),
@@ -3124,6 +3726,7 @@ window.__ModuleLoader__.load({
           : null,
       )
     }
+
 
 
     // ---------- 模型位 pack 名 ----------
@@ -3350,24 +3953,7 @@ window.__ModuleLoader__.load({
       )
     }
 
-    /**
-     * 跨组件共享的界面状态。
-     *
-     * chip 在会话页、设置页在设置弹层里，两者在 React 上没有父子关系；绑定改了要让
-     * chip 上的名字跟着变，只能靠一个可订阅的值。
-     */
-    const env = { sessionId: undefined }
-    /** chip 上显示的 pack 名；null = 未绑定。 */
-    const chipName = createSignal(null)
-    /**
-     * 未绑定 pack 时 chip 上的字。
-     *
-     * 固定英文小写、三字母、去元音（skill→skl、plugin→plg、model→mdl；mcp 本就是
-     * 念字母的专名，恰好同形）。不随宿主语言：这四个是领域标识符，不是句子，
-     * 中文界面下缩写比中文译名更准，四个 chip 也等长。全名留在 title 里。
-     */
-    const CHIP_LABEL = 'mdl'
-    /** 摘要弹层的开合。chip 与弹层分处两个槽位，只能靠它对齐。 */
+
     const chipOpen = createSignal(false)
 
     /** chip 上的名字：绑到哪张 pack 就显示哪个，未绑定是 null（由 `CHIP_LABEL` 补字）。 */

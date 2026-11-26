@@ -40,8 +40,9 @@ window.__ModuleLoader__.load({ id, factory(require) { <panel-core> <panel> } })
 - 各包的 `test` 脚本前置了构建，本地不会测到旧产物；`prepare` 不含构建（源码安装时不可用）。
 - `files` 从 `client` 收窄到 `client/client.js`，`panel.js` 不随包发布。
 - `mutation.mjs` 的 7 条客户端变异锚定在 `client.js` 的文本与行号上，产物化后行号不稳，需要迁到 `panel-core.js` 与各包 `panel.js`。
-- 迁移分批：skill 与 plugin 先，mcp 次之（四字段行是第一次真实压力），model 最后（它的设置页把三页塞在一起，需要先拆出提示词页）。
-- 已知局限：这一批只迁移了 skill。plugin / mcp / model 仍在各自的复制品上，直到后续提交完成。
+- 迁移分批：skill → plugin → mcp → model。第一批之后暴露了两件必须解决的事：`plugin` 的「值不同」用 prelude 装下了；`mcp` 的「语义不同」（五条路径、四字段行模型）促使共享层再拆成 `panel-base.js` 与 `panel-protocol.js`。
+- 四包已全部接入。`panel-base.js` 放四包真正相同的部分，`panel-protocol.js` 放路径、传输、待保存键与求值对象；包可以提供 `client/protocol.js` 覆盖协议层。`model` 的三个组件（`Chevron` / `Picker` / `TextField`）比基础层多一层行为，加 `Model` 前缀留在本包，未提升。
+- 样式键差异靠检查发现而不是靠人记：`T` / `S` 的键集各包不同，`check-panels` 的 S 键规则现在同时认 prelude 里的 `S_EXTRA`，四包迁移中它一共抓出 35 个缺失键。
 
 ## 参考
 
