@@ -10,13 +10,16 @@
  * `apply` 抛错的红线冒烟也在那里——四包各跑一次，而不是只跑一个。
  */
 import { readFileSync } from 'node:fs'
-import { readdir } from 'node:fs/promises'
+import { readFile, readdir } from 'node:fs/promises'
+import { buildOne } from './build-client.mjs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import vm from 'node:vm'
 
 const root = fileURLToPath(new URL('..', import.meta.url))
 const packagesDir = join(root, 'packages')
+/** 面板共享层：纪律检查的一半对象（另一半是各包的 panel.js）。 */
+const sharedCore = join(root, 'scripts', 'client-shared', 'panel-core.js')
 
 const fakeReact = {
   createElement: () => null,
@@ -252,6 +255,13 @@ try {
   process.exit(0)
 }
 
+/**
+ * 一个面板的检查。
+ *
+ * 加载与纪律查的不是同一份文件：宿主真正吞下的是产物 `client.js`，而纪律是写代码时的
+ * 约束，应查人写的 `panel-core.js` 与 `panel.js`（见 ADR-0017）。混在一起查，共享层
+ * 会被每个包的计数各算一遍。
+ */
 for (const dir of dirs) {
   if (!dir.isDirectory()) continue
   const clientDir = join(packagesDir, dir.name, 'client')
@@ -261,43 +271,66 @@ for (const dir of dirs) {
   } catch {
     continue
   }
-  for (const file of files) {
-    if (!file.endsWith('.js')) continue
-    const path = join(clientDir, file)
-    const label = dir.name + '/client/' + file
-    checked += 1
-    try {
-      loadFactory(path)
-    } catch (error) {
+  if (!files.includes('client.js')) continue
+
+  const label = dir.name + '/client'
+  checked += 1
+  try {
+    loadFactory(join(clientDir, 'client.js'))
+  } catch (error) {
+    failures += 1
+    console.error(label + '/client.js: 无法作为宿主模块加载 —— ' + String(error && error.message ? error.message : error))
+    continue
+  }
+
+  // 纪律查源码。未迁移到共享层的包还没有 panel.js，回退到产物本身。
+  let source
+  try {
+    source = readFileSync(sharedCore, 'utf8') + '\n' + readFileSync(join(clientDir, 'panel.js'), 'utf8')
+  } catch {
+    source = readFileSync(join(clientDir, 'client.js'), 'utf8')
+  }
+  // 计数前先剥注释：`dryRun` 这类词在注释里出现 3-6 次，把代码里的用法删掉
+  // 计数仍然达标，断言形同虚设。
+  const code = stripComments(source)
+  // 界面基调红线：与结构断言共用同一次遍历（见 docs/ui-baseline.md）。
+  for (const rule of BASELINE) {
+    if (rule.check(source)) continue
+    failures += 1
+    console.error(label + ': ' + rule.name + ' —— ' + rule.detail)
+  }
+  const rules = RULES[dir.name]
+  if (rules === undefined) continue
+  for (const [needle, count] of Object.entries(rules.must ?? {})) {
+    const actual = code.split(needle).length - 1
+    if (actual < count) {
       failures += 1
-      console.error(label + ': 无法作为宿主模块加载 —— ' + String(error && error.message ? error.message : error))
-      continue
+      console.error(label + ': 缺少 `' + needle + '`（期望至少 ' + count + ' 处，实际 ' + actual + '）')
     }
-    const source = readFileSync(path, 'utf8')
-    // 计数前先剥注释：`dryRun` 这类词在注释里出现 3-6 次，把代码里的用法删掉
-    // 计数仍然达标，断言形同虚设。
-    const code = stripComments(source)
-    // 界面基调红线：与结构断言共用同一次目录遍历（见 docs/ui-baseline.md）。
-    for (const rule of BASELINE) {
-      if (rule.check(source)) continue
+  }
+  for (const needle of rules.mustNot ?? []) {
+    if (source.includes(needle)) {
       failures += 1
-      console.error(label + ': ' + rule.name + ' —— ' + rule.detail)
+      console.error(label + ': 不应再出现 `' + needle + '`（派生已被预计算取代）')
     }
-    const rules = RULES[dir.name]
-    if (rules === undefined) continue
-    for (const [needle, count] of Object.entries(rules.must ?? {})) {
-      const actual = code.split(needle).length - 1
-      if (actual < count) {
-        failures += 1
-        console.error(label + ': 缺少 `' + needle + '`（期望至少 ' + count + ' 处，实际 ' + actual + '）')
-      }
-    }
-    for (const needle of rules.mustNot ?? []) {
-      if (source.includes(needle)) {
-        failures += 1
-        console.error(label + ': 不应再出现 `' + needle + '`（派生已被预计算取代）')
-      }
-    }
+  }
+}
+
+// 产物必须与源码一致：改了 panel.js 却忘了构建，测试与面板都会跑旧代码。
+// 源码安装看不到 scripts/，构建只能在开发期做（见 ADR-0017），所以这条检查是唯一的守卫。
+for (const dir of dirs) {
+  if (!dir.isDirectory()) continue
+  const clientDir = join(packagesDir, dir.name, 'client')
+  try {
+    await readFile(join(clientDir, 'panel.js'), 'utf8')
+  } catch {
+    continue
+  }
+  const expected = (await buildOne(dir.name, { write: false })).out
+  const onDisk = await readFile(join(clientDir, 'client.js'), 'utf8')
+  if (expected !== onDisk) {
+    failures += 1
+    console.error(dir.name + '/client/client.js: 与源码不一致 —— 跑 node scripts/build-client.mjs')
   }
 }
 

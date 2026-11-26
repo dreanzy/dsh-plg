@@ -1,18 +1,25 @@
 /**
- * 浏览器半边。手写单文件：宿主用 `require('react')` 提供 React，
- * 因此不引入 JSX、CSS Modules 或打包器，避免给这个仓库加第二套构建链。
+ * 由 scripts/build-client.mjs 生成，不要手改。
+ * 源码：scripts/client-shared/panel-core.js + packages/dsh-skill-pack/client/panel.js
  */
 window.__ModuleLoader__.load({
   id: '@dreanzy/dsh-skill-pack',
   factory(require) {
+/**
+ * 面板共享层：四个 pack 面板共用的传输、样式、基础组件与宿主接线。
+ *
+ * 这份文件不是模块，它在构建期被内联进每个包的 `client.js`（见 scripts/build-client.mjs 与
+ * ADR-0017）。两个占位符由构建器替换：`dsh-skill-pack` 是 CSS 类名前缀（`dsh-skill-pack`），
+ * `skill-pack` 是 API 路径段（`skill-pack`）。
+ *
+ * 约定：不含 import/export，只声明本文件内部使用的 const 与 function；业务页面留在各包的
+ * `client/panel.js` 里，按同一套顺序拼接在它后面。
+ */
+
     const React = require('react')
     const h = React.createElement
     const { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } = React
 
-    const PANEL_ID = 'skill-pack'
-    const CHIP_ID = 'skill-pack-chip'
-    const MODAL_ID = 'skill-pack-chip-modal'
-    const TITLE = 'Skill Pack'
     /** 内置 pack 的 id。未绑定的工作区按它求值。 */
     const DEFAULT_PACK_ID = 'default'
 
@@ -100,7 +107,6 @@ const RANK_ORDER = {
       '.dsh-skill-pack-row[data-state="current"] { background: rgba(127,127,127,0.16) }' +
       '.dsh-skill-pack-row[data-state="pending"] { background: ' + PENDING_BG + ' }'
 
-    // ---------- 传输 ----------
 
     const PATHS = {
       global: '/api/skill-pack/global',
@@ -1219,6 +1225,7 @@ const RANK_ORDER = {
       )
     }
 
+
     // ---------- 宿主与求值 ----------
 
     /**
@@ -1488,6 +1495,19 @@ const RANK_ORDER = {
       }
       return cwds.sort((a, b) => compareCwd(normalizeCwd(a), normalizeCwd(b)))
     }
+
+
+/**
+ * 本包的面板业务面：三页的内容、chip 的内容、以及 `apply` 的装配。
+ *
+ * 它不是可直接加载的文件——构建器把 `scripts/client-shared/panel-core.js` 拼在它前面，
+ * 再套上 `window.__ModuleLoader__.load` 的外壳，产出 `client/client.js`（见 ADR-0017）。
+ */
+
+    const PANEL_ID = 'skill-pack'
+    const CHIP_ID = 'skill-pack-chip'
+    const MODAL_ID = 'skill-pack-chip-modal'
+    const TITLE = 'Skill Pack'
 
     // ---------- 面板 ----------
 
