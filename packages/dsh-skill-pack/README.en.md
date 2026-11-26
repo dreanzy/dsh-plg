@@ -51,7 +51,7 @@ Pending changes that reference the deleted object are dropped with it, and the p
 - Settings → Skill Pack has three pages: `分组` / `分包` / `工作区`.
 - Groups fold by group; expand one to reassign members inline. Search matches both skill names and group names.
 - Packs edits the pack list and the switches inside a pack. On `default` there are only on and off — it is the end of the chain, with no layer above.
-- Workspaces lists directories that have sessions, one pack dropdown per row. Directories come from the host; this page only decides bindings, it never adds or removes them.
+- Workspaces lists directories that have sessions, sorted by path, one pack dropdown per row. Directories come from the host; this page only decides bindings, it never adds or removes them.
 
 ## Files
 
