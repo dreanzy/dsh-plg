@@ -1805,15 +1805,6 @@ const RANK_ORDER = {
     }
 
 
-    /**
-     * 求值用的组 id：优先取宿主下发的 `groupId`，它不校验组是否还在注册表里——
-     * 悬空引用在宿主侧照样会命中组级记录。行上没有这个字段时才退回本地查表。
-     */
-    function rowGroupOf(groups, row) {
-      const gid = row && typeof row.groupId === 'string' ? row.groupId : ''
-      return gid !== '' ? gid : groupOfRow(groups, row)
-    }
-
 
 
     function weightOf(row) {
