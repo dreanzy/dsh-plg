@@ -44,12 +44,12 @@ export function makeReact(initialStates = []) {
 }
 
 /**
- * 把 client.js 装进假宿主，返回 factory 的 `__internals`。
+ * 把 client.js 装进假宿主，返回 factory 的结果（`apply` 与 `__internals` 都在里面）。
  *
  * `platform` 必须显式给：沙箱里没有 `process` 时 `isWindows()` 恒为 false，而
  * `normalizeCwd` 在 Windows 下要转小写——那条分支在测试里永远走不到。
  */
-export function loadPanel(clientUrl, options = {}) {
+export function loadClient(clientUrl, options = {}) {
   const platform = options.platform ?? 'win32'
   const initialStates = options.initialStates ?? []
   const captured = []
@@ -69,6 +69,13 @@ export function loadPanel(clientUrl, options = {}) {
     if (name === 'react') return react
     throw new Error('工厂请求了未提供的模块：' + String(name))
   })
+  if (typeof mod.apply !== 'function') throw new Error('factory 的返回值缺少 apply')
+  return mod
+}
+
+/** 只取 `__internals`：渲染断言用它。 */
+export function loadPanel(clientUrl, options = {}) {
+  const mod = loadClient(clientUrl, options)
   if (!mod.__internals) throw new Error('factory 缺少 __internals 测试出口')
   return mod.__internals
 }

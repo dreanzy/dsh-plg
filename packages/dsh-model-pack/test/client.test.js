@@ -1,8 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
-import vm from 'node:vm'
 import { pendingKeyOf } from '@dreanzy/dsh-pack-core'
+import { loadClient } from '../../../scripts/test-helpers/panel.mjs'
 
 /**
  * 客户端面板的测试面。
@@ -16,53 +15,14 @@ import { pendingKeyOf } from '@dreanzy/dsh-pack-core'
  */
 const CLIENT = new URL('../client/client.js', import.meta.url)
 
-const fakeReact = {
-  createElement: () => null,
-  Fragment: Symbol('Fragment'),
-  useCallback: (fn) => fn,
-  useEffect: () => undefined,
-  useMemo: (fn) => (typeof fn === 'function' ? fn() : undefined),
-  useState: (initial) => [initial, () => undefined],
-  useRef: (initial) => ({ current: initial }),
-  useSyncExternalStore: (_subscribe, read) => read(),
-}
-
-/**
- * 把 client.js 装进一个假宿主。
- *
- * `platform` 必须显式给：沙箱里没有 `process` 时 `isWindows()` 恒为 false，
- * 而 `normalizeCwd` 在 Windows 下要转小写——那条分支在测试里永远走不到，
- * 生产上「bind 键两边算出来不等、待保存标记永不出现」就是这么漏的。
- */
-function loadClient(platform = 'win32') {
-  const captured = []
-  const sandbox = {
-    window: { __ModuleLoader__: { load: (entry) => captured.push(entry) } },
-    console,
-    setTimeout,
-    clearTimeout,
-    process: { platform },
-  }
-  vm.runInNewContext(readFileSync(CLIENT, 'utf8'), sandbox, { filename: 'client.js' })
-  assert.equal(captured.length, 1, '模块必须通过 __ModuleLoader__.load 注册一次')
-  const entry = captured[0]
-  assert.equal(typeof entry.factory, 'function')
-  const mod = entry.factory((name) => {
-    if (name === 'react') return fakeReact
-    throw new Error('工厂请求了未提供的模块：' + String(name))
-  })
-  assert.equal(typeof mod.apply, 'function', 'factory 的返回值缺少 apply')
-  return mod
-}
-
 test('factory 暴露测试出口', () => {
-  const { __internals } = loadClient()
+  const { __internals } = loadClient(CLIENT)
   assert.ok(__internals, '缺少 __internals 测试出口')
   for (const name of ["pendingKey","usePending","TABS","PackRoster","WorkspaceBoard","ChipModal","CHIP_CSS","listWorkspaces"]) assert.ok(__internals[name], '测试出口缺少 ' + name)
 })
 
 test('apply 在服务缺失时只降级，不抛错', () => {
-  const { apply } = loadClient()
+  const { apply } = loadClient(CLIENT)
   const ctx = {
     get() {
       throw new Error('service unavailable')
@@ -102,7 +62,7 @@ function orderOf(entries, key) {
 }
 
 test('pack 名册按名字排，default 恒置顶', () => {
-  const { packListOf } = loadClient().__internals
+  const { packListOf } = loadClient(CLIENT).__internals
   // id 与名字故意反序：按 id 排会得到 p1/p2/p3，按名字排才是 alpha/mid/zeta。
   const data = rosterOf({
     default: { name: '默认' },
@@ -114,13 +74,13 @@ test('pack 名册按名字排，default 恒置顶', () => {
 })
 
 test('pack 重名时按 id 兜底，顺序仍是全序', () => {
-  const { packListOf } = loadClient().__internals
+  const { packListOf } = loadClient(CLIENT).__internals
   const data = rosterOf({ default: { name: '默认' }, p2: { name: '同名' }, p1: { name: '同名' } })
   assert.equal(orderOf(packListOf(data), 'id'), 'default,p1,p2')
 })
 
 test('待保存期间沿用改动前的 id 序，改名不跳位', () => {
-  const { packListOf } = loadClient().__internals
+  const { packListOf } = loadClient(CLIENT).__internals
   const before = rosterOf({ default: { name: '默认' }, p1: { name: 'alpha' }, p2: { name: 'zeta' } })
   // 把 alpha 改名成 zzz：按名字排它会跳到末尾，冻结序必须把它留在原位。
   const after = rosterOf({ default: { name: '默认' }, p1: { name: 'zzz' }, p2: { name: 'zeta' } })
@@ -131,7 +91,7 @@ test('待保存期间沿用改动前的 id 序，改名不跳位', () => {
 })
 
 test('待保存键覆盖每一类可覆盖命令', () => {
-  const { pendingKey } = loadClient().__internals
+  const { pendingKey } = loadClient(CLIENT).__internals
   assert.equal(typeof pendingKey, 'function')
   const CASES = [
     [{ op: 'packSession', packId: 'p1' }, 'packSession:p1'],
@@ -158,12 +118,12 @@ test('待保存键覆盖每一类可覆盖命令', () => {
 test('待保存键在非 Windows 平台不转小写', () => {
   // 同一份用例跑两遍：win32 转小写、linux 不转。两边算出来的键必须与服务端一致，
   // 否则「这一行有没有未保存改动」在某个平台上永远为假。
-  const { pendingKey } = loadClient('linux').__internals
+  const { pendingKey } = loadClient(CLIENT, { platform: 'linux' }).__internals
   assert.equal(pendingKey({ op: 'bind', cwd: 'C:/w' }), 'bind:C:/w')
 })
 
 test('待保存队列：同键后写覆盖，键为 null 的命令各占一条', () => {
-  const { createQueue, pendingKey } = loadClient().__internals
+  const { createQueue, pendingKey } = loadClient(CLIENT).__internals
   const queue = createQueue(pendingKey)
   queue.push({ op: 'bind', cwd: 'C:/a' })
   queue.push({ op: 'bind', cwd: 'C:/a' })
@@ -176,7 +136,7 @@ test('待保存队列：同键后写覆盖，键为 null 的命令各占一条',
 })
 
 test('待保存队列：undo / discard / drop', () => {
-  const { createQueue, pendingKey } = loadClient().__internals
+  const { createQueue, pendingKey } = loadClient(CLIENT).__internals
   const queue = createQueue(pendingKey)
   queue.push([{ op: 'bind', cwd: 'C:/a' }, { op: 'createPack', packId: 'p1' }, { op: 'createPack', packId: 'p1' }])
   assert.equal(queue.count, 3)
@@ -192,7 +152,7 @@ test('待保存队列：undo / discard / drop', () => {
 })
 
 test('待保存队列：touch 换引用但不改内容，试算才会重跑', () => {
-  const { createQueue, pendingKey } = loadClient().__internals
+  const { createQueue, pendingKey } = loadClient(CLIENT).__internals
   const queue = createQueue(pendingKey)
   queue.push({ op: 'bind', cwd: 'C:/a' })
   const before = queue.entries
@@ -202,7 +162,7 @@ test('待保存队列：touch 换引用但不改内容，试算才会重跑', ()
 })
 
 test('冻结排序：改动前的 id 序变成 rank 表，未冻结时为空', () => {
-  const { frozenRank } = loadClient().__internals
+  const { frozenRank } = loadClient(CLIENT).__internals
   const rank = frozenRank(['b', 'a'])
   assert.equal(rank.get('b'), 0)
   assert.equal(rank.get('a'), 1)
@@ -212,7 +172,7 @@ test('冻结排序：改动前的 id 序变成 rank 表，未冻结时为空', (
 })
 
 test('工作区清单按路径排序，当前目录按会话解析', async () => {
-  const { listWorkspaces } = loadClient().__internals
+  const { listWorkspaces } = loadClient(CLIENT).__internals
   const host = {
     remote: {
       session: {

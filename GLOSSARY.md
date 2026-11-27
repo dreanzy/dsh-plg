@@ -83,7 +83,7 @@ _Avoid_: 全量清单、可用项、已安装列表
 _Avoid_: 多入口包、伞包
 
 **共享核心（Shared core）**:
-插件包之间不互相依赖；共用的服务端骨架抽成 `@dreanzy/dsh-pack-core`，各包对它写真实 semver 依赖，仍然各自发版。不用 `workspace:` 协议。边界见 [ADR-0007](./docs/adr/0007-shared-core-package.md)。
+插件包之间不互相依赖；共用的服务端骨架抽成 `@dreanzy/dsh-pack-core`，仍然各自发版。源码里的 `workspace:^` 只是 pnpm 的链接写法：`scripts/release.mjs` 在发布前把它换成真实 semver，发完换回——`workspace:` 协议本身不会被发布出去。边界见 [ADR-0007](./docs/adr/0007-shared-core-package.md)。
 _Avoid_: 共享内核、公共库、工具包
 
 **名册框架（Roster framework）**:
