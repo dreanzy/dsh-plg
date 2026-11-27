@@ -30,7 +30,24 @@ export function makeReact(initialStates = [], options = {}) {
       props: { ...(props || {}), children: children.length === 1 ? children[0] : children },
     }),
     Fragment: Symbol('Fragment'),
-    useCallback: (fn) => fn,
+    /**
+     * `runEffects` 打开时先执行一次回调。
+     *
+     * 延迟执行的代码里引用未声明的变量，不跑就永远看不见——mcp 的 `requestSeq`
+     * 除了在 useEffect 里被引用，也在一层 `useCallback` 的 `load` 里。
+     * 返回值仍是原函数：`useCallback` 的语义不能变。
+     */
+    useCallback: options.runEffects === true
+      ? (fn) => {
+          try {
+            const out = fn()
+            if (out && typeof out.then === "function") out.catch(() => undefined)
+          } catch (error) {
+            if (error && error.name === "ReferenceError") throw error
+          }
+          return fn
+        }
+      : (fn) => fn,
     // `runEffects` 打开时同步执行一次回调：延迟执行的代码里引用未声明的变量，
     // 假 React 不跑就永远看不见（mcp 的 requestSeq 就是这么漏到用户面前的）。
     useEffect: options.runEffects === true
