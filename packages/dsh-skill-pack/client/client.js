@@ -13,7 +13,7 @@ window.__ModuleLoader__.load({
  * 「显示官方项」的字段名，以及各包在 `T` / `S` 上追加的样式键。这些不进共享层，
  * 因为它们是各包对外的口径（见 ADR-0017）。
  *
- * 拼接顺序：本文件 → panel-core.js → panel.js。这里只声明共享层要读的常量，
+ * 拼接顺序：本文件 → panel-base.js → panel.js。这里只声明共享层要读的常量，
  * 不放业务代码。
  */
 
@@ -1537,7 +1537,7 @@ const RANK_ORDER = {
 /**
  * 本包的面板业务面：三页的内容、chip 的内容、以及 `apply` 的装配。
  *
- * 它不是可直接加载的文件——构建器把 `scripts/client-shared/panel-core.js` 拼在它前面，
+ * 它不是可直接加载的文件——构建器把 `scripts/client-shared/panel-base.js` 拼在它前面，
  * 再套上 `window.__ModuleLoader__.load` 的外壳，产出 `client/client.js`（见 ADR-0017）。
  */
 

@@ -47,7 +47,9 @@ ADR-0002 记的是"重复的基础设施约 150 行，对三包 13672 行约 1%"
 - **写循环（一批命令命中多个文件时的顺序与短路）**：skill 与 model 不短路（一个文件失败仍写其余），plugin 与 mcp 短路。这是各包的语义选择，不是重复代码——skill 的「先写 groups 再写 packs」有具体的 fail-open 理由。core 只提供单文件的 `transact`，循环留在包里。
 - **字段级前置校验**：plugin 的 `brokenReason` 会逐字段查 `packs.items` 的值是不是布尔，那是它的领域知识。core 只提供最松的一档（JSON 合法 + 顶层是对象），plugin 在 `mutate` 之前自己再查一遍。
 
-边界（客户端）：四份 `client.js` 是手写单文件，宿主不打包它，只能 `require('react')`。队列键这类**规则**放进 core（`PENDING_KEY_RULES`），客户端的实现仍是复制品，但四个包的 `test/client.test.js` 逐 op 比对两边结果，漂移会让用例直接失败。面板组件要不要共享，等真的改四遍、且出过一次不一致再谈构建期拼接——不提前引入第二套构建链。
+边界（客户端）：四份 `client.js` 是手写单文件，宿主不打包它，只能 `require('react')`。
+
+> 2026-11-27：客户端这半边已由 [ADR-0017](./0017-client-panel-shared-layer.md) 改变——`client.js` 现在是构建产物，共享层在 `scripts/client-shared/`。本文其余内容仍有效。队列键这类**规则**放进 core（`PENDING_KEY_RULES`），客户端的实现仍是复制品，但四个包的 `test/client.test.js` 逐 op 比对两边结果，漂移会让用例直接失败。面板组件要不要共享，等真的改四遍、且出过一次不一致再谈构建期拼接——不提前引入第二套构建链。
 
 ## 考虑过的替代方案
 

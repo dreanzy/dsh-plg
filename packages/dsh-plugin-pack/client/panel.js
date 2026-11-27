@@ -2,7 +2,7 @@
  * 本包的面板业务面：三页的内容、chip 的内容、以及 `apply` 的装配。
  *
  * 它不是可直接加载的文件——构建器把 `client/prelude.js` 与
- * `scripts/client-shared/panel-core.js` 拼在它前面，再套上 `window.__ModuleLoader__.load`
+ * `scripts/client-shared/panel-base.js` 拼在它前面，再套上 `window.__ModuleLoader__.load`
  * 的外壳，产出 `client/client.js`（见 ADR-0017）。
  */
 

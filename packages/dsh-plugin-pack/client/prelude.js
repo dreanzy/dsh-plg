@@ -1,7 +1,7 @@
 /**
  * 本包给共享层的取值（见 ADR-0017）。
  *
- * 拼接顺序：本文件 → panel-core.js → panel.js。
+ * 拼接顺序：本文件 → panel-base.js → panel.js。
  */
 
 /** 未绑定 pack 时 chip 上的字：plugin → plg。 */
