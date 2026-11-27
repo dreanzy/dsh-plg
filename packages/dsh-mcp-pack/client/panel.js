@@ -225,6 +225,7 @@
     }
 
 
+    let requestSeq = 0
     const nextRequestId = () => {
       requestSeq += 1
       return requestSeq
@@ -2146,7 +2147,7 @@
 
     return {
       // 测试出口：只供 test/ 断言结构与纯逻辑用，运行期不要读它。
-      __internals: { pendingKey, createQueue, frozenGroupNames, usePending, orderPacks, listWorkspaceCwds, TABS, GroupsPage, PackSettings, WorkspacePage, PendingBar, CHIP_CSS },
+      __internals: { pendingKey, createQueue, frozenGroupNames, usePending, orderPacks, listWorkspaceCwds, TABS, GroupsPage, PackSettings, WorkspacePage, SettingsPanel, PendingBar, CHIP_CSS },
       // `remote` 与 `remote.session` 都是独立服务名：只声明 `remote` 拿不到 session。
       // 声明是「服务在不在 ctx 上」的唯一开关；取用仍要 try/catch（ctx.get 对取不到的
       // 已声明服务会抛错）。缺了这两个，工作区页会空着。

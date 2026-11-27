@@ -196,3 +196,23 @@ test('工作区清单按路径排序，当前目录按会话解析', async () =>
   // 会话不在清单里时才退回最近更新的根会话。
   assert.equal((await listWorkspaces(host, 'missing')).currentCwd, 'C:/Users/Ann')
 })
+
+
+test('渲染面板组件（含 effect 回调）时不引用未声明的标识符', () => {
+  // 切分或抽取源码时漏掉一个顶层声明，只有真正渲染才会暴露：`node --check` 不报，
+  // check-panels 的产物一致性也不报（源码与产物一致地少一个变量）。mcp 迁移时
+  // `requestSeq` 就是这么丢的，用户在设置页看到「面板渲染失败」才发现。
+  const { __internals } = loadClient(CLIENT, { runEffects: true })
+  const problems = []
+  for (const [name, value] of Object.entries(__internals)) {
+    if (typeof value !== 'function' || !/^[A-Z]/u.test(name)) continue
+    try {
+      value({})
+    } catch (error) {
+      // 只认「未声明的标识符」：缺 props 导致的 TypeError 不是这一类。
+      // vm 里抛的 ReferenceError 与宿主的不是同一个构造器，按 name 判。
+      if (error && error.name === 'ReferenceError') problems.push(name + ': ' + error.message)
+    }
+  }
+  assert.deepEqual(problems, [])
+})

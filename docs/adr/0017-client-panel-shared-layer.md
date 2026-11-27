@@ -43,6 +43,7 @@ window.__ModuleLoader__.load({ id, factory(require) { <panel-core> <panel> } })
 - 迁移分批：skill → plugin → mcp → model。第一批之后暴露了两件必须解决的事：`plugin` 的「值不同」用 prelude 装下了；`mcp` 的「语义不同」（五条路径、四字段行模型）促使共享层再拆成 `panel-base.js` 与 `panel-protocol.js`。
 - 四包已全部接入。`panel-base.js` 放四包真正相同的部分，`panel-protocol.js` 放路径、传输、待保存键与求值对象；包可以提供 `client/protocol.js` 覆盖协议层。`model` 的三个组件（`Chevron` / `Picker` / `TextField`）比基础层多一层行为，加 `Model` 前缀留在本包，未提升。
 - 样式键差异靠检查发现而不是靠人记：`T` / `S` 的键集各包不同，`check-panels` 的 S 键规则现在同时认 prelude 里的 `S_EXTRA`，四包迁移中它一共抓出 35 个缺失键。
+- **切分会丢顶层声明。** `panel.js` 按行号从原文件切，差一行就会把 `let x = 0` 落在外面——mcp 的 `requestSeq` 就是这么丢的：`node --check` 通过（语法合法），一致性检查也通过（源码与产物一致地少一个变量），用户在设置页看到「面板渲染失败」才发现。四份 `client.test.js` 现在各有一条「渲染组件（含 effect 回调）不引用未声明标识符」的冒烟：假 React 默认不执行 `useEffect`，而 `requestSeq` 的引用全在 `useCallback` / `useEffect` 的回调里，`panel.mjs` 因此加了 `runEffects` 开关，否则这类引用永远看不见。
 - **已知局限：一致性检查是自指的。** 「产物与源码一致」用构建器的输出反向校验磁盘，因此信任构建器本身。构建器的两条断言（占位符全部替换、产物含加载器外壳）挡得住最常见的拼接错误，挡不住语义级的：`model` 迁移时 `packNameOf` 被未闭合的注释吞掉，`node --check` 通过、一致性检查也通过，是客户端测试的 `ReferenceError` 抓到的。这类错误只能靠单测与 e2e，不能指望构建器自己发现。
 
 ## 参考

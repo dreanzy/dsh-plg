@@ -22,7 +22,7 @@ import vm from 'node:vm'
  * `initialStates` 按出现顺序覆盖 `useState` 的初值。组件内部的选中项（例如分包页的
  * `selected`）测试没法从外面设，只能这样注入；不覆盖时一律用组件自己的初值。
  */
-export function makeReact(initialStates = []) {
+export function makeReact(initialStates = [], options = {}) {
   let seen = 0
   return {
     createElement: (type, props, ...children) => ({
@@ -31,7 +31,11 @@ export function makeReact(initialStates = []) {
     }),
     Fragment: Symbol('Fragment'),
     useCallback: (fn) => fn,
-    useEffect: () => undefined,
+    // `runEffects` 打开时同步执行一次回调：延迟执行的代码里引用未声明的变量，
+    // 假 React 不跑就永远看不见（mcp 的 requestSeq 就是这么漏到用户面前的）。
+    useEffect: options.runEffects === true
+      ? (fn) => { const cleanup = fn(); return typeof cleanup === 'function' ? cleanup : undefined }
+      : () => undefined,
     useMemo: (fn) => (typeof fn === 'function' ? fn() : undefined),
     useState: (initial) => {
       const index = seen
@@ -59,12 +63,14 @@ export function loadClient(clientUrl, options = {}) {
     setTimeout,
     clearTimeout,
     process: { platform },
+    // 打开 effects 时组件会真的发请求；给它一个不发网络的桩。
+    fetch: () => Promise.resolve({ status: 200, json: () => Promise.resolve({ ok: true, value: {} }) }),
   }
   vm.runInNewContext(readFileSync(clientUrl, 'utf8'), sandbox, { filename: 'client.js' })
   if (captured.length !== 1) throw new Error('模块必须通过 __ModuleLoader__.load 注册一次')
   const entry = captured[0]
   if (typeof entry.factory !== 'function') throw new Error('模块缺少 factory')
-  const react = makeReact(initialStates)
+  const react = makeReact(initialStates, { runEffects: options.runEffects === true })
   const mod = entry.factory((name) => {
     if (name === 'react') return react
     throw new Error('工厂请求了未提供的模块：' + String(name))
